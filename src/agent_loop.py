@@ -36,6 +36,8 @@ def act(
     hard: bool = False,
     stuck_count: int = 0,
     decision_log: str | Path | None = DEFAULT_DECISION_LOG,
+    run_log=None,
+    run_id: int | None = None,
 ) -> tuple[Decision, ActionResult] | None:
     state = reader.parse(machine.frame)
     trigger = evaluate(state, stuck_count=stuck_count)
@@ -52,6 +54,8 @@ def act(
             trigger=trigger,
             decision=decision,
             result=result,
+            run_log=run_log,
+            run_id=run_id,
         )
     return decision, result
 
@@ -65,6 +69,8 @@ def append_decision(
     trigger,
     decision: Decision,
     result: ActionResult,
+    run_log=None,
+    run_id: int | None = None,
 ) -> None:
     log_path = Path(path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -92,3 +98,5 @@ def append_decision(
     }
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
+    if run_log is not None and run_id is not None:
+        run_log.add_step(run_id, row)

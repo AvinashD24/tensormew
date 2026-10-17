@@ -44,7 +44,7 @@
     "new_bark_outside": {
       "name": "new_bark_outside",
       "file": "new_bark_outside.state",
-      "description": "outside in new bark, open ground",
+      "description": "New Bark Town, west side. Walk left to Route 29.",
       "map": [
         24,
         4
@@ -59,12 +59,12 @@
       "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
       "state_sha1": "df239d7fa5d2056a887cbe7dac180b35beecf04e",
       "created_at": "2026-10-17T22:09:30+00:00",
-      "tags": []
+      "tags": ["route_test", "human"]
     },
     "route29_entry": {
       "name": "route29_entry",
       "file": "route29_entry.state",
-      "description": "a few tiles west of new bark",
+      "description": "Route 29, just west of the New Bark gate.",
       "map": [
         24,
         3
@@ -79,7 +79,7 @@
       "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
       "state_sha1": "aa96bba526bff00055e8f4da4ac240a3ea969e65",
       "created_at": "2026-10-17T22:06:44+00:00",
-      "tags": []
+      "tags": ["route_test", "human"]
     },
     "smoke_sign": {
       "name": "smoke_sign",

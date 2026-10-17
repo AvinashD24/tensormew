@@ -6,11 +6,13 @@ import sys
 from src.emulator import Emulator
 from src.llm_supervisor import Supervisor
 from src.ram_parser import RamParser
+from src.run_log import DEFAULT_DB, RunLog
 from src.segment import run_segment
 from src.states import StateRegistry
 from src.tool_dispatch import execution_registry
 
 _EXIT = {"advanced": 0, "stuck": 2, "budget": 3, "error": 1}
+_DEFAULT_TARGET = {"new_bark_outside": (24, 3)}
 
 
 def main(argv=None) -> int:
@@ -19,9 +21,17 @@ def main(argv=None) -> int:
     parser.add_argument("--steps", type=int, default=30)
     parser.add_argument("--window", action="store_true")
     parser.add_argument("--log", default="logs/decisions.jsonl")
+    parser.add_argument("--target-map", default="", help="group,number to reach, e.g. 24,3")
+    parser.add_argument("--db", default=str(DEFAULT_DB))
     args = parser.parse_args(argv)
+    if args.target_map:
+        group, number = args.target_map.split(",")
+        target_map = (int(group), int(number))
+    else:
+        target_map = _DEFAULT_TARGET.get(args.state)
 
     emu = None
+    run_log = RunLog(args.db)
     try:
         data = StateRegistry().load_bytes(args.state)
         emu = Emulator(headless=not args.window, rtc_lock=True)
@@ -38,6 +48,9 @@ def main(argv=None) -> int:
             supervisor,
             max_steps=args.steps,
             decision_log=args.log,
+            target_map=target_map,
+            run_log=run_log,
+            state_name=args.state,
         )
         print(
             f"outcome={result.outcome} steps={result.steps} "
@@ -50,6 +63,7 @@ def main(argv=None) -> int:
         print(f"error={exc}")
         return 1
     finally:
+        run_log.close()
         if emu is not None:
             emu.close()
 

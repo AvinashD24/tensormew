@@ -8,12 +8,16 @@ from src.action_results import ActionResult
 from src.agent_loop import act, append_decision
 from src.collision import is_cut_tree
 from src.llm_supervisor import Decision
-from src.mover import Mover, walkable
+from src.mover import Mover, _reducing_dirs, walkable
 from src.supervisor_stubs import STUB_REGISTRY
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
 
 _DIRS = ("up", "down", "left", "right")
+# Overworld edge that leaves the current map toward the next route.
+_EXITS = {
+    (24, 4): "left",  # New Bark Town west gate -> Route 29
+}
 
 
 @dataclass
@@ -35,8 +39,12 @@ def run_segment(
     *,
     max_steps: int = 30,
     decision_log: str = "logs/decisions.jsonl",
+    target_map: tuple[int, int] | None = None,
+    target_xy: tuple[int, int] | None = None,
+    run_log=None,
+    state_name: str = "",
 ) -> SegmentResult:
-    """Step until the map or badges change, a starting Cut tree is gone, or we stop."""
+    """Step until the target map or tile, a badge, or a starting Cut tree changes."""
     log_path = str(decision_log)
     mover = _prepare_mover(machine, reader, supervisor)
     start_map: tuple = ()
@@ -44,12 +52,19 @@ def run_segment(
     start_badges = 0
     end_badges = 0
     steps = 0
+    run_id = None
     try:
         state = reader.parse(getattr(machine, "frame", 0))
         start_map = tuple(state.map_id)
         end_map = start_map
         start_badges = int(state.badges)
         end_badges = start_badges
+        if run_log is not None:
+            run_id = run_log.start_run(
+                state_name=state_name,
+                start_map=start_map,
+                start_badges=start_badges,
+            )
         started_with_cut = _adjacent_cut(state)
         streak_kind: str | None = None
         streak = 0
@@ -57,32 +72,36 @@ def run_segment(
             end_map = tuple(state.map_id)
             end_badges = int(state.badges)
             cut_cleared = _cut_cleared(started_with_cut, state)
-            if _advanced(state, start_map, start_badges, cut_cleared):
-                return _finish(
-                    "advanced",
-                    steps,
-                    start_map,
-                    end_map,
-                    start_badges,
-                    end_badges,
-                    cut_cleared,
-                    log_path,
+            if _advanced(state, start_map, start_badges, cut_cleared, target_map, target_xy, steps):
+                return _close(
+                    run_log, run_id, "advanced", steps, start_map, end_map,
+                    start_badges, end_badges, cut_cleared, log_path,
                 )
             if mover.stuck >= mover.stuck_limit:
-                return _finish(
-                    "stuck", steps, start_map, end_map, start_badges, end_badges, False, log_path
+                return _close(
+                    run_log, run_id, "stuck", steps, start_map, end_map,
+                    start_badges, end_badges, False, log_path,
                 )
 
             trigger = evaluate(state, stuck_count=mover.stuck)
             if trigger is None and not getattr(supervisor, "always_on", False):
                 streak_kind = None
                 streak = 0
-                direction = _walkable_direction(state)
+                direction = _step_direction(state, target_map, target_xy)
                 if direction is None:
                     mover.stuck += 1
                 else:
                     path_result = mover.run_path([direction])
-                    _log_script(decision_log, machine, state, direction, path_result)
+                    _log_script(
+                        decision_log,
+                        machine,
+                        state,
+                        direction,
+                        path_result,
+                        target_map=target_map,
+                        run_log=run_log,
+                        run_id=run_id,
+                    )
                 steps += 1
             else:
                 kind = _trigger_kind(trigger) if trigger is not None else ""
@@ -101,6 +120,8 @@ def run_segment(
                     actor="llm",
                     stuck_count=mover.stuck,
                     decision_log=decision_log,
+                    run_log=run_log,
+                    run_id=run_id,
                 )
                 steps += 1
 
@@ -108,27 +129,25 @@ def run_segment(
             end_map = tuple(state.map_id)
             end_badges = int(state.badges)
             cut_cleared = _cut_cleared(started_with_cut, state)
-            if _advanced(state, start_map, start_badges, cut_cleared):
-                return _finish(
-                    "advanced",
-                    steps,
-                    start_map,
-                    end_map,
-                    start_badges,
-                    end_badges,
-                    cut_cleared,
-                    log_path,
+            if _advanced(state, start_map, start_badges, cut_cleared, target_map, target_xy, steps):
+                return _close(
+                    run_log, run_id, "advanced", steps, start_map, end_map,
+                    start_badges, end_badges, cut_cleared, log_path,
                 )
             if streak >= 3 or mover.stuck >= mover.stuck_limit:
-                return _finish(
-                    "stuck", steps, start_map, end_map, start_badges, end_badges, False, log_path
+                return _close(
+                    run_log, run_id, "stuck", steps, start_map, end_map,
+                    start_badges, end_badges, False, log_path,
                 )
-        return _finish(
-            "budget", steps, start_map, end_map, start_badges, end_badges, False, log_path
+        return _close(
+            run_log, run_id, "budget", steps, start_map, end_map,
+            start_badges, end_badges, False, log_path,
         )
-    except Exception:
-        return _finish(
-            "error", steps, start_map, end_map, start_badges, end_badges, False, log_path
+    except Exception as exc:
+        return _close(
+            run_log, run_id, "error", steps, start_map, end_map,
+            start_badges, end_badges, False, log_path,
+            error=f"{type(exc).__name__}: {exc}",
         )
 
 
@@ -167,8 +186,41 @@ def _cut_cleared(started_with_cut: bool, state) -> bool:
     return started_with_cut and not _adjacent_cut(state)
 
 
-def _advanced(state, start_map: tuple, start_badges: int, cut_cleared: bool) -> bool:
+def _advanced(
+    state,
+    start_map: tuple,
+    start_badges: int,
+    cut_cleared: bool,
+    target_map: tuple[int, int] | None,
+    target_xy: tuple[int, int] | None,
+    steps: int,
+) -> bool:
+    if steps <= 0 and target_map is None and target_xy is None:
+        return False
+    on_target_map = target_map is not None and tuple(state.map_id) == tuple(target_map)
+    on_target_tile = (
+        target_xy is not None
+        and (state.x, state.y) == tuple(target_xy)
+        and (target_map is None or tuple(state.map_id) == tuple(target_map))
+    )
+    if on_target_map or on_target_tile:
+        return True
+    if target_map is not None or target_xy is not None:
+        return False
     return tuple(state.map_id) != tuple(start_map) or int(state.badges) != start_badges or cut_cleared
+
+
+def _step_direction(state, target_map: tuple[int, int] | None, target_xy: tuple[int, int] | None) -> str | None:
+    tiles = getattr(state, "tiles", None) or {}
+    if target_xy is not None and (target_map is None or tuple(state.map_id) == tuple(target_map)):
+        for direction in _reducing_dirs(state.x, state.y, target_xy[0], target_xy[1]):
+            if walkable(int(tiles.get(direction, 0xFF))):
+                return direction
+    if target_map is not None and tuple(state.map_id) != tuple(target_map):
+        exit_dir = _EXITS.get(tuple(state.map_id))
+        if exit_dir is not None and walkable(int(tiles.get(exit_dir, 0xFF))):
+            return exit_dir
+    return _walkable_direction(state)
 
 
 def _walkable_direction(state) -> str | None:
@@ -189,13 +241,27 @@ def _trigger_kind(trigger) -> str:
     return str(getattr(kind, "value", kind))
 
 
-def _log_script(decision_log, machine, state, direction: str, result: ActionResult) -> None:
+def _log_script(
+    decision_log,
+    machine,
+    state,
+    direction: str,
+    result: ActionResult,
+    *,
+    target_map: tuple[int, int] | None = None,
+    run_log=None,
+    run_id: int | None = None,
+) -> None:
     if decision_log is None:
         return
+    if target_map is None:
+        reason = "segment script"
+    else:
+        reason = f"segment script toward map {tuple(target_map)}"
     decision = Decision(
         name="run_path",
         arguments={"directions": [direction]},
-        reason="segment script",
+        reason=reason,
         model="script",
         input_tokens=0,
         output_tokens=0,
@@ -209,6 +275,36 @@ def _log_script(decision_log, machine, state, direction: str, result: ActionResu
         trigger=None,
         decision=decision,
         result=result,
+        run_log=run_log,
+        run_id=run_id,
+    )
+
+
+def _close(
+    run_log,
+    run_id,
+    outcome,
+    steps,
+    start_map,
+    end_map,
+    start_badges,
+    end_badges,
+    cut_cleared,
+    log_path,
+    error: str = "",
+) -> SegmentResult:
+    if run_log is not None and run_id is not None:
+        run_log.finish_run(
+            run_id,
+            outcome=outcome,
+            end_map=end_map or (0, 0),
+            end_badges=end_badges,
+            steps=steps,
+            cut_cleared=cut_cleared,
+            error=error,
+        )
+    return _finish(
+        outcome, steps, start_map, end_map, start_badges, end_badges, cut_cleared, log_path
     )
 
 
