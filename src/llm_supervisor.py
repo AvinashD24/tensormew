@@ -11,7 +11,7 @@ from typing import Any, Callable
 
 from src.action_results import ActionResult
 from src.supervisor_stubs import STUB_REGISTRY
-from src.tools_schema import anthropic_tools, parse_tool_call
+from src.tools_schema import anthropic_tools, parse_tool_call, split_reason
 
 DEFAULT_MODEL = os.environ.get("POKEMIND_MODEL", "claude-haiku-4-5")
 HARD_MODEL = os.environ.get("POKEMIND_HARD_MODEL", DEFAULT_MODEL)
@@ -24,6 +24,7 @@ Reply only by calling one tool. Never name or suggest raw buttons (Up, Down, A, 
 On trigger CUT_BLOCKED, prefer use_cut when the party can Cut.
 On trigger BATTLE, prefer choose_move unless HP is critical, then switch_pokemon.
 On trigger STUCK or DIALOGUE, prefer mash_text or a short run_path.
+Every tool call must include reason: one sentence explaining why this action, given the state and trigger.
 """
 
 
@@ -41,6 +42,7 @@ class TriggerContext:
 class Decision:
     name: str
     arguments: dict
+    reason: str
     model: str
     input_tokens: int
     output_tokens: int
@@ -54,7 +56,8 @@ def format_user_message(state_text: str, trigger: TriggerContext | str | None) -
         line = trigger.strip()
         return f"{state_text}\n\ntrigger={line}" if line else state_text
     detail = trigger.detail.strip()
-    body = f"{trigger.kind}: {detail}" if detail else trigger.kind
+    kind = getattr(trigger.kind, "value", trigger.kind)
+    body = f"{kind}: {detail}" if detail else str(kind)
     return f"{state_text}\n\ntrigger={body}"
 
 
@@ -101,12 +104,14 @@ class Supervisor:
         )
         name, arguments = _first_tool_use(response)
         call = parse_tool_call(name, arguments)
+        reason, handler_args = split_reason(call.arguments)
         usage = getattr(response, "usage", None)
         in_tok = int(getattr(usage, "input_tokens", 0) or 0)
         out_tok = int(getattr(usage, "output_tokens", 0) or 0)
         decision = Decision(
             name=call.name,
-            arguments=call.arguments,
+            arguments=handler_args,
+            reason=reason,
             model=getattr(response, "model", None) or model,
             input_tokens=in_tok,
             output_tokens=out_tok,
@@ -117,10 +122,11 @@ class Supervisor:
 
     def run_tool(self, name: str, arguments: dict | None) -> ActionResult:
         call = parse_tool_call(name, arguments)
+        _reason, handler_args = split_reason(call.arguments)
         fn = self.registry.get(call.name)
         if fn is None:
             return ActionResult(ok=False, message=f"no handler for {call.name}")
-        return fn(**call.arguments)
+        return fn(**handler_args)
 
     def _client(self):
         if self.client is not None:

@@ -15,11 +15,11 @@ class FakeMessages:
         self.calls.append(kwargs)
         user = kwargs["messages"][0]["content"]
         if "CUT_BLOCKED" in user:
-            name, payload = "use_cut", {}
+            name, payload = "use_cut", {"reason": "tree blocks the path"}
         elif "BATTLE" in user:
-            name, payload = "choose_move", {"slot": 1}
+            name, payload = "choose_move", {"slot": 1, "reason": "wild fight"}
         else:
-            name, payload = "mash_text", {"max_frames": 120}
+            name, payload = "mash_text", {"max_frames": 120, "reason": "dialogue is open"}
         return SimpleNamespace(
             model=kwargs["model"],
             usage=SimpleNamespace(input_tokens=20, output_tokens=8),
@@ -42,6 +42,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.name, "use_cut")
         self.assertEqual(decision.arguments, {})
+        self.assertEqual(decision.reason, "tree blocks the path")
         sent = client.messages.calls[0]
         self.assertIn("CUT_BLOCKED: tree to the north", sent["messages"][0]["content"])
         self.assertIn(state, sent["messages"][0]["content"])
@@ -51,7 +52,7 @@ class SupervisorTests(unittest.TestCase):
         self.assertEqual(rows[-1]["tool_name"], "use_cut")
         self.assertEqual(rows[-1]["input_tokens"], 20)
         self.assertGreater(rows[-1]["est_usd"], 0)
-        result = supervisor.run_tool("use_cut", {})
+        result = supervisor.run_tool("use_cut", {"reason": "tree blocks the path"})
         self.assertTrue(result.ok)
         self.assertEqual(result.message, stub_use_cut().message)
 
@@ -67,7 +68,7 @@ class SupervisorTests(unittest.TestCase):
 
     def test_run_tool_parses_args_into_stub(self):
         supervisor = Supervisor(client=FakeClient(), log_path=None)
-        result = supervisor.run_tool("go_to", {"x": 8, "y": 12})
+        result = supervisor.run_tool("go_to", {"x": 8, "y": 12, "reason": "closer to the door"})
         self.assertEqual(result.message, "stub go_to 8,12")
 
     def test_format_trigger_object(self):

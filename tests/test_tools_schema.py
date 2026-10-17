@@ -20,17 +20,22 @@ class ToolSchemaTests(unittest.TestCase):
             self.assertEqual(tool["description"], TOOL_DESCRIPTIONS[tool["name"]])
 
     def test_validate_and_roundtrip(self):
-        args = validate_arguments("go_to", {"x": 4, "y": 9})
+        args = validate_arguments("go_to", {"x": 4, "y": 9, "reason": "door is east"})
         call = parse_tool_call("go_to", args)
         self.assertEqual(call.name, "go_to")
-        self.assertEqual(call.arguments, {"x": 4, "y": 9})
+        self.assertEqual(call.arguments, {"x": 4, "y": 9, "reason": "door is east"})
         again = parse_tool_call(call.name, call.arguments)
         self.assertEqual(again, call)
 
     def test_defaults_and_bounds(self):
-        self.assertEqual(validate_arguments("use_cut", {}), {})
-        self.assertEqual(validate_arguments("mash_text", {}), {"max_frames": 600})
-        self.assertEqual(validate_arguments("run_path", {"directions": ["up", "left"]})["directions"], ["up", "left"])
+        self.assertEqual(validate_arguments("use_cut", {"reason": "tree blocks the path"})["reason"], "tree blocks the path")
+        self.assertEqual(validate_arguments("mash_text", {"reason": "textbox"})["max_frames"], 600)
+        self.assertEqual(
+            validate_arguments("run_path", {"directions": ["up", "left"], "reason": "scripted"})["directions"],
+            ["up", "left"],
+        )
+        with self.assertRaises(ValidationError):
+            validate_arguments("use_cut", {})
         with self.assertRaises(ValidationError):
             validate_arguments("choose_move", {"slot": 5})
         with self.assertRaises(ValidationError):

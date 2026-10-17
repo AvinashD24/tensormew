@@ -9,12 +9,16 @@ from pydantic import BaseModel, Field, field_validator
 DIRS = ("up", "down", "left", "right")
 
 
-class GoToArgs(BaseModel):
+class Reasoned(BaseModel):
+    reason: str = Field(min_length=1, max_length=400)
+
+
+class GoToArgs(Reasoned):
     x: int
     y: int
 
 
-class RunPathArgs(BaseModel):
+class RunPathArgs(Reasoned):
     directions: list[Literal["up", "down", "left", "right"]] = Field(min_length=1)
 
     @field_validator("directions")
@@ -26,19 +30,19 @@ class RunPathArgs(BaseModel):
         return value
 
 
-class UseCutArgs(BaseModel):
+class UseCutArgs(Reasoned):
     pass
 
 
-class MashTextArgs(BaseModel):
+class MashTextArgs(Reasoned):
     max_frames: int = Field(default=600, ge=1, le=10_000)
 
 
-class ChooseMoveArgs(BaseModel):
+class ChooseMoveArgs(Reasoned):
     slot: int = Field(ge=1, le=4)
 
 
-class SwitchPokemonArgs(BaseModel):
+class SwitchPokemonArgs(Reasoned):
     slot: int = Field(ge=1, le=6)
 
 
@@ -97,3 +101,10 @@ def anthropic_tools() -> list[dict]:
 
 def tool_names() -> list[str]:
     return list(TOOL_MODELS)
+
+
+def split_reason(arguments: dict) -> tuple[str, dict]:
+    """Return the logged reason and the kwargs the emulator handler accepts."""
+    args = dict(arguments)
+    reason = str(args.pop("reason", "")).strip()
+    return reason, args
