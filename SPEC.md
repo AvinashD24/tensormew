@@ -200,7 +200,43 @@ Use `pyboy.symbol_lookup(name)` or `RamParser`. PDF/pret may say `wPlayerStandin
 
 Existing example: `ilex_src` in manifest (verify tags/description match intent).
 
-### 5.3 Segment playbook
+Every capture must be **labeled** so a later run can say why that snapshot exists. `StateRegistry` already stores `name`, `description`, and `tags`. Fill them on every `capture` / `register_file` / `import_sav`:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `name` | yes | Stable id, `^[a-z0-9_]+$` (for example `ilex_cut`) |
+| `description` | yes | One sentence a human can read: where, what is about to happen |
+| `tags` | yes | At least one progress tag from §5.2, plus `human` or `agent` for who saved it |
+| reason (in `description` until a dedicated field exists) | yes | Why this point was saved: badge gate, Cut tree, stuck recovery, segment end |
+
+Do not save unlabeled intro/title dumps. The agent may call a future `label_state(name, description, tags, reason)` tool when it reaches a milestone; a human uses the same fields via `tools/states.py`.
+
+### 5.3 Decision trace (observability)
+
+The demo must show **why** a step happened, not only the button outcome. The Streamlit thought log (§1.3) reads this trace.
+
+On every **LLM** tool call and every later **RL** action, append one JSON line to `logs/decisions.jsonl` (gitignored with `logs/`):
+
+| Field | Meaning |
+| --- | --- |
+| `timestamp`, `frame` | When |
+| `map`, `pos`, `badges` | Where in the game |
+| `actor` | `llm`, `rl`, or `script` |
+| `trigger` | `CUT_BLOCKED`, `STUCK`, `BATTLE`, `DIALOGUE`, or empty if `always_on` |
+| `tool` / `action` | What ran (`use_cut`, `go_to`, …) |
+| `arguments` | Tool args, no secrets |
+| `reason` | One sentence: why this action, given the state and trigger |
+| `ok`, `est_usd`, token counts | Outcome and cost (LLM only) |
+
+**LLM rule:** every tool schema includes a required `reason: str`. The model must not emit raw buttons. `reason` is logged and shown; it is not sent to the emulator.
+
+**RL rule (post-hackathon, Appendix A):** the same row, with `actor=rl`. `reason` is a short policy note (chosen action, value, or stall cause). Do not train a separate narrator during the hackathon.
+
+**Scripted macros** (`run_path` with no model) log `actor=script` and a fixed reason such as `segment script for ilex_cut`.
+
+`logs/supervisor.jsonl` stays the cost log. `logs/decisions.jsonl` is the thought log. Both are append-only.
+
+### 5.4 Segment playbook
 
 For each checkpoint pair `(A → B)`:
 
@@ -230,8 +266,8 @@ H0 Infra ──► H1 Mover ──► H2 Macros+Triggers ──► H3 LLM ──
 | **H0** | emulator, ram_parser, step, states, tools, tests | `pytest tests/ -q`, `crystal_smoke.py --headless` |
 | **H1** | `mover.py`, walking on `route_test` save | `moved=True`, coords ±1, adj tiles update |
 | **H2** | `macros.py`, `triggers.py`, Cut on `ilex_cut` | E2E: blocked → trigger → `use_cut()` → pass |
-| **H3** | `llm_supervisor.py`, tool schema, `always_on` baseline | Mock + one live tool call; cost log |
-| **H4** | Segment runners, `app.py`, more manifest checkpoints | Furthest badge increased; demo laptop dry run |
+| **H3** | `llm_supervisor.py`, tool schema with `reason`, `always_on` baseline | Mock + one live tool call; cost log **and** decision trace |
+| **H4** | Segment runners, `app.py` thought log from `logs/decisions.jsonl`, labeled manifest checkpoints | Furthest badge increased; demo laptop dry run |
 
 **Rule:** Do not start PPO, ghost scouts, Metamon minimax, or LSTKAG build pipelines until **H4** is met or the user explicitly pivots to research mode.
 

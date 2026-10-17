@@ -58,6 +58,8 @@ Define these tools in `tools_schema.py` (names and types are **frozen** for Phas
 | `choose_move` | `slot: int` (1–4) | Pick battle move |
 | `switch_pokemon` | `slot: int` (1–6) | Switch active Pokémon |
 
+Every tool also takes a required `reason: str` (one sentence). Log it on `logs/decisions.jsonl` per SPEC §5.3. Do not send `reason` to the emulator.
+
 **System prompt rules (encode in `llm_supervisor.py`):**
 
 - You are playing Pokémon Crystal; state text is authoritative.
