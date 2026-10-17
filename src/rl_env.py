@@ -74,6 +74,7 @@ class CrystalEnv:
         self.seen_maps: set = set()
         self.visited: set[tuple[int, int, int, int]] = set()
         self.frontier: list[bytes] = []
+        self.frontier_maps: set[tuple[int, int]] = set()
         self.start: bytes | None = None
         self.steps = 0
 
@@ -86,6 +87,10 @@ class CrystalEnv:
         if blob is not None:
             self.machine.load_state(blob)
         self.steps = 0
+        # Discovery bonuses start over each episode. The frontier list does not.
+        self.seen_tiles = set()
+        self.seen_maps = set()
+        self.visited = set()
         state = self.reader.parse(self.machine.frame)
         self.seen_maps.add((state.map_group, state.map_number))
         tile = (state.map_group, state.map_number, state.x, state.y)
@@ -114,8 +119,10 @@ class CrystalEnv:
         )
         tile = (after.map_group, after.map_number, after.x, after.y)
         self.visited.add(tile)
-        if info.discovered_map or after.badges > before.badges:
+        map_id = (after.map_group, after.map_number)
+        if (info.discovered_map or after.badges > before.badges) and map_id not in self.frontier_maps:
             self.frontier.append(self.machine.save_state())
+            self.frontier_maps.add(map_id)
             info.frontier = True
         self.steps += 1
         done = self.steps >= self.max_steps
