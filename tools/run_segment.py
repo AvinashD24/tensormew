@@ -22,6 +22,7 @@ def main(argv=None) -> int:
     parser.add_argument("--log", default="logs/decisions.jsonl")
     parser.add_argument("--target-map", default="", help="group,number to reach, e.g. 24,3")
     parser.add_argument("--db", default=str(DEFAULT_DB))
+    parser.add_argument("--policy", default="", help="path to ppo_policy.npz; walks with PPO instead of search")
     args = parser.parse_args(argv)
     target_map = None
     if args.target_map:
@@ -35,6 +36,14 @@ def main(argv=None) -> int:
         emu = Emulator(headless=not args.window, rtc_lock=True)
         emu.load_state(data)
         reader = RamParser(emu)
+        policy = None
+        if args.policy:
+            import numpy as np
+
+            from src.ppo import Policy
+
+            policy = Policy(rng=np.random.default_rng(0))
+            policy.load(args.policy)
         supervisor = Supervisor(
             client=None,
             registry=execution_registry(emu, reader),
@@ -49,6 +58,7 @@ def main(argv=None) -> int:
             target_map=target_map,
             run_log=run_log,
             state_name=args.state,
+            policy=policy,
         )
         print(
             f"outcome={result.outcome} steps={result.steps} "

@@ -10,6 +10,7 @@ from src.collision import is_cut_tree
 from src.llm_supervisor import Decision
 from src.explore import Explorer
 from src.mover import Mover, _reducing_dirs, walkable
+from src.rl_env import ACTIONS, observe
 from src.supervisor_stubs import STUB_REGISTRY
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
@@ -41,11 +42,13 @@ def run_segment(
     target_xy: tuple[int, int] | None = None,
     run_log=None,
     state_name: str = "",
+    policy=None,
 ) -> SegmentResult:
     """Step until the target map or tile, a badge, or a starting Cut tree changes."""
     log_path = str(decision_log)
     mover = _prepare_mover(machine, reader, supervisor)
     explorer = Explorer()
+    visited: set[tuple[int, int, int, int]] = set()
     previous = None
     last_direction = None
     last_moved = False
@@ -91,15 +94,30 @@ def run_segment(
             if trigger is None and not getattr(supervisor, "always_on", False):
                 streak_kind = None
                 streak = 0
-                direction = _step_direction(state, target_xy, explorer)
+                if policy is None:
+                    direction = _step_direction(state, target_xy, explorer)
+                    actor = "script"
+                    reason = None
+                else:
+                    visited.add((state.map_group, state.map_number, state.x, state.y))
+                    action, _logp = policy.act(observe(state, visited))
+                    direction = ACTIONS[int(action)]
+                    actor = "rl"
+                    reason = f"policy chose {direction}"
                 if direction is None:
                     mover.stuck += 1
                     last_direction = None
                 else:
-                    path_result = mover.run_path([direction])
+                    if direction == "a":
+                        machine.press("a", frames=8)
+                        machine.tick(12, render=False)
+                        path_result = ActionResult(True, "policy pressed a", frames=20)
+                        last_moved = False
+                    else:
+                        path_result = mover.run_path([direction])
+                        last_moved = bool(path_result.ok)
                     previous = state
                     last_direction = direction
-                    last_moved = bool(path_result.ok)
                     _log_script(
                         decision_log,
                         machine,
@@ -109,6 +127,8 @@ def run_segment(
                         target_map=target_map,
                         run_log=run_log,
                         run_id=run_id,
+                        actor=actor,
+                        reason=reason,
                     )
                 steps += 1
             else:
@@ -256,18 +276,23 @@ def _log_script(
     target_map: tuple[int, int] | None = None,
     run_log=None,
     run_id: int | None = None,
+    actor: str = "script",
+    reason: str | None = None,
 ) -> None:
     if decision_log is None:
         return
-    if target_map is None:
-        reason = "exploring unvisited tiles"
-    else:
-        reason = f"segment script toward map {tuple(target_map)}"
+    if reason is None:
+        if target_map is None:
+            reason = "exploring unvisited tiles"
+        else:
+            reason = f"segment script toward map {tuple(target_map)}"
+    tool = "a" if direction == "a" else "run_path"
+    arguments = {} if direction == "a" else {"directions": [direction]}
     decision = Decision(
-        name="run_path",
-        arguments={"directions": [direction]},
+        name=tool,
+        arguments=arguments,
         reason=reason,
-        model="script",
+        model="ppo" if actor == "rl" else "script",
         input_tokens=0,
         output_tokens=0,
         est_usd=0.0,
@@ -276,7 +301,7 @@ def _log_script(
         decision_log,
         state=state,
         frame=getattr(machine, "frame", 0),
-        actor="script",
+        actor=actor,
         trigger=None,
         decision=decision,
         result=result,
