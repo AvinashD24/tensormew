@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Literal, Protocol
@@ -61,9 +62,13 @@ class Emulator:
                 raise RomMismatchError(f"rom sha1 {got} != {ROM_SHA1}")
         from pyboy import PyBoy
 
+        if os.environ.get("PYBOY_VISUAL") == "1":
+            headless = False
+        self._headless = headless
         self._pb = PyBoy(str(rom), window="null" if headless else "SDL2", symbols=str(sym))
         if speed is None:
-            speed = 0 if headless else 1
+            # 0 is uncapped. A window defaults to 10x so the walk is visible but not realtime.
+            speed = 0 if headless else int(os.environ.get("PYBOY_SPEED", "10"))
         self._pb.set_emulation_speed(speed)
         self._frame = 0
         self._listeners: list[InputListener] = []
@@ -87,6 +92,12 @@ class Emulator:
         return self._pb
 
     def tick(self, n: int = 1, render: bool = True) -> bool:
+        if not self._headless:
+            ok = True
+            for _ in range(max(1, n)):
+                ok = self._pb.tick(1, True)
+                self._frame += 1
+            return bool(ok)
         ok = self._pb.tick(n, render)
         self._frame += n
         return bool(ok)

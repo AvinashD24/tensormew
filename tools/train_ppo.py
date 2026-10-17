@@ -23,9 +23,11 @@ def main(argv=None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save", default="logs/ppo_policy.npz")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--window", action="store_true")
+    parser.add_argument("--speed", type=int, default=10)
     args = parser.parse_args(argv)
 
-    emu = Emulator(headless=True, rtc_lock=True)
+    emu = Emulator(headless=not args.window, rtc_lock=True, speed=0 if not args.window else args.speed)
     try:
         reader = RamParser(emu)
         start = StateRegistry().load_bytes(args.state)
