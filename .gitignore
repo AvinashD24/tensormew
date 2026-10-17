@@ -2,3 +2,12 @@
 __pycache__/
 *.state
 .env
+*.ram
+*.rtc
+*.sav
+*.ram.bak*
+runs/
+states/_autosave/
+*.gif
+*.mp4
+.planning/collision_constants.asm

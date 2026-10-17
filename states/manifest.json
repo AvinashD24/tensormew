@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "states": {
+    "ilex_src": {
+      "name": "ilex_src",
+      "file": "ilex_src.state",
+      "description": "RoCs-PC save",
+      "map": [
+        21,
+        14
+      ],
+      "pos": [
+        3,
+        7
+      ],
+      "badges": 8,
+      "party_count": 6,
+      "time_of_day": 0,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "74f7dbc5df29c06f11902ac62b8a64bc56e778ff",
+      "created_at": "2026-10-17T21:37:50+00:00",
+      "tags": []
+    }
+  }
+}
