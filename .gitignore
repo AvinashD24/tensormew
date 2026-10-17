@@ -1,6 +1,3 @@
-rom/*.gb
-rom/*.gbc
-rom/*.ram
 .venv/
 __pycache__/
 *.state
