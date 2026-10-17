@@ -1,0 +1,43 @@
+---
+description: Parallel git — pull before every push, commit and push often
+alwaysApply: true
+---
+
+# Parallel git sync
+
+Two or more people commit to `main` at the same time. Pull the remote before you publish, and publish small slices often so the other machine is not working on a stale tree.
+
+## Pull first
+
+Before every commit that you intend to push, and again immediately before `git push`:
+
+```bash
+git fetch origin
+git pull origin main
+```
+
+Use the tree you just pulled as the current codebase. Do not push on top of an old `main`.
+
+If the second pull (after your commit) brings in new commits, merge or rebase those in, then push. If there is a conflict, stop and resolve it in the files you own. Do not force-push. Do not skip hooks.
+
+## Commit and push often
+
+During this hackathon, commit and push to `main` without waiting to be asked, after each coherent slice:
+
+- a new module or test file that passes `pytest` for what it touches
+- a spec or rule change
+- a checkpoint manifest update
+
+Do not batch a long session into one commit. Do not push broken tests. Do not commit `.env`, API keys, or gitignored `*.state` files.
+
+Message style: one or two sentences on why, prefix `phase1(a):` or `phase1(b):` when the change belongs to that spec.
+
+## Order
+
+1. `git fetch origin && git pull origin main`
+2. Finish the slice and run the relevant tests.
+3. `git add` only the files for that slice.
+4. `git commit`
+5. `git pull origin main` again
+6. `git push origin main`
+7. `git status` and confirm the branch matches `origin/main`

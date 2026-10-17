@@ -296,7 +296,7 @@ H0 Infra ──► H1 Mover ──► H2 Macros+Triggers ──► H3 LLM ──
 - **Contract:** `@SPEC.md` — not `pokemon_agent.pdf` for day-to-day work.
 - **One phase per task:** e.g. *"Implement H2 per SPEC §6; do not start H3."*
 - **Run commands:** `pytest`, `crystal_smoke.py`, `tools/run_episode.py` — report exit codes.
-- **Commits:** only when the user asks.
+- **Git:** pull `origin/main` before every push, then commit and push often. Rule file: [`.cursor/rules/parallel-git.mdc`](.cursor/rules/parallel-git.mdc).
 - **ROM:** do not rebuild from pret unless asked.
 
 **Kickoff (H1):**

@@ -27,4 +27,4 @@ Work **H0 → H4** one phase per task: H0 infra · H1 mover · H2 macros+trigger
 1. Read current phase in SPEC.md §6.
 2. Tests first (`tests/test_*.py`), then implement.
 3. Run `pytest tests/ -q` and relevant tools; report exit codes.
-4. Git commits only when the user asks.
+4. Git: follow `.cursor/rules/parallel-git.mdc` — pull `origin/main` before every push, and commit and push often.
