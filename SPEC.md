@@ -2,7 +2,7 @@
 
 **Autonomous Hybrid RL-LLM Handoff Architecture for Pokémon Crystal (GBC)**
 
-This specification defines a modular, spec-driven blueprint designed for autonomous implementation via CLI coding agents (e.g., Claude Code, Cursor, or phase-gated developer harnesses). Every component has strict type interfaces, deterministic state invariants, and self-verifying unit/simulation tests so an agentic coding tool can build, test, and debug one phase at a time without polluting its context window.
+This specification defines a modular, spec-driven blueprint designed for autonomous implementation via **Cursor Agent** (Composer / Agent mode in Cursor IDE), with optional use of other phase-gated harnesses (e.g. [rekursiv-ai/sagent](https://github.com/rekursiv-ai/sagent)). Every component has strict type interfaces, deterministic state invariants, and self-verifying unit/simulation tests so the agent can build, test, and debug one phase at a time without polluting its context window.
 
 ---
 
@@ -19,7 +19,7 @@ This specification defines a modular, spec-driven blueprint designed for autonom
 | Phase-gated coding-agent CLI patterns (harness only — never in-emulator control) | **sagent** | https://github.com/rekursiv-ai/sagent |
 | Web research tools for Tier 1 (optional) | **wesearch** | https://github.com/rekursiv-ai/wesearch |
 | Checkpoint / tree serialization (`FrontierEntry`, `.pt` sidecars) | **treekle** | https://github.com/rekursiv-ai/treekle |
-| Monorepo → publishable tree sync (if splitting `crystal-hybrid/`) | **copybarista** | https://github.com/rekursiv-ai/copybarista |
+| Monorepo → publishable tree sync (if splitting `tensormew/`) | **copybarista** | https://github.com/rekursiv-ai/copybarista |
 | Console / agent log rendering in CI | **madcatter** | https://github.com/rekursiv-ai/madcatter |
 
 **Craftax naming in this document** refers to Rekursiv’s published RL curriculum patterns (frontier replay buffer, proportional reward scaling, action-effect auxiliary head, 10k stall cap, anti-loop shaping) as specified in §3.1 Worker B, §4.2, and §3.2 `critique_verifier.py`. There is no separate public `craftax` repository under [rekursiv-ai](https://github.com/rekursiv-ai) at the time of this spec; implement `frontier_buffer.py` and Worker B training logic **from this spec plus patterns found in [priml](https://github.com/rekursiv-ai/priml) and [configgle](https://github.com/rekursiv-ai/configgle)**. Before adding a dependency, `grep` the org or read repo READMEs — do not invent a `rekursiv-craftax` PyPI package.
@@ -34,55 +34,106 @@ This specification defines a modular, spec-driven blueprint designed for autonom
 
 **Agent rule:** If a module is not listed in §1’s tree and not in the table above, stop and ask — do not create a placeholder package.
 
+**ROM in this repo:** `rom/pokemon_crystal.gbc` and `rom/pokemon_crystal.sym` are **already committed**. Do not block Phase 1 on cloning or compiling [pret/pokecrystal](https://github.com/pret/pokecrystal) unless regenerating the ROM/sym pair is explicitly requested. LSTKAG / knowledge-graph work still uses pret assembly as a **read-only reference**, not as a runtime build step.
+
 ---
 
 ## 1. Repository Structure & Agentic Coding Workflow
 
-To prevent an agentic coding tool from hallucinating cross-module imports or breaking emulator timing invariants, the repository is partitioned into isolated, contract-bound subsystems with a compiled `.sym` lookup table serving as the single source of truth for memory addresses.
+**Repo name:** `tensormew` (project codename **CRYSTAL-HYBRID**). Paths below are relative to the repository root.
+
+To prevent an agentic coding tool from hallucinating cross-module imports or breaking emulator timing invariants, the repository is partitioned into isolated, contract-bound subsystems. The **checked-in** `rom/pokemon_crystal.sym` plus PyBoy `symbol_lookup()` are the single source of truth for memory addresses in this codebase.
+
+### 1.1 Current baseline (what exists today)
+
+| Artifact | Status | Notes |
+| --- | --- | --- |
+| `rom/pokemon_crystal.gbc` | **Present** | Vendored Crystal ROM (~2 MiB); loaded by PyBoy |
+| `rom/pokemon_crystal.sym` | **Present** | rgblink symbol table; pass to `PyBoy(..., symbols=SYM)` |
+| `crystal_smoke.py` | **Present** | Hour-0 smoke: boot, symbol resolve, banked WRAM read, optional save-state walk test |
+| `requirements.txt` | **Present** | Includes `pyboy==2.8.1`, `pydantic`, `anthropic`, `streamlit`, etc. |
+| `src/__init__.py` | **Present** | Empty package stub only |
+| `SPEC.md`, `README.md`, `pokemon_agent.pdf` | **Present** | Spec + PDF export |
+| `states/` | **Runtime** | Created by smoke test; `*.state` is gitignored (see `.gitignore`) |
+| `.cursor/rules/crystal-hybrid.mdc` | **Present** | Cursor Agent operating directives (§6) |
+| `Makefile`, `pyproject.toml`, `tests/`, `data/`, tier modules | **Planned** | Introduce per phase; do not assume they already exist |
+
+**Hour-0 verification (run before Phase 1 refactors):**
+
+```bash
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+python crystal_smoke.py --headless
+# With a saved game: python crystal_smoke.py --headless --state states/your.state
+```
+
+**Canonical ROM paths (do not rename without updating the spec and smoke test):**
+
+```python
+ROM = "rom/pokemon_crystal.gbc"
+SYM = "rom/pokemon_crystal.sym"
+```
+
+Refactor rule: when implementing `src/core/wram_crystal.py` and `sym_parser.py`, **port behavior from `crystal_smoke.py`** (`resolve`, `read_byte`, `read_state`, `step`) rather than rewriting from scratch.
+
+### 1.2 Target layout (build toward this tree)
+
+Legend: `[✓]` exists · `[ ]` not yet in repo
 
 ```text
-crystal-hybrid/
-├── CLAUDE.md                        # Root instructions, invariants & verification commands for coding agent
-├── Makefile                         # Build pokecrystal ROM + .sym, run pytest suites, launch vector sims
-├── pyproject.toml                   # Python 3.11+, PyBoy>=2.4.0, PyTorch>=2.5, PuffeRL/CleanRL, FastAPI, Pydantic
-├── roms/
-│   ├── pokecrystal.gbc              # Compiled from pret/pokecrystal (v1.1 USA revision)
-│   └── pokecrystal.sym              # Symbol table generated by RGBDS rgblink (-n pokecrystal.sym)
-├── data/
-│   ├── knowledge_graph/             # Parsed AST from pret/pokecrystal (wild tables, trainers, moves, maps)
-│   ├── states/                      # Golden save states (.state) + recurrent memory (.pt) checkpoints
-│   └── schema/                      # JSON schemas for nav_memory.json and subgoal_spec.json
-├── src/
+tensormew/
+├── [✓] SPEC.md
+├── [✓] README.md
+├── [✓] pokemon_agent.pdf
+├── [✓] requirements.txt          # migrate to pyproject.toml when training stack lands
+├── [✓] .cursor/rules/
+│   └── [✓] crystal-hybrid.mdc  # Cursor project rules (duplicate of SPEC.md §6)
+├── [ ] Makefile                  # optional: regenerate rom/ from pret; pytest; vector sims
+├── [ ] pyproject.toml            # add with PyTorch / CleanRL when Phase 3 starts
+├── [✓] crystal_smoke.py          # keep until Phase 1 tests supersede; then thin CLI wrapper
+├── [✓] rom/
+│   ├── [✓] pokemon_crystal.gbc   # vendored; primary runtime ROM (not roms/pokecrystal.gbc)
+│   └── [✓] pokemon_crystal.sym
+├── [ ] data/
+│   ├── knowledge_graph/          # parsed pret tables (build script TBD)
+│   ├── states/                   # local golden saves (gitignored *.state)
+│   └── schema/                   # JSON schemas for nav_memory, subgoal_spec
+├── [ ] src/
+│   ├── [✓] __init__.py
 │   ├── core/
-│   │   ├── sym_parser.py            # Parses pokecrystal.sym -> Bank:Address tuples (zero hardcoded hex)
-│   │   ├── wram_crystal.py          # GBC banked WRAM reader (Banks 0-7 via pyboy.memory[bank, addr])
-│   │   ├── rtc_controller.py        # MBC3 Real-Time Clock injection (Morning/Day/Night deterministic lock)
-│   │   └── pyboy_env.py             # Headless Gymnasium wrapper with double-press & warp-settle physics
-│   ├── tier3_workers/
-│   │   ├── worker_a_autopilot.py    # Deterministic A*, doorway sidestep, HM/Menu macro state machines
-│   │   ├── worker_b_explorer.py     # 10M-param Recurrent PPO + Action-Effect Head + Visited Binary Mask
-│   │   └── worker_c_combat.py       # Metamon Gen2OU Transformer wrapper + PokéChamp minimax boss search
-│   ├── tier2_broker/
-│   │   ├── interrupt_router.py      # 60Hz hardware tick monitor (wBattleMode, warps, HP/PP floors)
-│   │   ├── saycan_gate.py           # Affordance scorer (p_LLM * V_RL) + 100x fast combat rollout engine
-│   │   ├── ghost_scouts.py          # 5x async multiprocessing PyBoy scouts writing to SQLite WAL / shm
-│   │   └── critique_verifier.py     # Post-condition RAM predicate evaluator & Craftax 10k stall breaker
-│   ├── tier1_director/
-│   │   ├── planner_agent.py         # LLM Meta-Planner (subgoal emission, veto diagnostics recovery)
-│   │   ├── lstkag_retriever.py      # Deterministic query engine over pret/pokecrystal JSON tables
-│   │   ├── teduo_mask.py            # Goal-conditioned state abstraction mask F(x, g) -> s_g
-│   │   └── eureka_synthesizer.py    # Sandboxed AST synthesis of custom reward functions R_g(s,a,s')
-│   └── training/
-│       ├── vec_env_shm.py           # Shared-memory zero-copy vectorized PyBoy runner (64-128 workers)
-│       ├── frontier_buffer.py       # Craftax Frontier Practice buffer (20% replay from State + Hidden)
-│       └── ppo_trainer.py           # TorchCompile PPO loop with proportional reward scaling (/ 8.0)
-└── tests/
-    ├── states_fixtures/             # 25 golden .state fixtures (Pallet/NewBark, SproutTower, Goldenrod, IcePath)
-    ├── test_phase1_substrate.py     # Determinism, sym parsing, banked WRAM, double-press physics
-    ├── test_phase2_autopilot.py     # A*, ledges, off-screen NPC cache, doorway traps
-    ├── test_phase3_explorer.py      # Action-effect loss convergence, anti-loop penalties, stall cap
-    ├── test_phase4_combat.py        # Battle RAM translation, 100x rollout speed (<2s), Whitney test
-    └── test_phase5_handoff.py       # End-to-end New Bark -> Violet Gym clear without human intervention
+│   │   ├── sym_parser.py         # parse rom/pokemon_crystal.sym + PyBoy symbol_lookup
+│   │   ├── wram_crystal.py       # banked reads (from crystal_smoke.read_byte)
+│   │   ├── rtc_controller.py
+│   │   └── pyboy_env.py
+│   ├── tier3_workers/            # worker_a_autopilot, worker_b_explorer, worker_c_combat
+│   ├── tier2_broker/             # interrupt_router, saycan_gate, ghost_scouts, critique_verifier
+│   ├── tier1_director/           # planner_agent, lstkag_retriever, teduo_mask, eureka_synthesizer
+│   └── training/                 # vec_env_shm, frontier_buffer, ppo_trainer
+└── [ ] tests/
+    ├── states_fixtures/          # 25 canonical .state fixtures (Phase 4+)
+    └── test_phase1_substrate.py … test_phase5_handoff.py
+```
+
+### 1.3 Cursor Agent workflow (how this repo gets built)
+
+**Primary implementer:** Cursor Agent in this workspace (`tensormew`). Treat `SPEC.md` as the contract; pin it in chat with `@SPEC.md` (and `@crystal_smoke.py` during Phase 1).
+
+| Practice | Why |
+| --- | --- |
+| **One phase per Agent task** | Ask explicitly: *"Implement Phase 2 per SPEC.md §5; do not start Phase 3."* Reduces cross-tier import hallucinations. |
+| **Tests before implementation** | Match §5: add or extend `tests/test_phaseN_*.py` first, run `pytest` in the integrated terminal, then implement until green. |
+| **Run smoke + pytest locally** | Agent must execute commands (not only suggest them): `python crystal_smoke.py --headless`, then phase pytest files. |
+| **Project rules** | Keep §6 content in `.cursor/rules/crystal-hybrid.mdc` with `alwaysApply: true` so every Agent session inherits architectural law. |
+| **Context discipline** | `@`-reference only files for the current phase (e.g. `@src/core/` during Phase 1). Avoid loading full `pokemon_agent.pdf` if `SPEC.md` suffices. |
+| **No ROM rebuild by default** | Do not clone pret or replace `rom/` unless the user asks; vendored ROM/sym are authoritative (§1.1). |
+| **Commits** | Commit only when the user asks; still run verification commands before reporting a phase complete. |
+
+**Suggested kickoff prompt (Phase 1):**
+
+```text
+Read @SPEC.md §1.1, §2.1, and §5 Phase 1. Port crystal_smoke.py into src/core/ per the refactor rule.
+Write tests/test_phase1_substrate.py first. Run pytest and crystal_smoke.py --headless before done.
+Do not implement Phase 2 yet.
 ```
 
 ---
@@ -95,14 +146,28 @@ Before writing code, six non-obvious hardware and systems traps in Pokémon Crys
 
 Unlike Pokémon Red, where community projects copy-paste raw hex addresses (`0xD35E`), Pokémon Crystal uses 8 switchable 4KB Work RAM banks (WRAM0 at `0xC000–0xCFFF` and switchable WRAM1–WRAM7 mapped into `0xD000–0xDFFF`, controlled by hardware register SVBK at `0xFF70`). Furthermore, addresses shift between Crystal v1.0 and v1.1.
 
-- **Solution:** Clone [pret/pokecrystal](https://github.com/pret/pokecrystal) and compile the ROM using RGBDS (`make`), which outputs `pokecrystal.sym`. Every symbol is formatted as `BB:AAAA SymbolName` (e.g., `01:D4E2 wPlayerStandingMapX`).
-- **PyBoy banked direct access:** Instead of reading `pyboy.memory[0xD4E2]` (which reads whichever WRAM bank happens to be active on that CPU cycle and corrupts your state vector during screen transitions), always read `pyboy.memory[bank, addr]` using the exact `(bank, addr)` tuple parsed from `pokecrystal.sym`.
+- **In this repo:** Use `rom/pokemon_crystal.sym` with `PyBoy(ROM, symbols=SYM)` and `pyboy.symbol_lookup(name)` → `(bank, addr)`. Symbol lines look like `01:dcb8 wXCoord` (rgblink format).
+- **Regenerating ROM/sym (optional):** Clone [pret/pokecrystal](https://github.com/pret/pokecrystal), build with RGBDS, and replace `rom/pokemon_crystal.{gbc,sym}` only if you intentionally rebaseline; re-run `crystal_smoke.py` and update symbol names in tests if the sym drifts.
+- **PyBoy banked direct access:** For addresses in `0xD000–0xDFFF`, use `pyboy.memory[bank, addr]` with the bank from symbol lookup — see `crystal_smoke.read_byte`. Do not read switchable WRAM with a bare address.
 
-| Logical domain | Canonical pokecrystal.sym symbol | Bank | Function in hybrid architecture |
+**Symbols verified in `crystal_smoke.py` against this ROM** (use these names in new code until a parser maps pret aliases):
+
+| Logical domain | Symbol in `rom/pokemon_crystal.sym` | Example line | Used for |
+| --- | --- | --- | --- |
+| Map ID | `wMapGroup`, `wMapNumber` | `01:dcb5 wMapGroup` | Position / curriculum |
+| Player tile | `wXCoord`, `wYCoord` | `01:dcb8 wXCoord` | Movement, A*, scouts |
+| Facing | `wFacingDirection` | `01:d044 wFacingDirection` | Double-press (Phase 1+) |
+| Adjacent tiles | `wTileUp/Down/Left/Right`, `wPlayerTileCollision` | (lookup) | Greedy mover / Worker B local grid |
+| Battle / UI gates | `wBattleMode`, `wScriptRunning`, `wTextboxFlags`, `wMapStatus` | `01:d22d wBattleMode` | Interrupt router |
+| Progress | `wPartyCount`, `wJohtoBadges` | `01:d857 wJohtoBadges` | SayCan / badges |
+
+Pret documentation often cites `wPlayerStandingMapX` / `wPlayerDirection`; **this vendored sym uses `wXCoord` / `wFacingDirection`**. Never hardcode either spelling’s address — always resolve from the sym file. When LSTKAG adds pret names, `sym_parser.py` should map aliases → the lookup PyBoy returns.
+
+| Logical domain | pret / doc alias (reference only) | Bank | Function in hybrid architecture |
 | --- | --- | --- | --- |
 | Map & spatial | `wMapGroup`, `wMapNumber` | WRAM1 (01) | Unique 2-byte compound Map ID (group, number) |
-| Player tile coords | `wPlayerStandingMapX`, `wPlayerStandingMapY` | WRAM1 (01) | Player tile position (+4 offset padding in pokecrystal map headers) |
-| Facing direction | `wPlayerDirection` | WRAM1 (01) | Bits 2–3 encode DOWN=0, UP=4, LEFT=8, RIGHT=12 (governs double-press) |
+| Player tile coords | `wPlayerStandingMapX/Y` → **`wXCoord` / `wYCoord` here** | WRAM1 (01) | Player tile position |
+| Facing direction | `wPlayerDirection` → **`wFacingDirection` here** | WRAM1 (01) | Bits govern double-press |
 | Off-screen NPC array | `wMapObjects` (16×16 bytes), `wObjectStructs` (13×40 bytes) | WRAM1 (01), WRAM0 (00) | Active sprites vs. map object templates (NPC collision caching) |
 | Battle interrupts | `wBattleMode` | WRAM1 (01) | 0 = Overworld, 1 = Wild, 2 = Trainer (60Hz interrupt trigger) |
 | Party state | `wPartyCount`, `wPartySpecies`, `wPartyMons` (6×48 bytes) | WRAM1 (01) | Species, HP, Level, Status, Moves, PP, Held Item, Experience |
@@ -210,7 +275,7 @@ Example `SubGoalSpec`:
     "hp_retreat_threshold": 0.30
   },
   "teduo_active_wram_keys": [
-    "wMapGroup", "wMapNumber", "wPlayerStandingMapX", "wPlayerStandingMapY",
+    "wMapGroup", "wMapNumber", "wXCoord", "wYCoord",
     "wPartyCount", "wPartySpecies", "wItemCount"
   ],
   "termination_predicate_expr": "PARTY_HAS_SPECIES('DROWZEE')",
@@ -246,13 +311,18 @@ Pre-allocate POSIX shared memory for N=64 or 128 headless PyBoy workers; batch t
 [Phase 6: Full Campaign CI] <--- [Phase 5: Tier 1 + Eureka]   <--- [Phase 4: Worker C + SayCan Gate]
 ```
 
-**Rule for the coding agent:** Do not advance to Phase N+1 until the verification command for Phase N exits with code 0 and meets all quantitative performance gates.
+**Rule for Cursor Agent:** Do not advance to Phase N+1 until the verification command for Phase N exits with code 0 and meets all quantitative performance gates. Report the exact terminal commands and exit codes when marking a phase complete.
 
 ### Phase 1: Deterministic Emulation Substrate & Banked .sym Reader
 
-Deliverables: Makefile + `sym_parser`, `wram_crystal`, `rtc_controller`, `pyboy_env`, `vec_env_shm`.
+**Already in repo:** vendored `rom/pokemon_crystal.{gbc,sym}`; `crystal_smoke.py` proves PyBoy boot, symbol lookup, and banked reads.
 
-Verification: `pytest tests/test_phase1_substrate.py` — determinism, bank safety, ≥25,000 FPS aggregate on 64 workers.
+**Deliverables:** Extract core logic into `src/core/` (`sym_parser`, `wram_crystal`, `rtc_controller`, `pyboy_env`), add `src/training/vec_env_shm.py`, optional `Makefile` (pret rebuild only), `tests/test_phase1_substrate.py`.
+
+**Verification:**
+
+1. `python crystal_smoke.py --headless` — exit 0, resolves smoke symbol set (see §2.1).
+2. `pytest tests/test_phase1_substrate.py` — determinism, bank safety, ≥25,000 FPS aggregate on 64 workers (once tests exist).
 
 ### Phase 2: Worker A + Ghost Scouts
 
@@ -286,32 +356,46 @@ Acceptance: early-game vertical slice <15M LLM tokens; full Johto + Red validati
 
 ---
 
-## 6. Copy-Paste CLAUDE.md Root Prompt
+## 6. Cursor project rules (copy into `.cursor/rules/crystal-hybrid.mdc`)
 
-Drop this file into the root of your repository before initializing your agentic coding CLI:
+Create `.cursor/rules/crystal-hybrid.mdc` in this repository so **Cursor Agent** loads operating directives on every session. (Legacy note: other tools may use a root `AGENTS.md` with the same body; this project standardizes on Cursor rules.)
+
+**File path:** `.cursor/rules/crystal-hybrid.mdc`
 
 ```markdown
-# CLAUDE.md — Project CRYSTAL-HYBRID Operating Directives
+---
+description: CRYSTAL-HYBRID / tensormew — phase-gated PyBoy RL-LLM architecture
+alwaysApply: true
+---
+
+# Project CRYSTAL-HYBRID — Cursor Agent Operating Directives
 
 ## 0. Source of truth
-- System spec: `SPEC.md` (this repository)
+- System spec: `SPEC.md` (this repository) — use `@SPEC.md` in Agent chat
+- Cursor workflow: `SPEC.md` §1.3
 - Rekursiv infra: https://github.com/rekursiv-ai — see SPEC.md §0; never invent Rekursiv package names
-- ROM/symbols: https://github.com/pret/pokecrystal
+- Runtime ROM: `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (already in repo; do not require pret build)
+- pret reference (optional rebuild only): https://github.com/pret/pokecrystal
 
 ## 1. Architectural Law
 You are building a 3-Tier Hybrid RL-LLM system for Pokémon Crystal (GBC) on PyBoy.
-- NEVER hardcode hex memory addresses. Always resolve symbols dynamically from `roms/pokecrystal.sym` via `src/core/sym_parser.py` and read banked memory via `pyboy.memory[bank, addr]`.
+- NEVER hardcode hex memory addresses. Resolve symbols from `rom/pokemon_crystal.sym` via `PyBoy.symbol_lookup` / `src/core/sym_parser.py` and read banked memory via `pyboy.memory[bank, addr]` (see `crystal_smoke.py`).
 - NEVER allow Tier 1 (LLM) to emit raw button presses (`Up`, `Down`, `A`, `B`) or gain write access to `nav_memory.db`.
 - NEVER allow Worker B (Overworld RL) to press `START` or `SELECT`, or clip rewards to `[-1, 1]`. Always scale rewards by `/ 8.0`.
 - ALWAYS route combat at 60Hz via hardware interrupt when `01:wBattleMode != 0` directly to Worker C (zero LLM calls during routine wild battles).
 
-## 2. Phase-Gated Workflow
-Work strictly one phase at a time (Phase 1 -> Phase 6).
-1. Read the current phase specification in `SPEC.md` and write failing tests in `tests/test_phaseX_*.py` first.
-2. Implement the module with strict Python 3.11+ type annotations and Pydantic schemas.
-3. Run `pytest tests/test_phaseX_*.py -v`. Do not proceed to the next phase until all assertions and FPS/win-rate benchmarks pass.
+## 2. Phase-Gated Workflow (Cursor Agent)
+Work strictly one phase at a time (Phase 1 -> Phase 6). Scope each Agent task to a single phase unless the user explicitly expands scope.
+1. Read the current phase in `SPEC.md` §5 and baseline in §1.1.
+2. Write failing tests in `tests/test_phaseX_*.py` first.
+3. Implement with strict Python 3.11+ type annotations and Pydantic schemas; port from `crystal_smoke.py` when touching WRAM/symbols (§1.1 refactor rule).
+4. Run verification in the integrated terminal — do not skip:
+   - Hour-0 / regression: `python crystal_smoke.py --headless`
+   - Phase gate: `pytest tests/test_phaseX_*.py -v`
+5. Do not proceed to the next phase until all assertions and FPS/win-rate benchmarks pass; report commands run and exit codes.
+6. Create git commits only when the user asks.
 ```
 
 ---
 
-*Canonical markdown spec for tensormew / crystal-hybrid. PDF export: `pokemon_agent.pdf`.*
+*Canonical markdown spec for **tensormew** (CRYSTAL-HYBRID). Narrative PDF: `pokemon_agent.pdf`. Hour-0 entrypoint: `crystal_smoke.py`. Cursor rules: `.cursor/rules/crystal-hybrid.mdc` (§6).*

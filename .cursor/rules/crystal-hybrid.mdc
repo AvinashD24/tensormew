@@ -1,0 +1,31 @@
+---
+description: CRYSTAL-HYBRID / tensormew — phase-gated PyBoy RL-LLM architecture
+alwaysApply: true
+---
+
+# Project CRYSTAL-HYBRID — Cursor Agent Operating Directives
+
+## 0. Source of truth
+- System spec: `SPEC.md` (this repository) — use `@SPEC.md` in Agent chat
+- Cursor workflow: `SPEC.md` §1.3
+- Rekursiv infra: https://github.com/rekursiv-ai — see SPEC.md §0; never invent Rekursiv package names
+- Runtime ROM: `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (already in repo; do not require pret build)
+- pret reference (optional rebuild only): https://github.com/pret/pokecrystal
+
+## 1. Architectural Law
+You are building a 3-Tier Hybrid RL-LLM system for Pokémon Crystal (GBC) on PyBoy.
+- NEVER hardcode hex memory addresses. Resolve symbols from `rom/pokemon_crystal.sym` via `PyBoy.symbol_lookup` / `src/core/sym_parser.py` and read banked memory via `pyboy.memory[bank, addr]` (see `crystal_smoke.py`).
+- NEVER allow Tier 1 (LLM) to emit raw button presses (`Up`, `Down`, `A`, `B`) or gain write access to `nav_memory.db`.
+- NEVER allow Worker B (Overworld RL) to press `START` or `SELECT`, or clip rewards to `[-1, 1]`. Always scale rewards by `/ 8.0`.
+- ALWAYS route combat at 60Hz via hardware interrupt when `01:wBattleMode != 0` directly to Worker C (zero LLM calls during routine wild battles).
+
+## 2. Phase-Gated Workflow (Cursor Agent)
+Work strictly one phase at a time (Phase 1 -> Phase 6). Scope each Agent task to a single phase unless the user explicitly expands scope.
+1. Read the current phase in `SPEC.md` §5 and baseline in §1.1.
+2. Write failing tests in `tests/test_phaseX_*.py` first.
+3. Implement with strict Python 3.11+ type annotations and Pydantic schemas; port from `crystal_smoke.py` when touching WRAM/symbols (§1.1 refactor rule).
+4. Run verification in the integrated terminal — do not skip:
+   - Hour-0 / regression: `python crystal_smoke.py --headless`
+   - Phase gate: `pytest tests/test_phaseX_*.py -v`
+5. Do not proceed to the next phase until all assertions and FPS/win-rate benchmarks pass; report commands run and exit codes.
+6. Create git commits only when the user asks.
