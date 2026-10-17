@@ -4,7 +4,8 @@ Autonomous agent for **Pokémon Crystal** (GBC) on PyBoy — **goal: progress as
 
 ## Docs
 
-- **[`SPEC.md`](SPEC.md)** — **only spec you need** (mission, architecture, RAM, checkpoints, phases H0–H4, Cursor workflow)
+- **[`SPEC.md`](SPEC.md)** — mission, architecture, RAM, checkpoints, phases H0–H4
+- **Parallel Phase 1:** [`phase-1/01-dev-a-execution.md`](phase-1/01-dev-a-execution.md) · [`phase-1/02-dev-b-supervisor.md`](phase-1/02-dev-b-supervisor.md)
 - [`pokemon_agent.pdf`](pokemon_agent.pdf) — long-term CRYSTAL-HYBRID research (defer during hackathon)
 - [`CONTEXT.md`](CONTEXT.md) — redirect stub (content merged into SPEC)
 

@@ -215,6 +215,8 @@ Prefer **hardcoded paths per map** over global greedy navigation for demos (Unio
 
 ## 6. Hackathon implementation phases
 
+**Parallel Phase 1 (two devs):** [`phase-1/01-dev-a-execution.md`](phase-1/01-dev-a-execution.md) · [`phase-1/02-dev-b-supervisor.md`](phase-1/02-dev-b-supervisor.md)
+
 Work **H0 → H4** in order. One Cursor task per phase unless the user expands scope.
 
 ```text
