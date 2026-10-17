@@ -8,16 +8,13 @@ from src.action_results import ActionResult
 from src.agent_loop import act, append_decision
 from src.collision import is_cut_tree
 from src.llm_supervisor import Decision
+from src.explore import Explorer
 from src.mover import Mover, _reducing_dirs, walkable
 from src.supervisor_stubs import STUB_REGISTRY
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
 
 _DIRS = ("up", "down", "left", "right")
-# Overworld edge that leaves the current map toward the next route.
-_EXITS = {
-    (24, 4): "left",  # New Bark Town west gate -> Route 29
-}
 
 
 @dataclass
@@ -30,6 +27,7 @@ class SegmentResult:
     end_badges: int
     cut_cleared: bool
     log_path: str
+    run_id: int | None = None
 
 
 def run_segment(
@@ -47,6 +45,10 @@ def run_segment(
     """Step until the target map or tile, a badge, or a starting Cut tree changes."""
     log_path = str(decision_log)
     mover = _prepare_mover(machine, reader, supervisor)
+    explorer = Explorer()
+    previous = None
+    last_direction = None
+    last_moved = False
     start_map: tuple = ()
     end_map: tuple = ()
     start_badges = 0
@@ -69,6 +71,8 @@ def run_segment(
         streak_kind: str | None = None
         streak = 0
         while steps < max_steps:
+            if previous is not None and last_direction is not None:
+                explorer.note(previous, state, last_direction, last_moved)
             end_map = tuple(state.map_id)
             end_badges = int(state.badges)
             cut_cleared = _cut_cleared(started_with_cut, state)
@@ -87,11 +91,15 @@ def run_segment(
             if trigger is None and not getattr(supervisor, "always_on", False):
                 streak_kind = None
                 streak = 0
-                direction = _step_direction(state, target_map, target_xy)
+                direction = _step_direction(state, target_xy, explorer)
                 if direction is None:
                     mover.stuck += 1
+                    last_direction = None
                 else:
                     path_result = mover.run_path([direction])
+                    previous = state
+                    last_direction = direction
+                    last_moved = bool(path_result.ok)
                     _log_script(
                         decision_log,
                         machine,
@@ -210,17 +218,14 @@ def _advanced(
     return tuple(state.map_id) != tuple(start_map) or int(state.badges) != start_badges or cut_cleared
 
 
-def _step_direction(state, target_map: tuple[int, int] | None, target_xy: tuple[int, int] | None) -> str | None:
-    tiles = getattr(state, "tiles", None) or {}
-    if target_xy is not None and (target_map is None or tuple(state.map_id) == tuple(target_map)):
+def _step_direction(state, target_xy: tuple[int, int] | None, explorer: Explorer) -> str | None:
+    if target_xy is not None:
+        tiles = getattr(state, "tiles", None) or {}
         for direction in _reducing_dirs(state.x, state.y, target_xy[0], target_xy[1]):
             if walkable(int(tiles.get(direction, 0xFF))):
                 return direction
-    if target_map is not None and tuple(state.map_id) != tuple(target_map):
-        exit_dir = _EXITS.get(tuple(state.map_id))
-        if exit_dir is not None and walkable(int(tiles.get(exit_dir, 0xFF))):
-            return exit_dir
-    return _walkable_direction(state)
+        return None
+    return explorer.choose(state)
 
 
 def _walkable_direction(state) -> str | None:
@@ -255,7 +260,7 @@ def _log_script(
     if decision_log is None:
         return
     if target_map is None:
-        reason = "segment script"
+        reason = "exploring unvisited tiles"
     else:
         reason = f"segment script toward map {tuple(target_map)}"
     decision = Decision(
@@ -304,7 +309,7 @@ def _close(
             error=error,
         )
     return _finish(
-        outcome, steps, start_map, end_map, start_badges, end_badges, cut_cleared, log_path
+        outcome, steps, start_map, end_map, start_badges, end_badges, cut_cleared, log_path, run_id
     )
 
 
@@ -317,6 +322,7 @@ def _finish(
     end_badges: int,
     cut_cleared: bool,
     log_path: str,
+    run_id: int | None = None,
 ) -> SegmentResult:
     return SegmentResult(
         outcome=outcome,
@@ -327,4 +333,5 @@ def _finish(
         end_badges=end_badges,
         cut_cleared=cut_cleared,
         log_path=log_path,
+        run_id=run_id,
     )

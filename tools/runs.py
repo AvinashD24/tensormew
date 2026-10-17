@@ -36,7 +36,8 @@ def main(argv=None) -> int:
                     f"badges={row['start_badges']}->{row['end_badges']} "
                     f"map=({row['start_map_group']},{row['start_map_number']})->"
                     f"({row['end_map_group']},{row['end_map_number']}) "
-                    f"steps={row['steps']} {row['error'] or ''}"
+                    f"steps={row['steps']} checkpoint={row['checkpoint_name'] or '-'} "
+                    f"{row['error'] or ''}"
                 )
             return 0
         if args.cmd == "failures":

@@ -66,7 +66,13 @@ class RunLog:
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL")
         self.conn.executescript(_SCHEMA)
+        self._migrate()
         self.conn.commit()
+
+    def _migrate(self) -> None:
+        columns = {row[1] for row in self.conn.execute("PRAGMA table_info(runs)")}
+        if "checkpoint_name" not in columns:
+            self.conn.execute("ALTER TABLE runs ADD COLUMN checkpoint_name TEXT")
 
     def close(self) -> None:
         self.conn.close()
@@ -154,6 +160,13 @@ class RunLog:
                 error,
                 run_id,
             ),
+        )
+        self.conn.commit()
+
+    def set_checkpoint(self, run_id: int, name: str) -> None:
+        self.conn.execute(
+            "UPDATE runs SET checkpoint_name=? WHERE id=?",
+            (name, run_id),
         )
         self.conn.commit()
 

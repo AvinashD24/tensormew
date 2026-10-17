@@ -108,7 +108,7 @@ class SegmentTests(unittest.TestCase):
         row = json.loads(log_path.read_text().strip().splitlines()[-1])
         self.assertEqual(row["actor"], "script")
         self.assertEqual(row["tool"], "run_path")
-        self.assertEqual(row["reason"], "segment script")
+        self.assertEqual(row["reason"], "exploring unvisited tiles")
         self.assertEqual(row["arguments"]["directions"], ["up"])
 
     def test_cut_tree_clears_after_act(self):

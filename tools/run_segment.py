@@ -12,7 +12,6 @@ from src.states import StateRegistry
 from src.tool_dispatch import execution_registry
 
 _EXIT = {"advanced": 0, "stuck": 2, "budget": 3, "error": 1}
-_DEFAULT_TARGET = {"new_bark_outside": (24, 3)}
 
 
 def main(argv=None) -> int:
@@ -24,11 +23,10 @@ def main(argv=None) -> int:
     parser.add_argument("--target-map", default="", help="group,number to reach, e.g. 24,3")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     args = parser.parse_args(argv)
+    target_map = None
     if args.target_map:
         group, number = args.target_map.split(",")
         target_map = (int(group), int(number))
-    else:
-        target_map = _DEFAULT_TARGET.get(args.state)
 
     emu = None
     run_log = RunLog(args.db)
