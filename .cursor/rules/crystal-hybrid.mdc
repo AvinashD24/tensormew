@@ -1,31 +1,30 @@
 ---
-description: CRYSTAL-HYBRID / tensormew — phase-gated PyBoy RL-LLM architecture
+description: tensormew / PokéMind — maximize Crystal progression, checkpoint campaign
 alwaysApply: true
 ---
 
-# Project CRYSTAL-HYBRID — Cursor Agent Operating Directives
+# tensormew — Cursor Agent Operating Directives
 
 ## 0. Source of truth
-- System spec: `SPEC.md` (this repository) — use `@SPEC.md` in Agent chat
-- Cursor workflow: `SPEC.md` §1.3
-- Rekursiv infra: https://github.com/rekursiv-ai — see SPEC.md §0; never invent Rekursiv package names
-- Runtime ROM: `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (already in repo; do not require pret build)
-- pret reference (optional rebuild only): https://github.com/pret/pokecrystal
+- **Single spec:** `SPEC.md` — use `@SPEC.md` in Agent chat (not `pokemon_agent.pdf` for hackathon work)
+- **Workflow:** SPEC.md §7
+- **ROM:** `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (SHA1 in SPEC §3.1)
+- **Research / Rekursiv:** SPEC.md §8 and Appendix A — post-hackathon unless user says research mode
 
-## 1. Architectural Law
-You are building a 3-Tier Hybrid RL-LLM system for Pokémon Crystal (GBC) on PyBoy.
-- NEVER hardcode hex memory addresses. Resolve symbols from `rom/pokemon_crystal.sym` via `PyBoy.symbol_lookup` / `src/core/sym_parser.py` and read banked memory via `pyboy.memory[bank, addr]` (see `crystal_smoke.py`).
-- NEVER allow Tier 1 (LLM) to emit raw button presses (`Up`, `Down`, `A`, `B`) or gain write access to `nav_memory.db`.
-- NEVER allow Worker B (Overworld RL) to press `START` or `SELECT`, or clip rewards to `[-1, 1]`. Always scale rewards by `/ 8.0`.
-- ALWAYS route combat at 60Hz via hardware interrupt when `01:wBattleMode != 0` directly to Worker C (zero LLM calls during routine wild battles).
+## 1. Mission
+**Primary:** get as far into Pokémon Crystal as possible (badges + furthest `states/manifest.json` checkpoint).
+**Architecture:** deterministic mover + macros; LLM **only on triggers** via tools (never raw button presses).
+**Do not build** PPO, ghost scouts, Metamon minimax, or LSTKAG pipelines until SPEC §6 H0–H4 are done or user pivots to Appendix A.
 
-## 2. Phase-Gated Workflow (Cursor Agent)
-Work strictly one phase at a time (Phase 1 -> Phase 6). Scope each Agent task to a single phase unless the user explicitly expands scope.
-1. Read the current phase in `SPEC.md` §5 and baseline in §1.1.
-2. Write failing tests in `tests/test_phaseX_*.py` first.
-3. Implement with strict Python 3.11+ type annotations and Pydantic schemas; port from `crystal_smoke.py` when touching WRAM/symbols (§1.1 refactor rule).
-4. Run verification in the integrated terminal — do not skip:
-   - Hour-0 / regression: `python crystal_smoke.py --headless`
-   - Phase gate: `pytest tests/test_phaseX_*.py -v`
-5. Do not proceed to the next phase until all assertions and FPS/win-rate benchmarks pass; report commands run and exit codes.
-6. Create git commits only when the user asks.
+## 2. Architectural law
+- Resolve RAM via `rom/pokemon_crystal.sym` / `RamParser` / `pyboy.memory[bank, addr]` — see `crystal_smoke.py`, `src/ram_parser.py`.
+- Symbols: `wXCoord`/`wYCoord` (not PDF `wPlayerStandingMapX`).
+- When `wBattleMode != 0`, use battle macros first; LLM only on hard boss triggers if needed.
+- Cut trees: `src/collision.is_cut_tree()` on adjacent tiles + `use_cut()` macro.
+
+## 3. Hackathon phases (SPEC §6)
+Work **H0 → H4** one phase per task: H0 infra · H1 mover · H2 macros+triggers · H3 llm_supervisor · H4 segments+app.
+1. Read current phase in SPEC.md §6.
+2. Tests first (`tests/test_*.py`), then implement.
+3. Run `pytest tests/ -q` and relevant tools; report exit codes.
+4. Git commits only when the user asks.
