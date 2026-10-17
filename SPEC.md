@@ -81,11 +81,11 @@ Event-routed **two-layer** agent. Maps to `src/` modules — **do not** build Ti
 | `src/episode.py`, `recording.py` | Done | Scripts, replay, baseline harness |
 | `src/config.py`, `options.py` | Done | ROM SHA1, training options bits |
 | `tools/make_state.py`, `import_sav.py`, … | Done | Checkpoint workflow |
-| `src/mover.py` | **TODO** | `go_to(x,y)`, `run_path`, stuck detection |
-| `src/macros.py` | **TODO** | `use_cut()`, items, battle, `mash_text()` |
-| `src/triggers.py` | **TODO** | When to call supervisor |
-| `src/llm_supervisor.py` | **TODO** | Anthropic tools, token/$ log, `always_on` baseline |
-| `app.py` | **TODO** | Streamlit demo UI |
+| `src/mover.py`, `src/explore.py` | Done | Walk tiles, search unvisited ground, no route table |
+| `src/macros.py`, `src/triggers.py` | Done | Cut, text, battle macros; when to call the LLM |
+| `src/llm_supervisor.py`, `src/tool_dispatch.py` | Done | Tool calls with `reason`; real handlers |
+| `src/segment.py`, `src/chain.py`, `app.py` | Done | Explore until the map changes; thought log |
+| `src/rl_env.py`, `src/ppo.py` | Done | Natural-progress rewards; PPO learns while playing |
 
 Legacy entrypoints: `crystal_smoke.py` (hour-0 smoke), `tests/test_*.py`.
 
@@ -172,7 +172,7 @@ Use `pyboy.symbol_lookup(name)` or `RamParser`. PDF/pret may say `wPlayerStandin
 | RTC / time of day | Note in saves; fix if encounters flip | `rtc_controller.py` lock |
 | Phone / text softlocks | `wTextboxFlags` + `mash_text` macro | Async LLM |
 | Move learn / evolve menus | Macro or LLM trigger | Tier 2 interrupt router |
-| Nav graph races | Per-segment hardcoded paths first | SQLite WAL + ghost scouts |
+| Nav graph races | Explore unvisited tiles; no stored routes | SQLite WAL + ghost scouts |
 
 ---
 
@@ -245,7 +245,7 @@ For each checkpoint pair `(A → B)`:
 3. On trigger → supervisor → tool → macro loop.
 4. Capture state at segment end; append manifest.
 
-Prefer **hardcoded paths per map** over global greedy navigation for demos (Union Cave, Sprout Tower, Ilex). Greedy `go_to` is the fallback when no script exists.
+The segment searches unvisited walkable tiles until the map, badges, or a Cut tree changes. It does not store a direction for any town. `go_to` is only used when a tool call names a tile. PPO training (`tools/train_ppo.py`) uses the same idea: reward new tiles, new maps, and new badges, and update a policy that starts random.
 
 ---
 
@@ -344,7 +344,7 @@ Long-term **3-tier** design from `pokemon_agent.pdf` / original SPEC:
 | Tier 2 router | `triggers.py` + `wBattleMode` |
 | Tier 1 | `llm_supervisor.py` |
 | Worker C | `macros.py` battle tools → later Metamon |
-| Worker B / scouts / PPO | Not started |
+| Worker B / PPO | `src/ppo.py` + `src/rl_env.py`, trained by `tools/train_ppo.py` |
 
 Read the PDF for equations, WRAM tables, and acceptance benchmarks when resuming research mode.
 
