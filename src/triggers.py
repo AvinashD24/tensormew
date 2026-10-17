@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from src.collision import coll_name, is_cut_tree
-from src.ram_parser import TEXT_GATE, GameState
+from src.ram_parser import dialogue_open, GameState
 
 STUCK_THRESHOLD = 8
 
@@ -45,11 +45,11 @@ def evaluate(
             f"battle_mode={state.battle_mode} party_hp={list(state.party_hp)}",
         )
 
-    in_dialogue = bool(state.script_running) or TEXT_GATE(state) or state.textbox_flags != 0
+    in_dialogue = dialogue_open(state)
     if in_dialogue and mover_idle:
         return TriggerEvent(
             TriggerKind.DIALOGUE,
-            f"script={state.script_running} textbox={state.textbox_flags}",
+            f"script={state.script_running} script_mode={state.script_mode}",
         )
 
     cuts = _cut_sides(state)

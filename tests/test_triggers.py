@@ -23,6 +23,13 @@ class TriggerTests(unittest.TestCase):
         event = evaluate(gs(battle_mode=1, script_running=1, tiles={"up": COLL_CUT_TREE, "down": 0, "left": 0, "right": 0}))
         self.assertEqual(event.kind, TriggerKind.BATTLE)
 
+    def test_text_speed_bit_is_not_dialogue(self):
+        self.assertIsNone(evaluate(gs(textbox_flags=1, script_running=0, script_mode=0)))
+
+    def test_script_mode_is_dialogue(self):
+        event = evaluate(gs(script_mode=1), mover_idle=True)
+        self.assertEqual(event.kind, TriggerKind.DIALOGUE)
+
     def test_dialogue_when_idle(self):
         event = evaluate(gs(script_running=1), mover_idle=True)
         self.assertEqual(event.kind, TriggerKind.DIALOGUE)

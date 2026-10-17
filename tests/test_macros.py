@@ -47,6 +47,14 @@ class ScriptedReader:
 
 
 class MacroTests(unittest.TestCase):
+    def test_mash_text_ignores_text_speed_bit(self):
+        machine = FakeMachine()
+        macros = Macros(machine, ScriptedReader([gs(textbox_flags=1, script_running=0, script_mode=0)]))
+        result = macros.mash_text(max_frames=600)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.message, "no dialogue open")
+        self.assertEqual(machine.presses, [])
+
     def test_mash_text_stops_when_clear(self):
         talking = gs(script_running=1)
         clear = gs(script_running=0)

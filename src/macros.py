@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from src.action_results import MacroResult
 from src.collision import is_cut_tree
-from src.ram_parser import TEXT_GATE
+from src.ram_parser import dialogue_open
 
 DIRS = ("up", "down", "left", "right")
 
@@ -18,16 +18,20 @@ class Macros:
         return self.reader.parse(self.machine.frame)
 
     def mash_text(self, max_frames: int = 600) -> MacroResult:
+        """Advance an open script. A lone wTextboxFlags bit is text speed, not a box."""
         used = 0
         presses = 0
+        if not dialogue_open(self._state()):
+            return MacroResult(True, "no dialogue open", frames=0)
         while used < max_frames:
-            state = self._state()
-            if not TEXT_GATE(state) and state.textbox_flags == 0 and state.script_running == 0:
+            if not dialogue_open(self._state()):
                 return MacroResult(True, f"text clear after {presses} presses", frames=used)
-            self.machine.press("a", frames=8)
-            self.machine.tick(8, render=False)
-            used += 16
+            self.machine.press("a", frames=4)
+            self.machine.tick(24, render=False)
+            used += 28
             presses += 1
+        if not dialogue_open(self._state()):
+            return MacroResult(True, f"text clear after {presses} presses", frames=used)
         return MacroResult(False, f"text still open after {max_frames} frames", frames=used)
 
     def use_cut(self) -> MacroResult:

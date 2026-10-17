@@ -8,8 +8,12 @@ from typing import Callable, Protocol
 from src.collision import coll_name
 from src.options import options_text
 
-# Dialogue is "a script is running" until a real text box is measured.
-TEXT_GATE: Callable[["GameState"], bool] = lambda s: s.script_running != 0
+# wTextboxFlags bit 0 stays set for fast text. An open box is the script engine.
+def dialogue_open(state: "GameState") -> bool:
+    return state.script_mode != 0 or state.script_running != 0
+
+
+TEXT_GATE: Callable[["GameState"], bool] = dialogue_open
 
 _FACING = {8: "down", 4: "up", 2: "left", 1: "right"}
 _TIME = {0: "morning", 1: "day", 2: "night"}
@@ -55,6 +59,7 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wPlayerTileCollision"),
     Sym("wBattleMode"),
     Sym("wScriptRunning"),
+    Sym("wScriptMode"),
     Sym("wTextboxFlags"),
     Sym("wMapStatus"),
     Sym("wPartyCount"),
@@ -102,6 +107,7 @@ class GameState:
     options: int = 0
     money: int = 0
     hm_counts: tuple[int, ...] = ()
+    script_mode: int = 0
 
     @property
     def map_id(self) -> tuple[int, int]:
@@ -179,6 +185,7 @@ class GameState:
             "options": self.options,
             "money": self.money,
             "hm_counts": list(self.hm_counts),
+            "script_mode": self.script_mode,
         }
 
     @classmethod
@@ -215,6 +222,7 @@ class GameState:
             options=int(d.get("options", 0)),
             money=int(d.get("money", 0)),
             hm_counts=tuple(d.get("hm_counts") or []),
+            script_mode=int(d.get("script_mode", 0)),
         )
 
     def to_text(self) -> str:
@@ -226,7 +234,7 @@ class GameState:
             [
                 f"map=({self.map_group},{self.map_number}) pos=({self.x},{self.y}) facing={self.facing}",
                 f"adjacent: {tiles} under={coll_name(self.player_tile)}",
-                f"mode={mode} script={self.script_running} text={self.textbox_flags}",
+                f"mode={mode} script={self.script_running} script_mode={self.script_mode} text={self.textbox_flags}",
                 f"party={self.party_count} hp=[{hp}]",
                 f"badges={self.badges} bag: items={self.num_items} key={self.num_key_items} balls={self.num_balls}",
                 f"time={when} {options_text(self.options)}",
@@ -304,6 +312,7 @@ class RamParser:
             battle_mode=int(raw["wBattleMode"]),
             script_running=int(raw["wScriptRunning"]),
             textbox_flags=int(raw["wTextboxFlags"]),
+            script_mode=int(raw["wScriptMode"]),
             map_status=int(raw["wMapStatus"]),
             party_count=count,
             party_species=tuple(species_all[:count]),
