@@ -1,6 +1,26 @@
 {
   "version": 1,
   "states": {
+    "elm_lab_starter": {
+      "name": "elm_lab_starter",
+      "file": "elm_lab_starter.state",
+      "description": "in elm lab, starter receivedsave new_bark_outside outside elm lab, open ground",
+      "map": [
+        24,
+        4
+      ],
+      "pos": [
+        6,
+        4
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 1,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "faece32d6567f8440d5d1530d33b11f9f7b1e9fd",
+      "created_at": "2026-10-17T22:06:22+00:00",
+      "tags": []
+    },
     "ilex_src": {
       "name": "ilex_src",
       "file": "ilex_src.state",
@@ -19,6 +39,86 @@
       "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
       "state_sha1": "74f7dbc5df29c06f11902ac62b8a64bc56e778ff",
       "created_at": "2026-10-17T21:37:50+00:00",
+      "tags": []
+    },
+    "new_bark_outside": {
+      "name": "new_bark_outside",
+      "file": "new_bark_outside.state",
+      "description": "outside in new bark, open ground",
+      "map": [
+        24,
+        4
+      ],
+      "pos": [
+        3,
+        9
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 1,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "df239d7fa5d2056a887cbe7dac180b35beecf04e",
+      "created_at": "2026-10-17T22:09:30+00:00",
+      "tags": []
+    },
+    "route29_entry": {
+      "name": "route29_entry",
+      "file": "route29_entry.state",
+      "description": "a few tiles west of new bark",
+      "map": [
+        24,
+        3
+      ],
+      "pos": [
+        52,
+        9
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 1,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "aa96bba526bff00055e8f4da4ac240a3ea969e65",
+      "created_at": "2026-10-17T22:06:44+00:00",
+      "tags": []
+    },
+    "smoke_sign": {
+      "name": "smoke_sign",
+      "file": "smoke_sign.state",
+      "description": "facing a sign",
+      "map": [
+        24,
+        4
+      ],
+      "pos": [
+        9,
+        14
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 1,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "a274aef8e50d1bb2449d9c2d68e95201dabc24ce",
+      "created_at": "2026-10-17T22:07:16+00:00",
+      "tags": []
+    },
+    "smoke_wall": {
+      "name": "smoke_wall",
+      "file": "smoke_wall.state",
+      "description": "standing beside a house wall",
+      "map": [
+        24,
+        4
+      ],
+      "pos": [
+        6,
+        11
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 1,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "0e1e3307e090219f6b12ca6126e960027ece3f3b",
+      "created_at": "2026-10-17T22:07:03+00:00",
       "tags": []
     }
   }
