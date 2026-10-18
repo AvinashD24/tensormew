@@ -55,6 +55,13 @@ MOVE_DATA: dict[int, tuple[str, int, int, int]] = {
     189: ("Mud-Slap", 4, 20, 100),
 }
 
+HEALING_ITEMS: frozenset[int] = frozenset({
+    0x14, 0x15, 0x16, 0x17,  # Potion, Super Potion, Hyper Potion, Max Potion
+    0x1C, 0x1D, 0x1E, 0x1F,  # Fresh Water, Soda Pop, Lemonade, Moomoo Milk
+    0x24,                    # Full Restore
+    0x4F, 0x50,              # Berry, Gold Berry
+})
+
 
 def move_power(move_id: int) -> int:
     return MOVE_DATA.get(move_id, ("Unknown", 0, 40, 100))[2]
@@ -120,6 +127,7 @@ class _ItemGuard:
         self.fainted: set[int] = set()   # party slots known to be unusable this battle
         self.last_switch: int | None = None  # slot we tried to bring in last time
         self.attempts: dict[int, int] = {}   # failed switch tries per party slot
+        self.switched: set[int] = set()      # party slots voluntary switch was attempted to
 
     def observe_frame(self, frame) -> None:
         """A long gap since the last decision means a new battle: forget per-battle memory."""
@@ -173,11 +181,15 @@ def pick_replacement_slot(state, guard: "_ItemGuard") -> int | None:
     return max(cands, key=key)
 
 
-_GUARDS: dict[int, _ItemGuard] = {}
-
-
 def _item_guard(macros) -> _ItemGuard:
-    return _GUARDS.setdefault(id(macros), _ItemGuard())
+    guard = getattr(macros, "_guard", None)
+    if not isinstance(guard, _ItemGuard):
+        guard = _ItemGuard()
+        try:
+            macros._guard = guard
+        except Exception:
+            return _GUARDS.setdefault(id(macros), guard)
+    return guard
 
 
 def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
@@ -263,13 +275,19 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
             # First priority: heal active Pokémon if Pack has items (e.g. Potions), unless the
             # last tries did not raise HP (item rejected): then switch or fight instead.
+            pack_items = getattr(state, "items", None)
+            if pack_items is not None:
+                healing_slot = next((idx + 1 for idx, it in enumerate(pack_items) if it in HEALING_ITEMS), None)
+            else:
+                healing_slot = 1 if num_items > 0 else None
             frame = getattr(getattr(macros, "machine", None), "frame", None)
-            if num_items > 0 and guard.allows(cur_hp, frame):
+            if healing_slot is not None and guard.allows(cur_hp, frame):
                 guard.note_use(cur_hp)
-                return macros.use_battle_item(item_slot=1, target_slot=active_idx + 1)
+                return macros.use_battle_item(item_slot=healing_slot, target_slot=active_idx + 1)
             # Second priority: switch to a conscious backup Pokémon if low HP and out of items
             backup = pick_replacement_slot(state, guard)
-            if backup is not None:
+            if backup is not None and backup not in getattr(guard, "switched", set()):
+                getattr(guard, "switched", set()).add(backup)
                 return macros.switch_pokemon(backup)
         # Decisive combat: Fight to the end using the best offensive move!
         slot = pick_best_move(state, enemy_types)
@@ -290,16 +308,36 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
         if has_egg and not gave_egg:
             return macros.run_away()
 
-        # En route to Violet Gym: avoid wild battle distractions and preserve HP for Falkner
-        if gave_egg and not beat_falkner:
-            return macros.run_away()
-
         enemy_spec = getattr(state, "enemy_species", 0)
         party_spec = getattr(state, "party_species", ())
+        lead_level = party_levels[0] if party_levels else 5
+        party_moves = getattr(state, "party_moves", ())
+        lead_moves = party_moves[0] if party_moves else ()
+        knows_ember = 52 in lead_moves
+        has_bellsprout = (69 in party_spec) or (95 in party_spec)
+
+        # En route to Violet Gym:
+        if gave_egg and not beat_falkner:
+            # 1. Catch Bellsprout if encountered and we don't have Bellsprout or Onix yet
+            if enemy_spec == 69 and not has_bellsprout and getattr(state, "num_balls", 0) > 0 and getattr(state, "party_count", 0) < 6:
+                e_cur = getattr(state, "enemy_hp", 0)
+                e_max = getattr(state, "enemy_max_hp", 0)
+                if e_max > 0 and (e_cur / e_max) > 0.40:
+                    slot = pick_best_move(state, enemy_types)
+                    return macros.choose_move(slot)
+                return macros.use_pokeball()
+
+            # 2. Level up Cyndaquil until it learns Ember (Lv 12)
+            if not knows_ember and lead_level < 12:
+                slot = pick_best_move(state, enemy_types)
+                return macros.choose_move(slot)
+
+            # 3. Once Cyndaquil knows Ember: flee wild battles to preserve HP for the gym
+            return macros.run_away()
+
         already_caught = enemy_spec > 0 and enemy_spec in party_spec
 
         # Anti-grinding: if already caught and level >= 7, flee to progress towards gym
-        lead_level = party_levels[0] if party_levels else 5
         if already_caught and lead_level >= 7:
             return macros.run_away()
 

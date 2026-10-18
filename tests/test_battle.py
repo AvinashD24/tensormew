@@ -451,3 +451,97 @@ class RivalTrackerTests(unittest.TestCase):
         t.update(SimpleNamespace(map_group=RIVAL_MAP[0], map_number=RIVAL_MAP[1], battle_mode=2, fainted=False))
         t.update(SimpleNamespace(map_group=RIVAL_MAP[0], map_number=RIVAL_MAP[1], battle_mode=0, fainted=True))
         self.assertFalse(t.beaten)
+
+
+class FalknerPrepBattleTests(unittest.TestCase):
+    def test_ignores_mystery_egg_as_potion(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Active mon at 3/20 HP (low), pack only has Mystery Egg (ID 18)
+        state = SimpleNamespace(
+            battle_mode=2,
+            num_items=1,
+            items=(18,),
+            party_count=1,
+            party_species=(155,),
+            party_hp=((3, 20),),
+            party_levels=(8,),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=21,  # Spearow
+            enemy_hp=15,
+            enemy_max_hp=27,
+        )
+        tactical_battle_step(state, macros)
+        # Must NOT call use_battle_item because 18 is not a healing item!
+        macros.use_battle_item.assert_not_called()
+        macros.choose_move.assert_called_once()
+
+    def test_uses_verified_potion(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Pack has Mystery Egg (18) at slot 1, Potion (20) at slot 2
+        state = SimpleNamespace(
+            battle_mode=2,
+            num_items=2,
+            items=(18, 20),
+            party_count=1,
+            party_species=(155,),
+            party_hp=((3, 20),),
+            party_levels=(8,),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=21,
+            enemy_hp=15,
+            enemy_max_hp=27,
+        )
+        tactical_battle_step(state, macros)
+        # Should target slot 2 where the Potion is!
+        macros.use_battle_item.assert_called_once_with(item_slot=2, target_slot=1)
+
+    def test_catches_bellsprout_en_route_to_falkner(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        state = SimpleNamespace(
+            battle_mode=1,
+            num_balls=5,
+            party_count=5,
+            party_species=(155, 161, 187, 16, 165),
+            party_hp=((25, 25), (13, 13), (15, 15), (15, 15), (15, 15)),
+            party_levels=(8, 2, 3, 3, 3),
+            party_moves=((33, 43, 108, 0),),
+            enemy_species=69,  # Bellsprout!
+            enemy_hp=4,
+            enemy_max_hp=15,
+            has_event=lambda ev: ev == "EVENT_GAVE_MYSTERY_EGG_TO_ELM",
+        )
+        tactical_battle_step(state, macros)
+        macros.use_pokeball.assert_called_once()
+
+    def test_trains_cyndaquil_before_ember(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Wild battle with Pidgey; Cyndaquil is Lv 8 and doesn't know Ember yet
+        state = SimpleNamespace(
+            battle_mode=1,
+            num_balls=0,
+            party_count=5,
+            party_species=(155, 161, 187, 16, 165),
+            party_hp=((25, 25), (13, 13), (15, 15), (15, 15), (15, 15)),
+            party_levels=(8, 2, 3, 3, 3),
+            party_moves=((33, 43, 108, 0),),
+            enemy_species=16,  # Pidgey
+            enemy_hp=12,
+            enemy_max_hp=15,
+            has_event=lambda ev: ev == "EVENT_GAVE_MYSTERY_EGG_TO_ELM",
+        )
+        tactical_battle_step(state, macros)
+        # Should attack to gain EXP, NOT run away!
+        macros.run_away.assert_not_called()
+        macros.choose_move.assert_called_once()

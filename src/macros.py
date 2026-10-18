@@ -46,6 +46,29 @@ class Macros:
                 except Exception:
                     pass
 
+                # In-Game Trade Party Menu (e.g. trading Bellsprout for Onix with Kyle in Violet City)
+                try:
+                    b_act, a_act = self.machine.symbol("wPartyMenuActionText")
+                    if self.machine.read(b_act, a_act, 1)[0] == 7:  # PARTYMENUACTION_TRADE
+                        st = self._state()
+                        p_spec = getattr(st, "party_species", ())
+                        cand = next((i + 1 for i, sp in enumerate(p_spec) if sp == 69), 1)
+                        for _ in range(5):
+                            self.machine.press("up", frames=4)
+                            self.machine.tick(10, render=False)
+                        for _ in range(cand - 1):
+                            self.machine.press("down", frames=4)
+                            self.machine.tick(10, render=False)
+                        self.machine.press("a", frames=6)
+                        self.machine.tick(30, render=False)
+                        self.machine.press("a", frames=6)
+                        self.machine.tick(30, render=False)
+                        used += 120
+                        presses += 1
+                        continue
+                except Exception:
+                    pass
+
             self.machine.press("a", frames=4)
             self.machine.tick(24, render=False)
             used += 28
@@ -136,9 +159,16 @@ class Macros:
         self.machine.tick(36, render=False)
         frames += 44
 
-        has_mem = hasattr(self.machine, "read")
-        if has_mem:
-            cur_y = self.machine.read(0, 0xcfa9, 1)[0]
+        cur_y = 0
+        if hasattr(self.machine, "read"):
+            try:
+                val = self.machine.read(0, 0xcfa9, 1)[0]
+                if 1 <= val <= 6:
+                    cur_y = val
+            except Exception:
+                pass
+
+        if 1 <= cur_y <= 6:
             for _ in range(6):
                 if cur_y <= slot:
                     break

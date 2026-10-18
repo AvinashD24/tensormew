@@ -31,6 +31,7 @@ MAP_ROUTE_31 = (26, 2)
 MAP_VIOLET_GATE = (26, 11)
 MAP_VIOLET_CITY = (10, 5)
 MAP_VIOLET_POKECENTER = (10, 10)
+MAP_VIOLET_KYLES_HOUSE = (10, 11)
 MAP_VIOLET_GYM = (10, 7)
 
 
@@ -76,12 +77,18 @@ class FalknerNav:
         w31, h31, cells31, _ = rom.grid("Route31")
         self.dist_r31 = _bfs_grid(cells31, w31, h31, [(5, 6), (5, 7)])
 
-        # 5. Violet City to Violet Gym entrance at (18, 18)
+        # 5. Route 31 tall grass training patch at (9, 12)
+        self.dist_r31_grass = _bfs_grid(cells31, w31, h31, [(9, 12)])
+
+        # 6. Violet City to Violet Gym entrance at (18, 18)
         wV, hV, cellsV, _ = rom.grid("VioletCity")
         self.dist_violet = _bfs_grid(cellsV, wV, hV, [(18, 18)])
 
-        # 6. Violet City to Violet Poké Center doorway at (31, 26)
+        # 7. Violet City to Violet Poké Center doorway at (31, 26)
         self.dist_violet_pc = _bfs_grid(cellsV, wV, hV, [(31, 26)])
+
+        # 8. Violet City to Kyle's House doorway at (21, 30)
+        self.dist_violet_kyle = _bfs_grid(cellsV, wV, hV, [(21, 30)])
 
     def step_on_field(self, dist_field: dict[tuple[int, int], int], x: int, y: int) -> str | None:
         """Choose adjacent walkable tile with strictly lowest BFS distance."""
@@ -209,10 +216,38 @@ def falkner_nav_direction(state) -> str | None:
             return step
         return "up"
 
-    # 6. On Route 31 (26, 2) -> head west to Violet Gatehouse entrance
+    # 6. On Route 31 (26, 2) -> train in grass for Ember, then head west to Violet Gatehouse
     if map_id == MAP_ROUTE_31:
+        # At gatehouse doorway: step left into Route 31 Violet Gate
         if x <= 5 and y in (6, 7):
-            return "left"  # Step through doorway into Route 31 Violet Gate
+            return "left"
+
+        party_levels = getattr(state, "party_levels", ())
+        lead_level = party_levels[0] if party_levels else 5
+        party_moves = getattr(state, "party_moves", ())
+        lead_moves = party_moves[0] if party_moves else ()
+        knows_ember = 52 in lead_moves
+        party_hp = tuple(getattr(state, "party_hp", ()) or ())
+        lead_hp = party_hp[0] if party_hp else (1, 1)
+        is_lead_low = lead_hp[1] > 0 and (lead_hp[0] / lead_hp[1]) <= 0.35
+
+        # If lead mon is low on health, head straight into Violet City Gatehouse to reach Poké Center
+        if is_lead_low:
+            step = nav.step_on_field(nav.dist_r31, x, y)
+            if step is not None:
+                return step
+            return "left"
+
+        # If underleveled and doesn't know Ember, train in Route 31 tall grass patch
+        if not knows_ember and lead_level < 12:
+            if 8 <= x <= 13 and 10 <= y <= 13:
+                # Pace back and forth in grass to trigger encounters!
+                return "right" if x <= 9 else "left"
+            step = nav.step_on_field(nav.dist_r31_grass, x, y)
+            if step is not None:
+                return step
+
+        # Once leveled and ready: head west to Violet Gatehouse entrance at (5, 6..7)
         step = nav.step_on_field(nav.dist_r31, x, y)
         if step is not None:
             return step
@@ -247,10 +282,42 @@ def falkner_nav_direction(state) -> str | None:
                 return "left"
             return "down"
 
-    # 9. In Violet City (10, 5) -> visit Poké Center if damaged, then head to Violet Gym at (18, 18)
+    # 9. Inside Kyle's House (10, 11) -> trade Bellsprout for Rocky the Onix
+    if map_id == MAP_VIOLET_KYLES_HOUSE:
+        party_species = tuple(getattr(state, "party_species", ()) or ())
+        has_onix = (95 in party_species)
+        if not has_onix:
+            # Talk to Kyle sitting at (3, 3) from (2, 3) facing right
+            if x == 2 and y == 3:
+                return "a" if facing == "right" else "right"
+            if x < 2:
+                return "right"
+            if x > 2:
+                return "left"
+            if y < 3:
+                return "down"
+            if y > 3:
+                return "up"
+            return "right"
+        else:
+            # Trade complete: exit through south doorway at (3..4, 7)
+            if y == 7 and x in (3, 4):
+                return "down"
+            if x < 3:
+                return "right"
+            if x > 4:
+                return "left"
+            return "down"
+
+    # 10. In Violet City (10, 5) -> heal at Poké Center, trade for Onix, then challenge Violet Gym
     if map_id == MAP_VIOLET_CITY:
         party_hp = tuple(getattr(state, "party_hp", ()) or ())
+        party_species = tuple(getattr(state, "party_species", ()) or ())
+        has_bellsprout = (69 in party_species)
+        has_onix = (95 in party_species)
         needs_heal = any(hp[0] < hp[1] for hp in party_hp)
+
+        # Priority 1: If hurt, heal at Poké Center
         if needs_heal:
             if x == 31 and y == 26:
                 return "up"  # Enter Violet Poké Center doorway at (31, 25)
@@ -258,7 +325,15 @@ def falkner_nav_direction(state) -> str | None:
             if step is not None:
                 return step
 
-        # Proceed to Violet Gym
+        # Priority 2: If we caught Bellsprout and don't have Onix yet, trade with Kyle
+        if has_bellsprout and not has_onix:
+            if x == 21 and y == 30:
+                return "up"  # Enter Kyle's house doorway at (21, 29)
+            step = nav.step_on_field(nav.dist_violet_kyle, x, y)
+            if step is not None:
+                return step
+
+        # Priority 3: Proceed to Violet Gym
         if x == 18 and y == 18:
             return "up"  # Enter Violet Gym doorway
         step = nav.step_on_field(nav.dist_violet, x, y)
@@ -272,7 +347,7 @@ def falkner_nav_direction(state) -> str | None:
             return "up"
         return "down"
 
-    # 10. Inside Violet Gym (10, 7) -> navigate S-curve bridge and challenge Falkner
+    # 11. Inside Violet Gym (10, 7) -> navigate S-curve bridge and challenge Falkner
     if map_id == MAP_VIOLET_GYM:
         return violet_gym_step(x, y, facing)
 
