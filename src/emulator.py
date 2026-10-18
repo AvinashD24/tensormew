@@ -64,6 +64,7 @@ class Emulator:
 
         if os.environ.get("PYBOY_VISUAL") == "1":
             headless = False
+        self._headless = headless
         sound = os.environ.get("PYBOY_SOUND", "0") == "1"
         self._pb = PyBoy(str(rom), window="null" if headless else "SDL2", symbols=str(sym), sound=sound)
         if speed is None:
