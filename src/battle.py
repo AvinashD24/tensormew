@@ -99,6 +99,87 @@ def pick_best_move(state, enemy_types: tuple[int, ...] = (2, 0)) -> int:
     return best_slot
 
 
+class _ItemGuard:
+    """Stops the bot re-opening PACK every turn when an item is not actually healing.
+
+    In trainer battles the game rejects an unusable item and drops back to the menu, so
+    "use item" repeated forever (hundreds of turns in live runs). Two tries without an HP gain
+    block items until HP rises, the battle ends, or enough frames pass to be a new battle.
+    """
+
+    MAX_FAILS = 2
+    NEW_BATTLE_FRAMES = 3000
+
+    def __init__(self):
+        self.reset()
+
+    def reset(self):
+        self.last_hp = None
+        self.fails = 0
+        self.last_frame = None
+        self.fainted: set[int] = set()   # party slots known to be unusable this battle
+        self.last_switch: int | None = None  # slot we tried to bring in last time
+        self.attempts: dict[int, int] = {}   # failed switch tries per party slot
+
+    def observe_frame(self, frame) -> None:
+        """A long gap since the last decision means a new battle: forget per-battle memory."""
+        if isinstance(frame, int):
+            if self.last_frame is not None and frame - self.last_frame > self.NEW_BATTLE_FRAMES:
+                self.reset()
+            self.last_frame = frame
+
+    def allows(self, cur_hp: int, frame) -> bool:
+        self.observe_frame(frame)
+        if self.last_hp is not None:
+            if cur_hp > self.last_hp:
+                self.fails = 0
+            else:
+                self.fails += 1
+        return self.fails < self.MAX_FAILS
+
+    def note_use(self, cur_hp: int):
+        self.last_hp = cur_hp
+
+
+def pick_replacement_slot(state, guard: "_ItemGuard") -> int | None:
+    """Hardcoded choice of which party slot (1-indexed) to send in next, or None if nothing is alive.
+
+    Only real party members count (padding slots past party_count are ignored), the active Pokémon
+    is never picked, and slots already written off this battle are skipped. Fewest failed tries wins,
+    then most HP, then highest level. If the book-keeping has ruled out every Pokémon that still shows
+    HP, the memory is wiped and they are tried again rather than looping on the whiteout dialog.
+    """
+    party_hp = tuple(getattr(state, "party_hp", ()) or ())
+    levels = tuple(getattr(state, "party_levels", ()) or ())
+    count = getattr(state, "party_count", None)
+    n = len(party_hp) if not isinstance(count, int) or count <= 0 else min(count, len(party_hp))
+    active_slot = min(getattr(state, "cur_battle_mon", 0), max(n - 1, 0)) + 1
+
+    def candidates(skip: set[int]) -> list[int]:
+        return [i + 1 for i in range(n) if party_hp[i][0] > 0 and i + 1 != active_slot and (i + 1) not in skip]
+
+    cands = candidates(guard.fainted)
+    if not cands:
+        cands = candidates(set())
+        if not cands:
+            return None
+        guard.fainted.clear()
+        guard.attempts.clear()
+
+    def key(slot: int):
+        lvl = levels[slot - 1] if slot - 1 < len(levels) else 0
+        return (-guard.attempts.get(slot, 0), party_hp[slot - 1][0], lvl)
+
+    return max(cands, key=key)
+
+
+_GUARDS: dict[int, _ItemGuard] = {}
+
+
+def _item_guard(macros) -> _ItemGuard:
+    return _GUARDS.setdefault(id(macros), _ItemGuard())
+
+
 def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     """Execute optimal combat/capture/item/switch action:
     - 0. Faint Recovery & Switch:
@@ -137,22 +218,26 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
         cur_hp = party_hp[active_idx][0] if party_hp else 1
         max_hp = party_hp[active_idx][1] if party_hp else 1
 
+    guard = _item_guard(macros)
+    guard.observe_frame(getattr(getattr(macros, "machine", None), "frame", None))
+
     # 0. Faint Check: active Pokémon fainted
     if cur_hp == 0:
-        alive_slots = [
-            i + 1 for i, (hp, _) in enumerate(party_hp) if hp > 0
-        ]
-        if not alive_slots:
+        guard.fainted.add(active_idx + 1)
+        if guard.last_switch is not None:
+            # The previous pick did not bring anyone in; two misses and the slot is written off
+            n = guard.attempts.get(guard.last_switch, 0) + 1
+            guard.attempts[guard.last_switch] = n
+            if n >= 2:
+                guard.fainted.add(guard.last_switch)
+        slot = pick_replacement_slot(state, guard)
+        if slot is None:
+            guard.last_switch = None
             return macros.handle_whiteout()
-        # Prioritize conscious backup with highest remaining HP, then highest level
-        best_slot = max(
-            alive_slots,
-            key=lambda s: (
-                party_hp[s - 1][0] if s - 1 < len(party_hp) else 0,
-                party_levels[s - 1] if s - 1 < len(party_levels) else 0,
-            ),
-        )
-        return macros.switch_fainted_pokemon(best_slot)
+        guard.last_switch = slot
+        return macros.switch_fainted_pokemon(slot)
+
+    guard.last_switch = None  # active Pokémon is up: the last switch (if any) worked
 
     is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
     num_items = getattr(state, "num_items", 0)
@@ -160,24 +245,19 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     # 1. TRAINER BATTLES (mode == 2): Running away is physically impossible in Gen 2.
     # Under no circumstances should the policy ever attempt to flee a trainer battle.
     if mode == 2:
+        if not is_low_hp:
+            guard.last_hp, guard.fails = None, 0
         if is_low_hp:
-            # First priority: heal active Pokémon if Pack has items (e.g. Potions)
-            if num_items > 0:
+            # First priority: heal active Pokémon if Pack has items (e.g. Potions), unless the
+            # last tries did not raise HP (item rejected): then switch or fight instead.
+            frame = getattr(getattr(macros, "machine", None), "frame", None)
+            if num_items > 0 and guard.allows(cur_hp, frame):
+                guard.note_use(cur_hp)
                 return macros.use_battle_item(item_slot=1, target_slot=active_idx + 1)
             # Second priority: switch to a conscious backup Pokémon if low HP and out of items
-            conscious_backups = [
-                i + 1 for i, (hp, _) in enumerate(party_hp)
-                if i != active_idx and hp > 0
-            ]
-            if conscious_backups:
-                best_backup = max(
-                    conscious_backups,
-                    key=lambda s: (
-                        party_hp[s - 1][0] if s - 1 < len(party_hp) else 0,
-                        party_levels[s - 1] if s - 1 < len(party_levels) else 0,
-                    ),
-                )
-                return macros.switch_pokemon(best_backup)
+            backup = pick_replacement_slot(state, guard)
+            if backup is not None:
+                return macros.switch_pokemon(backup)
         # Decisive combat: Fight to the end using the best offensive move!
         slot = pick_best_move(state, enemy_types)
         return macros.choose_move(slot)

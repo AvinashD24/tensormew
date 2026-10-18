@@ -177,66 +177,42 @@ class Macros:
             frames += 26
         return MacroResult(True, f"switched to party slot {slot}", frames=frames)
 
+    def _party_cursor(self) -> int:
+        return self.machine.read(0, 0xcfa9, 1)[0]
+
+    def _move_party_cursor(self, slot: int) -> int:
+        """Walk the party-menu cursor to `slot` (1-indexed) using up/down, checking the cursor each press."""
+        frames = 0
+        cur_y = self._party_cursor()
+        for _ in range(8):
+            if cur_y == slot or cur_y == 0:
+                break
+            self.machine.press("up" if cur_y > slot else "down", frames=8)
+            self.machine.tick(22, render=False)
+            frames += 30
+            new_y = self._party_cursor()
+            if new_y == cur_y:  # cursor did not move: menu is not where we think it is
+                break
+            cur_y = new_y
+        return frames
+
     def switch_fainted_pokemon(self, slot: int = 2) -> MacroResult:
-        """Switch to an alive party Pokémon after active Pokémon has fainted."""
+        """Bring in a Pokémon that can fight after the active one fainted.
+
+        Tries `slot` first, then the other party slots that show HP, then every remaining slot, one
+        after another with the arrow keys and A. After each try the battle state is read back: the
+        switch only counts once the battle Pokémon has HP. A rejected pick ("no will to fight") is
+        dismissed and the next slot is tried, so the party menu can no longer be left stuck on one
+        Pokémon.
+        """
         state = self._state()
         if state.battle_mode == 0:
             return MacroResult(False, "switch_fainted_pokemon refused: not in battle")
         if slot < 1 or slot > 6:
             return MacroResult(False, f"party slot {slot} not in 1–6")
         frames = 0
-        has_mem = hasattr(self.machine, "read")
 
-        if has_mem:
-            # Dismiss any open text modal (e.g. "There's no will to fight!")
-            self.machine.press("b", frames=6)
-            self.machine.tick(16, render=False)
-            frames += 22
-            cur_y = self.machine.read(0, 0xcfa9, 1)[0]
-
-            # If party menu is not open yet (still on faint message / 'Use next POKéMON?'), advance
-            if cur_y == 0:
-                for _ in range(2):
-                    self.machine.press("a", frames=6)
-                    self.machine.tick(16, render=False)
-                    frames += 22
-                for _ in range(4):
-                    self.machine.tick(16, render=False)
-                    frames += 16
-                    cur_y = self.machine.read(0, 0xcfa9, 1)[0]
-                    if cur_y > 0:
-                        break
-
-            # In party menu: move cursor directly to target slot with closed-loop feedback
-            if 1 <= cur_y <= 6:
-                for _ in range(6):
-                    if cur_y <= slot:
-                        break
-                    self.machine.press("up", frames=8)
-                    self.machine.tick(22, render=False)
-                    frames += 30
-                    new_y = self.machine.read(0, 0xcfa9, 1)[0]
-                    if new_y == cur_y:
-                        self.machine.press("b", frames=6)
-                        self.machine.tick(16, render=False)
-                        frames += 22
-                        break
-                    cur_y = new_y
-
-                for _ in range(6):
-                    if cur_y >= slot:
-                        break
-                    self.machine.press("down", frames=8)
-                    self.machine.tick(22, render=False)
-                    frames += 30
-                    new_y = self.machine.read(0, 0xcfa9, 1)[0]
-                    if new_y == cur_y:
-                        self.machine.press("b", frames=6)
-                        self.machine.tick(16, render=False)
-                        frames += 22
-                        break
-                    cur_y = new_y
-        else:
+        if not hasattr(self.machine, "read"):
             # Fallback for mock environments
             self.machine.press("b", frames=6)
             self.machine.tick(16, render=False)
@@ -249,21 +225,63 @@ class Macros:
                 self.machine.press("down", frames=8)
                 self.machine.tick(16, render=False)
                 frames += 24
+            self.machine.press("a", frames=8)
+            self.machine.tick(32, render=False)
+            self.machine.press("a", frames=8)
+            self.machine.tick(56, render=False)
+            frames += 96
+            return MacroResult(True, f"switched fainted Pokémon to party slot {slot}", frames=frames)
 
-        # Select Pokémon (cursor is on target slot)
-        self.machine.press("a", frames=8)
-        self.machine.tick(32, render=False)
-        frames += 40
-        # Confirm SWITCH (top option in popup)
-        self.machine.press("a", frames=8)
-        self.machine.tick(56, render=False)
-        frames += 64
-        # Clear entrance dialog text ('<PLAYER> sent out <MON>!')
-        for _ in range(4):
-            self.machine.press("b", frames=6)
-            self.machine.tick(20, render=False)
-            frames += 26
-        return MacroResult(True, f"switched fainted Pokémon to party slot {slot}", frames=frames)
+        # Dismiss any open text modal (e.g. "There's no will to fight!")
+        self.machine.press("b", frames=6)
+        self.machine.tick(16, render=False)
+        frames += 22
+        # If the party menu is not open yet (faint message / 'Use next POKéMON?'), advance to it
+        if self._party_cursor() == 0:
+            for _ in range(2):
+                self.machine.press("a", frames=6)
+                self.machine.tick(16, render=False)
+                frames += 22
+            for _ in range(4):
+                self.machine.tick(16, render=False)
+                frames += 16
+                if self._party_cursor() > 0:
+                    break
+
+        count = getattr(state, "party_count", 0) or len(getattr(state, "party_hp", ()) or ()) or 6
+        count = max(1, min(6, count))
+        party_hp = tuple(getattr(state, "party_hp", ()) or ())
+        active = getattr(state, "cur_battle_mon", 0) + 1
+        with_hp = [
+            s for s in range(1, count + 1)
+            if s != active and s - 1 < len(party_hp) and party_hp[s - 1][0] > 0
+        ]
+        rest = [s for s in range(1, count + 1) if s != active and s not in with_hp]
+        order = [slot] + [s for s in with_hp if s != slot] + [s for s in rest if s != slot]
+
+        for attempt, cand in enumerate(order):
+            if self._party_cursor() == 0:
+                break  # menu closed: the switch went through or the battle moved on
+            frames += self._move_party_cursor(cand)
+            self.machine.press("a", frames=8)   # select the Pokémon
+            self.machine.tick(32, render=False)
+            self.machine.press("a", frames=8)   # SWITCH (top option); harmless if no submenu opened
+            self.machine.tick(56, render=False)
+            frames += 96
+            after = self._state()
+            if after.battle_mode == 0 or getattr(after, "battle_mon_hp", 0) > 0:
+                # Clear the '<PLAYER> sent out <MON>!' text
+                for _ in range(4):
+                    self.machine.press("b", frames=6)
+                    self.machine.tick(20, render=False)
+                    frames += 26
+                return MacroResult(True, f"switched fainted Pokémon to party slot {cand}", frames=frames)
+            # Rejected: close the message / submenu and move on to the next slot
+            for _ in range(2):
+                self.machine.press("b", frames=6)
+                self.machine.tick(16, render=False)
+                frames += 22
+        return MacroResult(False, f"no party Pokémon could be sent out (tried {order})", frames=frames)
 
     def handle_whiteout(self) -> MacroResult:
         """Dismiss blackout / whiteout text when entire party has fainted."""

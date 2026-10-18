@@ -17,6 +17,8 @@ from src.collision import is_ledge
 from src.emulator import Emulator
 from src.llm_supervisor import Supervisor
 from src.macros import Macros
+from src.return_nav import egg_return_direction
+from src.unstick import Unsticker
 from src.mover import Mover, walkable
 from src.ppo import load_policy
 from src.ram_parser import RamParser, dialogue_open
@@ -157,6 +159,7 @@ def main(argv=None) -> int:
         blocked_count = 0
         nav = LocalNav()
         last_action = None
+        last_heading = None
         step_idx = 0
         recurrent_hx = None
         consecutive_a_count = 0
@@ -165,6 +168,7 @@ def main(argv=None) -> int:
 
         last_story_flags = None
         milestones = MilestoneTracker()
+        unsticker = Unsticker()
         last_status_write = 0.0
         seed_seen_events(reader.parse(emu.frame), seen_events)
         while True:
@@ -239,6 +243,18 @@ def main(argv=None) -> int:
                 step_idx += 1
                 continue
 
+            # 2b. Same tile for many turns (NPC in a corridor, wall): talk, wait, walk around, back off
+            unsticker.note(state)
+            if unsticker.count >= 6 and last_heading in ("up", "down", "left", "right"):
+                ures = unsticker.act(state, last_heading, emu, macros, stepper, tile_visit_counts)
+                if ures is not None:
+                    print(f"[Step {step_idx}] Unstick@{state.pos} {ures.kind}: {ures.detail}", flush=True)
+                    recurrent_hx = None
+                    blocked_count = 0
+                    recent_positions.clear()
+                    step_idx += 1
+                    continue
+
             # 3. Check Triggers (Cut, Stuck, etc.)
             trigger = evaluate(state, stuck_count=blocked_count)
             if trigger is not None or blocked_count >= 4:
@@ -255,7 +271,8 @@ def main(argv=None) -> int:
                         print(f"[Step {step_idx}] Asking LLM Director ({supervisor.model}) to resolve bottleneck at {state.pos}...", flush=True)
                         try:
                             decision = supervisor.decide(state.to_text(), trigger_arg)
-                            if decision:
+                            # The offline fallback only mashes text: it cannot fix a block, so fall through to the reflex
+                            if decision and getattr(decision, 'name', '') != 'mash_text':
                                 if decision.name == "use_cut" and not state.party_can_cut:
                                     print(f"[Step {step_idx}] [LLM Director] use_cut vetoed (no HM Cut before Gym 1); bypassing east...", flush=True)
                                     res = mover.run_path(["right"])
@@ -385,6 +402,9 @@ def main(argv=None) -> int:
                 elif state.map_id == (26, 10) and has_egg and not gave_egg and state.y == 7 and state.x in (2, 3):
                     # Standing on exit carpet in Mr. Pokémon's House with Mystery Egg -> step out!
                     action_idx = 1
+                elif has_egg and not gave_egg and egg_return_direction(state) is not None:
+                    # Egg errand: follow the shortest route back to Elm's Lab read from the ROM's maps
+                    action_idx = ACTIONS.index(egg_return_direction(state))
                 elif state.map_id == (26, 3) and has_egg and not beat_rival and state.x in (31, 32) and state.y in (6, 7):
                     # Approaching Rival trigger at (33, 6..7) in Cherrygrove City -> step right!
                     action_idx = 3
@@ -407,12 +427,18 @@ def main(argv=None) -> int:
                 elif state.map_id == (24, 4) and has_egg and beat_rival and not gave_egg and state.x == 6 and state.y == 4:
                     # Outside Elm's Lab in New Bark Town with Mystery Egg -> enter lab!
                     action_idx = 0
-                elif state.map_id == (24, 5) and has_egg and beat_rival and not gave_egg and state.x in (4, 5) and state.y == 3:
+                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y == 3:
                     if state.facing == "up":
-                        # Standing at Professor Elm's desk facing up with Mystery Egg -> deliver it!
+                        # Elm stands at (5, 2): face him from (5, 3) and hand over the egg
                         action_idx = 4
                     else:
                         action_idx = 0
+                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.y <= 3 and state.x < 5 and walkable(tiles.get("right", 0xFF), "right"):
+                    # Next to the desk but on the wrong column (a press of A at (4, 3) hits empty floor): shift to x=5
+                    action_idx = 3
+                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y > 3 and walkable(tiles.get("up", 0xFF), "up"):
+                    # Straight up column 5 to Elm
+                    action_idx = 0
                 elif state.map_id == (24, 5) and gave_egg and state.y == 11 and state.x in (4, 5):
                     # Standing on exit carpet in Elm's Lab after delivering egg -> step out!
                     action_idx = 1
@@ -453,6 +479,8 @@ def main(argv=None) -> int:
                 action_idx = int(np.random.choice(4))
 
             direction = ACTIONS[action_idx]
+            if direction in ("up", "down", "left", "right"):
+                last_heading = direction
 
             # Execute step
             before_pos = (state.x, state.y)
