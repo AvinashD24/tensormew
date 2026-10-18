@@ -158,7 +158,10 @@ class Supervisor:
         return decision
 
     def run_tool(self, name: str, arguments: dict | None) -> ActionResult:
-        call = parse_tool_call(name, arguments)
+        args_copy = dict(arguments or {})
+        if "reason" not in args_copy:
+            args_copy["reason"] = "strategic execution"
+        call = parse_tool_call(name, args_copy)
         _reason, handler_args = split_reason(call.arguments)
         fn = self.registry.get(call.name)
         if fn is None:

@@ -191,7 +191,10 @@ def main(argv=None) -> int:
                             decision = supervisor.decide(state.to_text(), trigger_arg)
                             if decision:
                                 print(f"[Step {step_idx}] [LLM Director] Calling {decision.name}({decision.arguments}) | Reason: {decision.reason} (${decision.est_usd:.4f})", flush=True)
-                                res = supervisor.run_tool(decision.name, decision.arguments)
+                                exec_args = dict(decision.arguments)
+                                if "reason" not in exec_args and decision.reason:
+                                    exec_args["reason"] = decision.reason
+                                res = supervisor.run_tool(decision.name, exec_args)
                                 print(f"[Step {step_idx}] [LLM Director] Execution result: ok={getattr(res, 'ok', True)}", flush=True)
                                 blocked_count = 0
                                 recent_positions.clear()
