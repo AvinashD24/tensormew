@@ -152,8 +152,14 @@ def _pokecenter_potential(x: float, y: float, base: float, is_low_hp: bool) -> f
         return base + max(0.0, 6.0 - 0.7 * dist)
 
 
+def _building_exit_potential(x: float, y: float, base: float) -> float:
+    """Guides agent towards the exit door (typically (2.5, 7.0) or (3.5, 7.0)) of incidental indoor buildings."""
+    dist = abs(x - 2.5) + abs(y - 7.0)
+    return base + max(0.0, 5.0 - 0.7 * dist)
+
+
 def navigation_potential(state) -> float:
-    """Potential-based reward shaping Phi(s) guiding the agent towards Falkner's Gym.
+    """Potential-based reward shaping Phi(s) guiding the agent through the complete story quest.
 
     Creates an invariant directional gradient (Ng, Harada & Russell, 1999) that rewards
     moving forward along the transit corridor and penalizes retreating backwards.
@@ -165,12 +171,27 @@ def navigation_potential(state) -> float:
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
     gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+    beat_falkner = callable(has_event) and has_event("EVENT_BEAT_FALKNER")
+    has_aide_egg = callable(has_event) and has_event("EVENT_GOT_TOGEPI_EGG_FROM_ELMS_AIDE")
     low_hp = is_party_low_hp(state)
 
     # Pokémon Center handling across all stages
     if map_id in ((26, 5), (10, 10), (10, 13)):
+        # In Stage 4 (post-Falkner), Violet PC (10, 10) holds Elm's Aide with the Togepi Egg
+        if beat_falkner and not has_aide_egg and map_id == (10, 10):
+            # Elm's Aide is at (4, 3); target is standing in front at (4, 4)
+            dist_aide = abs(x - 4.0) + abs(y - 4.0)
+            return 260.0 + max(0.0, 10.0 - 1.0 * dist_aide)
         base_pc = 170.0 if gave_egg else (235.0 if map_id == (10, 10) else 45.0)
         return _pokecenter_potential(x, y, base_pc, low_hp)
+
+    # Incidental indoor buildings: guide agent straight back out to overworld
+    if map_id in ((26, 4), (26, 6), (26, 7), (26, 8), (26, 9)):  # Cherrygrove Mart & houses
+        return _building_exit_potential(x, y, base=40.0)
+    if map_id in ((24, 6), (24, 7), (24, 8), (24, 9)):  # New Bark houses
+        return _building_exit_potential(x, y, base=5.0)
+    if map_id in ((10, 6), (10, 8), (10, 9), (10, 11)):  # Violet Mart & houses
+        return _building_exit_potential(x, y, base=220.0)
 
     # Stage 1: Heading to Mr. Pokémon / Cherrygrove (prior to getting egg)
     if not has_egg:
@@ -184,56 +205,78 @@ def navigation_potential(state) -> float:
                 dist_pc = abs(x - 29.0) + abs(y - 3.0)
                 return 45.0 + max(0.0, 6.0 - 0.3 * dist_pc)
             return 45.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id == (26, 1):  # Route 30 -> head north to Mr. Pokémon's House at (17, 5)
-            dist_to_house = abs(x - 17.0) + abs(y - 5.0)
-            return 60.0 + max(0.0, 25.0 - 0.4 * dist_to_house)
+        elif map_id == (26, 1):  # Route 30 -> head to Mr. Pokémon's House at (17, 5)
+            # Route 30 branch geometry: left side (x < 12, y < 40) is blocked by battling trainers!
+            if y > 40.0:
+                # South entrance: move north and east towards fork at (15, 40)
+                dist_fork = abs(x - 15.0) + abs(y - 40.0)
+                return 55.0 + max(0.0, 15.0 - 0.5 * dist_fork)
+            else:
+                # North of fork: stay on east grass path (x >= 12) leading to (17, 5)
+                dist_house = abs(x - 17.0) + abs(y - 5.0)
+                pen = max(0.0, 12.0 - x) * 2.0  # Heavy penalty for entering blocked left path
+                return 70.0 + max(0.0, 20.0 - 0.5 * dist_house) - pen
         elif map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> approach Mr. Pokémon at (3, 5)
             dist_mr = abs(x - 3.0) + abs(y - 5.0)
-            return 85.0 + max(0.0, 5.0 - 0.5 * dist_mr)
+            return 90.0 + max(0.0, 5.0 - 0.5 * dist_mr)
 
     # Stage 2: Return Egg to Elm in New Bark Town
     elif not gave_egg:
         if map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> exit doors at (2.5, 7.0)
             dist_exit = abs(x - 2.5) + abs(y - 7.0)
-            return 85.0 + max(0.0, 5.0 - 0.7 * dist_exit)
-        elif map_id == (26, 1):  # Route 30 -> head south to Cherrygrove (y -> 53)
-            return 70.0 + (y / 53.0) * 15.0
+            return 90.0 + max(0.0, 5.0 - 0.7 * dist_exit)
+        elif map_id == (26, 1):  # Route 30 -> head south through east grass path to Cherrygrove
+            if y <= 40.0:
+                dist_fork = abs(x - 15.0) + abs(y - 40.0)
+                pen = max(0.0, 12.0 - x) * 2.0
+                return 75.0 + max(0.0, 15.0 - 0.5 * dist_fork) - pen
+            else:
+                return 75.0 + (y / 53.0) * 15.0
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 (x -> 39)
-            return 85.0 + (x / 39.0) * 10.0
+            return 90.0 + (x / 39.0) * 10.0
         elif map_id == (24, 3):  # Route 29 -> head east to New Bark (x -> 60)
-            return 95.0 + (x / 60.0) * 25.0
+            return 100.0 + (x / 60.0) * 25.0
         elif map_id == (24, 4):  # New Bark Town -> Elm Lab at (6, 4)
             dist_lab = abs(x - 6.0) + abs(y - 4.0)
-            return 120.0 + max(0.0, 10.0 - 0.5 * dist_lab)
+            return 125.0 + max(0.0, 10.0 - 0.5 * dist_lab)
         elif map_id == (24, 5):  # Inside Elm's Lab -> approach Elm at (4, 2)
             dist_elm = abs(x - 4.0) + abs(y - 2.0)
-            return 130.0 + max(0.0, 5.0 - 0.5 * dist_elm)
+            return 135.0 + max(0.0, 5.0 - 0.5 * dist_elm)
+
+    # Stage 4: Post-Falkner -> Collect Togepi Pokémon Egg from Elm's Aide in Violet Poké Center
+    elif beat_falkner and not has_aide_egg:
+        if map_id == (10, 7):  # Inside Violet Gym -> exit doors at (4.5, 15.0)
+            dist_exit = abs(x - 4.5) + abs(y - 15.0)
+            return 255.0 + max(0.0, 5.0 - 0.5 * dist_exit)
+        elif map_id == (10, 5):  # Violet City -> head to Violet Poké Center at (31, 25)
+            dist_pc = abs(x - 31.0) + abs(y - 25.0)
+            return 255.0 + max(0.0, 15.0 - 0.4 * dist_pc)
 
     # Stage 3: Head to Violet City Gym & Falkner
     else:
         if map_id in ((24, 4), (24, 5)):  # In New Bark -> head west
-            return 130.0 + max(0.0, 10.0 - x * 0.5)
+            return 135.0 + max(0.0, 10.0 - x * 0.5)
         elif map_id == (24, 3):  # Route 29 -> head west to Cherrygrove
-            return _route29_potential(x, y, base=130.0)
+            return _route29_potential(x, y, base=135.0)
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head north to Route 30
             if low_hp:
                 dist_pc = abs(x - 29.0) + abs(y - 3.0)
-                return 170.0 + max(0.0, 6.0 - 0.3 * dist_pc)
-            return 170.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id == (26, 1):  # Route 30 -> head north-west to Route 31 (y -> 10)
-            return 185.0 + max(0.0, (40.0 - y) * 0.5)
+                return 175.0 + max(0.0, 6.0 - 0.3 * dist_pc)
+            return 175.0 + max(0.0, (20.0 - y) * 0.5)
+        elif map_id == (26, 1):  # Route 30 -> head north-west to Route 31 (y -> 10) (trainers unblocked!)
+            return 190.0 + max(0.0, (40.0 - y) * 0.5)
         elif map_id == (26, 2):  # Route 31 -> head west to Violet Gate (x -> 0)
-            return 205.0 + max(0.0, (40.0 - x) * 0.5)
+            return 210.0 + max(0.0, (40.0 - x) * 0.5)
         elif map_id == (26, 11):  # Route 31 Violet Gate -> head west (x -> 0)
-            return 225.0 + max(0.0, (10.0 - x) * 0.5)
+            return 230.0 + max(0.0, (10.0 - x) * 0.5)
         elif map_id == (10, 5):  # Violet City -> Violet Gym (10, 7) at (18, 17)
             if low_hp:
                 dist_pc = abs(x - 31.0) + abs(y - 25.0)
-                return 230.0 + max(0.0, 6.0 - 0.3 * dist_pc)
+                return 235.0 + max(0.0, 6.0 - 0.3 * dist_pc)
             dist_gym = abs(x - 18.0) + abs(y - 17.0)
-            return 230.0 + max(0.0, 15.0 - 0.4 * dist_gym)
+            return 235.0 + max(0.0, 15.0 - 0.4 * dist_gym)
         elif map_id == (10, 7):  # Violet Gym -> Falkner (y -> 1)
-            return 250.0 + max(0.0, (15.0 - y) * 1.5)
+            return 255.0 + max(0.0, (15.0 - y) * 1.5)
 
     return 0.0
 
