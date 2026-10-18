@@ -19,7 +19,7 @@ Output goes to `recordings/my_run/`:
 Recordings can be committed (`*.gif` is no longer ignored, and `recordings/**/*.state` is un-ignored). Samples:
 
 - `docs/recordings/falkner_beaten_example.gif`: an older version of the logic, with a loop and two blackouts before the win.
-- `recordings/falkner_showcase/`: the paced showcase run described below.
+- `docs/recordings/falkner_showcase.gif`: the paced showcase run described below (Violet City → gym → Falkner, 0 blackouts).
 
 Recording needs a window (no `--headless`): headless runs render blank frames, so the GIF would be blank.
 It reads PyBoy's own frame buffer, so the window can sit behind others.
