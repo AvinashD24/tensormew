@@ -482,7 +482,8 @@ class LiveMetricsPlotter:
 
             self._fig.canvas.draw_idle()
             self._fig.canvas.flush_events()
-        except Exception:
+        except Exception as exc:
+            print(f"[visual_metrics] live plot stopped: {exc!r}", flush=True)
             self._closed = True
 
     @staticmethod

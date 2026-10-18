@@ -28,6 +28,8 @@ SHAPING_GAMMA = 0.99
 # Puffer-style one-time exploration payments for things that are not just new coordinates.
 NEW_INTERACTION_REWARD = 0.5  # first A press that opens a script from a given tile and facing
 NEW_WARP_REWARD = 1.0         # first time a map-to-map transition is taken
+# Stepping back into a map the run has already finished ends the episode with this penalty.
+BEHIND_MAP_PENALTY = 2.0
 
 # Key Transit Maps along the path to the First Gym (Falkner in Violet City)
 GYM_PATH_WAYPOINTS: dict[tuple[int, int], float] = {
@@ -397,6 +399,7 @@ class CrystalEnv:
     rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(0))
     frontier_prob: float = 0.3
     max_steps: int = 64
+    ignore_maps: frozenset = frozenset()  # (group, number) maps already completed; entering one ends the episode
     shaping: str = "frontier"  # "frontier" (learned-map distance) or "legacy" (hand-coded per-map)
 
     def __post_init__(self):
@@ -538,6 +541,8 @@ class CrystalEnv:
             info.frontier = True
         self.steps += 1
         done = self.steps >= self.max_steps
+        if map_id in self.ignore_maps and (before.map_group, before.map_number) not in self.ignore_maps:
+            reward, done = -BEHIND_MAP_PENALTY, True
         if not getattr(self.machine, "headless", True):
             self.machine.tick(1, render=True)
         return observe(after, self.visited, self.nav), reward, done, info

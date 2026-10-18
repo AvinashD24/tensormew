@@ -265,6 +265,7 @@ def _mlp_ppo_update(
     lr: float = 0.05,
     entropy_coef: float = 0.01,
     batch_size: int | None = None,
+    target_kl: float | None = None,
 ) -> PpoUpdateStats:
     obs = np.stack(batch["obs"])
     actions = np.asarray(batch["actions"])
@@ -337,6 +338,8 @@ def _mlp_ppo_update(
             policy.b2 += scale * db2
             policy.vw += scale * dvw
             policy.vb += scale * dvb
+        if target_kl is not None and _batch_policy_stats(policy, batch, clip=clip)[0] > 1.5 * target_kl:
+            break
 
     weight_change = float(np.mean(np.abs(policy.w2 - before_w2)))
     approx_kl, clip_frac, mean_entropy, value_mse = _batch_policy_stats(
@@ -360,6 +363,7 @@ def ppo_update(
     lr: float = 0.05,
     entropy_coef: float = 0.01,
     batch_size: int | None = None,
+    target_kl: float | None = None,
 ) -> PpoUpdateStats:
     """One clipped policy update plus an entropy bonus."""
     if isinstance(policy, MlpPolicy):
@@ -371,6 +375,7 @@ def ppo_update(
             lr=lr,
             entropy_coef=entropy_coef,
             batch_size=batch_size,
+            target_kl=target_kl,
         )
 
     obs = np.stack(batch["obs"])
@@ -417,6 +422,8 @@ def ppo_update(
             policy.b += scale * db
             policy.vw += scale * dvw
             policy.vb += scale * dvb
+        if target_kl is not None and _batch_policy_stats(policy, batch, clip=clip)[0] > 1.5 * target_kl:
+            break
     weight_change = float(np.mean(np.abs(policy.w - before)))
     approx_kl, clip_frac, mean_entropy, value_mse = _batch_policy_stats(
         policy, batch, clip=clip
