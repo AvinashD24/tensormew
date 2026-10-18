@@ -49,7 +49,7 @@ class TerminalMonitor:
 
     def format_header(self) -> str:
         """Returns aligned table header."""
-        border = "=" * 116
+        border = "=" * 120
         header = (
             f" {'Upd':>4s} | "
             f"{'Reward (Roll5)':^17s} | "
@@ -60,9 +60,9 @@ class TerminalMonitor:
             f"{'LR':>7s} | "
             f"{'Maps':>4s} | "
             f"{'Time':>5s} | "
-            f"{'Status / Behavior':^19s}"
+            f"{'Status / Behavior':^23s}"
         )
-        sub_border = "-" * 116
+        sub_border = "-" * 120
         return f"{border}\n{header}\n{sub_border}"
 
     def assess_status(
@@ -110,7 +110,7 @@ class TerminalMonitor:
         else:
             colored_bar = self._color(f"[{bar}]", "36")  # Cyan: Healthy exploration
 
-        return f"{colored_bar} {entropy:4.2f}"
+        return f" {colored_bar} {entropy:4.2f} "
 
     def format_reward_trend(self, mean_reward: float) -> str:
         """Formats reward with rolling average and direction trend arrow."""
@@ -185,7 +185,8 @@ class TerminalMonitor:
         vloss_str = f"{value_loss:9.2f}"
         kl_str = f"{approx_kl:7.4f}"
         clip_str = f"{clip_frac * 100:5.1f}%"
-        lr_str = f"{lr:7.1e}"
+        lr_compact = f"{lr:.1e}".replace("e-0", "e-").replace("e+0", "e+")
+        lr_str = f"{lr_compact:>7s}"
         maps_str = f"{maps_discovered:4d}"
         time_str = f"{duration_sec:4.1f}s"
 
