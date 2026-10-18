@@ -26,7 +26,7 @@ from src.emulator import Emulator
 from src.macros import Macros
 from src.mover import walkable
 from src.ram_parser import RamParser, dialogue_open
-from src.rl_env import ACTIONS, StepInfo, observe, progress_reward
+from src.rl_env import ACTIONS, StepInfo, observe, progress_reward, intrinsic_curiosity_reward
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.terminal_monitor import TerminalMonitor
@@ -77,6 +77,7 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
         blocked_count = 0
         consecutive_bumps = 0
         steps = 0
+        last_dir = None
 
         def get_obs():
             st = reader.parse(emu.frame)
@@ -86,11 +87,11 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
             seen_maps.add((st.map_group, st.map_number))
             tile_visit_counts[tile] = tile_visit_counts.get(tile, 0) + 1
             screen = emu._pb.screen.ndarray[:, :, :3].copy()
-            ram_vec = observe(st, visited)
+            ram_vec = observe(st, visited, include_goals=True)
             return screen, ram_vec, st
 
         def reset_environment():
-            nonlocal current_state_idx, blocked_count, consecutive_bumps, steps
+            nonlocal current_state_idx, blocked_count, consecutive_bumps, steps, last_dir
             current_state_idx = (current_state_idx + 1) % len(start_states)
             state_to_load = start_states[current_state_idx]
             data_bytes = StateRegistry().load_bytes(state_to_load)
@@ -106,6 +107,7 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
             blocked_count = 0
             consecutive_bumps = 0
             steps = 0
+            last_dir = None
 
         while True:
             cmd, data_arg = pipe.recv()
@@ -186,6 +188,20 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
                     seen_waypoints=seen_waypoints,
                     info=info,
                 )
+                # 1. Intrinsic curiosity novelty reward: 1/sqrt(N)
+                tile = (after.map_group, after.map_number, after.x, after.y)
+                v_count = tile_visit_counts.get(tile, 0)
+                step_rew += intrinsic_curiosity_reward(v_count, scale=0.08)
+
+                # 2. Anti-looping pacing penalty if oscillating in a loop
+                if v_count > 12:
+                    step_rew -= 0.02 * min(4.0, (v_count - 10) / 5.0)
+
+                # 3. Action smoothing & directional momentum bonus
+                if action_name == last_dir and moved:
+                    step_rew += 0.02
+                last_dir = action_name if moved else None
+
                 has_event = getattr(after, "has_event", None)
                 gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
                 quest_complete = gave_egg and after.map_id == (24, 5)
@@ -325,11 +341,11 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru})...")
 
-    policy = SpatialVisionPolicy(obs_dim=17, num_actions=5, use_gru=use_gru, gru_hidden_dim=512)
+    policy = SpatialVisionPolicy(obs_dim=21, num_actions=5, use_gru=use_gru, gru_hidden_dim=512)
     if resume and os.path.exists(save_path):
         try:
-            policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru)
-            print(f"Loaded existing checkpoint from {save_path} (use_gru={policy.use_gru})")
+            policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru, override_obs_dim=21)
+            print(f"Loaded existing checkpoint from {save_path} (use_gru={policy.use_gru}, obs_dim={policy.obs_dim})")
         except Exception as e:
             print(f"Warning: could not load checkpoint ({e}), initializing fresh policy")
 
@@ -553,8 +569,10 @@ def main(argv=None):
     parser.add_argument("--updates", type=int, default=50)
     parser.add_argument("--rollout", type=int, default=128)
     parser.add_argument("--max-steps", type=int, default=1024)
-    parser.add_argument("--envs", type=int, default=12)
-    parser.add_argument("--batch-size", type=int, default=128)
+    default_envs = 16 if torch.cuda.is_available() else 8
+    default_batch_size = 256 if torch.cuda.is_available() else 128
+    parser.add_argument("--envs", type=int, default=default_envs)
+    parser.add_argument("--batch-size", type=int, default=default_batch_size)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--state", default="new_bark_outside")
     parser.add_argument("--states", default="", help="comma-separated list of curriculum states")

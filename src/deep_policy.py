@@ -97,7 +97,7 @@ if TORCH_AVAILABLE:
 
         def __init__(
             self,
-            obs_dim: int = 17,
+            obs_dim: int = 21,
             num_actions: int = 5,
             ram_hidden_dim: int = 256,
             fusion_dim: int = 512,
@@ -364,6 +364,7 @@ if TORCH_AVAILABLE:
             path: str | Path,
             device: str = "cpu",
             override_use_gru: bool | None = None,
+            override_obs_dim: int | None = None,
         ) -> "SpatialVisionPolicy":
             p = Path(path)
             if not p.exists():
@@ -374,14 +375,26 @@ if TORCH_AVAILABLE:
             saved_use_gru = checkpoint.get("use_gru", False)
             use_gru = saved_use_gru if override_use_gru is None else override_use_gru
             gru_hidden_dim = checkpoint.get("gru_hidden_dim", 512)
+            checkpoint_obs_dim = checkpoint.get("obs_dim", 17)
+            target_obs_dim = checkpoint_obs_dim if override_obs_dim is None else override_obs_dim
+
             model = cls(
-                obs_dim=checkpoint.get("obs_dim", 17),
+                obs_dim=target_obs_dim,
                 num_actions=checkpoint.get("num_actions", 5),
                 use_gru=use_gru,
                 gru_hidden_dim=gru_hidden_dim,
             )
+
+            state_dict = checkpoint["state_dict"]
+            if target_obs_dim > checkpoint_obs_dim and "ram_trunk.0.weight" in state_dict:
+                old_w = state_dict["ram_trunk.0.weight"]
+                new_w = torch.zeros(old_w.shape[0], target_obs_dim, device=old_w.device, dtype=old_w.dtype)
+                new_w[:, :old_w.shape[1]] = old_w
+                torch.nn.init.orthogonal_(new_w[:, old_w.shape[1]:], gain=0.1)
+                state_dict["ram_trunk.0.weight"] = new_w
+
             strict = (use_gru == saved_use_gru)
-            model.load_state_dict(checkpoint["state_dict"], strict=strict)
+            model.load_state_dict(state_dict, strict=strict)
             model.to(device)
             model.eval()
             return model

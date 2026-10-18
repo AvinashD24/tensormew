@@ -283,7 +283,8 @@ def main(argv=None) -> int:
                     continue
 
             # 4. Overworld Movement via Policy
-            obs = observe(state, visited, None if is_deep_policy else nav)
+            use_goals = is_deep_policy and getattr(policy, "obs_dim", 17) == 21
+            obs = observe(state, visited, None if is_deep_policy else nav, include_goals=use_goals)
             probs = None
             if policy is not None:
                 if is_deep_policy:

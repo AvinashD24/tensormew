@@ -572,8 +572,48 @@ def progress_reward(
     return reward, new_tile, new_map
 
 
-def observe(state, visited: set[tuple[int, int, int, int]], nav: LocalNav | None = None) -> np.ndarray:
-    """17 base features, plus the LocalNav block when ``nav`` is given."""
+def intrinsic_curiosity_reward(visit_count: int, scale: float = 0.08) -> float:
+    """Count-based novelty bonus 1/sqrt(N) to propel exploration and break loops."""
+    return float(scale / np.sqrt(max(1, visit_count)))
+
+
+def quest_goal_vector(state) -> np.ndarray:
+    """Return 4-dimensional one-hot quest goal vector.
+
+    [1, 0, 0, 0]: Reach Cherrygrove & Route 30
+    [0, 1, 0, 0]: Get Mystery Egg from Mr. Pokémon
+    [0, 0, 1, 0]: Defeat Rival at Cherrygrove exit
+    [0, 0, 0, 1]: Deliver Egg to Professor Elm in New Bark Town
+    """
+    has_event = getattr(state, "has_event", None)
+    has_fn = callable(has_event)
+    has_egg = has_fn and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+    beat_rival = getattr(state, "beat_rival", False) or (has_fn and has_event("EVENT_RIVAL_CHERRYGROVE_CITY"))
+    gave_egg = has_fn and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+
+    vec = np.zeros(4, dtype=np.float64)
+    if not has_egg:
+        map_id = getattr(state, "map_id", (getattr(state, "map_group", 0), getattr(state, "map_number", 0)))
+        if map_id in ((26, 1), (26, 10)) or (map_id == (26, 3) and getattr(state, "y", 0) <= 6):
+            vec[1] = 1.0  # get egg from Mr. Pokémon
+        else:
+            vec[0] = 1.0  # reach Cherrygrove
+    elif not beat_rival:
+        vec[2] = 1.0  # beat rival at Cherrygrove exit
+    elif not gave_egg:
+        vec[3] = 1.0  # deliver egg to Elm
+    else:
+        vec[0] = 1.0
+    return vec
+
+
+def observe(
+    state,
+    visited: set[tuple[int, int, int, int]],
+    nav: LocalNav | None = None,
+    include_goals: bool = False,
+) -> np.ndarray:
+    """17 base features, plus 4 goal tokens when ``include_goals`` is True, plus LocalNav block when ``nav`` is given."""
     tiles = [float(state.tiles.get(direction, 0)) / 255.0 for direction in DIRS]
     pos = [state.x / 64.0, state.y / 64.0]
     flags = [
@@ -591,7 +631,10 @@ def observe(state, visited: set[tuple[int, int, int, int]], nav: LocalNav | None
         float(getattr(state, "pokedex_caught_count", 0)) / 10.0,
         story_stage(state),
     ]
-    base = np.asarray(tiles + pos + flags + neighbors + extra, dtype=np.float64)
+    parts = tiles + pos + flags + neighbors + extra
+    if include_goals:
+        parts += list(quest_goal_vector(state))
+    base = np.asarray(parts, dtype=np.float64)
     if nav is None:
         return base
     nav.update(state)
