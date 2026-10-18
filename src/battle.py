@@ -100,17 +100,26 @@ def pick_best_move(state, enemy_types: tuple[int, ...] = (2, 0)) -> int:
 
 
 def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
-    """Execute optimal combat/capture action:
-    - 1. Self-Preservation: In wild battles, if active Pokémon HP is low (<= 30%),
+    """Execute optimal combat/capture/item/switch action:
+    - 0. Faint Recovery & Switch:
+         - If all party Pokémon are fainted, clear whiteout dialogue to respawn.
+         - If active Pokémon is fainted (cur_hp == 0), find first conscious party
+           member and switch to it immediately!
+    - 1. In-Battle Item Usage:
+         - In trainer battles (where fleeing is impossible), if active mon is low HP
+           (<= 30%) and pack has items, use item (Potion) to heal!
+    - 2. Self-Preservation: In wild battles, if active Pokémon HP is low (<= 30%),
          flee immediately to prevent getting knocked out / white-out!
-    - 2. Goal-Oriented Progress (Anti-Grinding): In wild battles, if species is already
+    - 3. Goal-Oriented Progress (Anti-Grinding): In wild battles, if species is already
          caught and party has sufficient level (>= 7), flee immediately to stop blind
          grinding and resume advancing toward the Gym!
-    - 3. Strategic Capture: In wild battles with open party and balls:
+    - 4. Strategic Capture: In wild battles with open party and balls:
          - Weaken first if enemy HP > 40%.
          - Catch with Pokéball when HP <= 40%.
-    - 4. Decisive Combat: In trainer battles or when fighting for needed early EXP:
-         - Attack using the highest-scoring move against defending types.
+    - 5. Tactical Switching (Healthy Reserve): In trainer battles, if active mon is
+         at critical HP, no healing items remain, and a conscious backup mon exists
+         with healthy HP (> 50%), switch to it!
+    - 6. Decisive Combat: Attack using the highest-scoring move against defending types.
     """
     mode = getattr(state, "battle_mode", 0)
 
@@ -118,7 +127,31 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     party_hp = getattr(state, "party_hp", ())
     cur_hp = party_hp[0][0] if party_hp else 1
     max_hp = party_hp[0][1] if party_hp else 1
+
+    # 0. Faint Check: active Pokémon fainted
+    if cur_hp == 0:
+        alive_slots = [
+            i + 1 for i, (hp, _) in enumerate(party_hp) if hp > 0
+        ]
+        if not alive_slots:
+            return macros.handle_whiteout()
+        return macros.switch_fainted_pokemon(alive_slots[0])
+
     is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
+    num_items = getattr(state, "num_items", 0)
+
+    # 1. In-Battle Item Usage: In trainer battles where fleeing is impossible, heal if low HP
+    if mode == 2 and is_low_hp and num_items > 0:
+        return macros.use_battle_item(item_slot=1, target_slot=1)
+
+    # 2. Tactical Backup Switch in Trainer Battles when out of healing items
+    if mode == 2 and is_low_hp and num_items == 0:
+        healthy_backups = [
+            i + 1 for i, (hp, mx) in enumerate(party_hp[1:], start=1)
+            if mx > 0 and (hp / mx) > 0.50
+        ]
+        if healthy_backups:
+            return macros.switch_pokemon(healthy_backups[0])
 
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
@@ -156,5 +189,6 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     # Trainer battles, or wild battles where fighting is beneficial
     slot = pick_best_move(state, enemy_types)
     return macros.choose_move(slot)
+
 
 

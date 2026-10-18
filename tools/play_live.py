@@ -46,7 +46,7 @@ def equip_balls(emu: Emulator, count: int = 10) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Live continuous PyBoy game player")
-    parser.add_argument("--state", default="route29_entry", help="save state name")
+    parser.add_argument("--state", default="new_bark_outside", help="save state name")
     parser.add_argument("--policy", default="logs/deep_policy.pt", help="path to policy (.pt or .npz)")
     parser.add_argument(
         "--speed",
@@ -165,16 +165,23 @@ def main(argv=None) -> int:
             if state.battle_mode != 0:
                 blocked_count = 0
                 recurrent_hx = None
+                p_cur = state.party_hp[0][0] if state.party_hp else 0
+                p_max = state.party_hp[0][1] if state.party_hp else 1
                 res = tactical_battle_step(state, macros)
                 reason = getattr(res, "reason", "acted")
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
+                    f"lead_hp={p_cur}/{p_max}, "
                     f"enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}",
                     flush=True,
                 )
-                for _ in range(10):
-                    emu.tick(20, render=render_screen)
-                    emu.press("b", frames=6)
+                if not reason.startswith("switched fainted"):
+                    for _ in range(8):
+                        emu.tick(20, render=render_screen)
+                        emu.press("b", frames=6)
+                else:
+                    for _ in range(4):
+                        emu.tick(20, render=render_screen)
                 step_idx += 1
                 continue
 

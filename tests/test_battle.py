@@ -168,4 +168,93 @@ class BattleTests(unittest.TestCase):
         macros.choose_move.assert_not_called()
         macros.use_pokeball.assert_not_called()
 
+    def test_tactical_battle_switches_fainted_pokemon_when_backup_alive(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Active Pokémon fainted (0/20 HP), but Pidgey (slot 2) is alive (15/15 HP)
+        state = SimpleNamespace(
+            battle_mode=2,
+            party_count=2,
+            party_species=(155, 16),
+            party_hp=((0, 20), (15, 15)),
+            party_levels=(5, 4),
+            party_moves=((33, 0, 0, 0), (33, 0, 0, 0)),
+            enemy_species=152,
+            enemy_hp=12,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        macros.switch_fainted_pokemon.assert_called_once_with(2)
+        macros.choose_move.assert_not_called()
+        macros.handle_whiteout.assert_not_called()
+
+    def test_tactical_battle_handles_whiteout_when_all_fainted(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # All party Pokémon fainted
+        state = SimpleNamespace(
+            battle_mode=2,
+            party_count=2,
+            party_species=(155, 16),
+            party_hp=((0, 20), (0, 15)),
+            party_levels=(5, 4),
+            party_moves=((33, 0, 0, 0), (33, 0, 0, 0)),
+            enemy_species=152,
+            enemy_hp=12,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        macros.handle_whiteout.assert_called_once()
+        macros.switch_fainted_pokemon.assert_not_called()
+        macros.choose_move.assert_not_called()
+
+    def test_tactical_battle_uses_item_in_trainer_battle_when_low_hp(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Trainer battle: active mon at 5/20 HP (25% <= 30%), pack has 1 Potion
+        state = SimpleNamespace(
+            battle_mode=2,
+            num_items=1,
+            party_count=1,
+            party_species=(155,),
+            party_hp=((5, 20),),
+            party_levels=(5,),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=152,
+            enemy_hp=10,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        macros.use_battle_item.assert_called_once_with(item_slot=1, target_slot=1)
+        macros.choose_move.assert_not_called()
+
+    def test_tactical_battle_switches_to_healthy_backup_in_trainer_battle_when_no_items(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Trainer battle: active mon low HP (5/20), no items, but healthy backup (slot 2: 18/18)
+        state = SimpleNamespace(
+            battle_mode=2,
+            num_items=0,
+            party_count=2,
+            party_species=(155, 16),
+            party_hp=((5, 20), (18, 18)),
+            party_levels=(5, 5),
+            party_moves=((33, 0, 0, 0), (33, 0, 0, 0)),
+            enemy_species=152,
+            enemy_hp=10,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        macros.switch_pokemon.assert_called_once_with(2)
+        macros.choose_move.assert_not_called()
+
+
 

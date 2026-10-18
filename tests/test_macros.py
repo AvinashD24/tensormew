@@ -97,3 +97,36 @@ class MacroTests(unittest.TestCase):
         macros = Macros(FakeMachine(), ScriptedReader([gs(battle_mode=1)]))
         self.assertFalse(macros.switch_pokemon(0).ok)
         self.assertFalse(macros.switch_pokemon(7).ok)
+
+    def test_switch_fainted_pokemon_in_battle(self):
+        machine = FakeMachine()
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=2)]))
+        result = macros.switch_fainted_pokemon(2)
+        self.assertTrue(result.ok)
+        buttons = [b for b, _ in machine.presses]
+        self.assertIn("down", buttons)
+        self.assertIn("a", buttons)
+
+    def test_switch_fainted_pokemon_overworld(self):
+        macros = Macros(FakeMachine(), ScriptedReader([gs(battle_mode=0)]))
+        self.assertFalse(macros.switch_fainted_pokemon(2).ok)
+
+    def test_handle_whiteout(self):
+        machine = FakeMachine()
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=1)]))
+        result = macros.handle_whiteout()
+        self.assertTrue(result.ok)
+
+    def test_use_battle_item_in_battle(self):
+        machine = FakeMachine()
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=2, num_items=1)]))
+        result = macros.use_battle_item(1, 1)
+        self.assertTrue(result.ok)
+        buttons = [b for b, _ in machine.presses]
+        self.assertIn("down", buttons)
+        self.assertIn("a", buttons)
+
+    def test_use_battle_item_no_items(self):
+        macros = Macros(FakeMachine(), ScriptedReader([gs(battle_mode=2, num_items=0)]))
+        self.assertFalse(macros.use_battle_item(1, 1).ok)
+

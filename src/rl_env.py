@@ -698,7 +698,8 @@ class CrystalEnv:
         before = self.reader.parse(self.machine.frame)
         info = StepInfo()
         if before.battle_mode:
-            self.macros.choose_move()
+            from src.battle import tactical_battle_step
+            tactical_battle_step(before, self.macros)
             moved = False
         elif dialogue_open(before):
             self.macros.mash_text(max_frames=80)
