@@ -7,7 +7,7 @@ import json
 import sys
 import time
 
-from src.live_status import CHECKLIST, STATUS_DIR
+from src.live_status import CHECKLIST, MILESTONE_LABELS, MILESTONES, STATUS_DIR
 
 SHORT = {
     "starter": "start",
@@ -29,16 +29,22 @@ def render() -> str:
         return "no live runs found (start tools.play_live first)"
     header = f"{'run':8s} {'step':>5s} {'map':24s} {'pos':>8s} {'ret':>8s} {'pty':>3s} " + " ".join(
         f"{SHORT[l]:>5s}" for l, _ in CHECKLIST
-    ) + "  next"
+    ) + f" {'rival':>6s} {'heal':>4s} {'blk':>3s} {'ms':>5s}  latest milestone / next"
     lines = [header, "-" * len(header)]
     now = time.time()
     for r in rows:
         stale = "" if now - r["updated"] < 120 else "  (stale)"
         marks = " ".join(f"{('yes' if r['done'].get(l) else '-'):>5s}" for l, _ in CHECKLIST)
+        ms = r.get("milestones", [])
+        marks += (
+            f" {r.get('rival', '-'):>6s} {r.get('heals', 0):4d} {r.get('blackouts', 0):3d}"
+            f" {f'{len(ms)}/{len(MILESTONES)}':>5s}"
+        )
+        latest = f"{MILESTONE_LABELS.get(ms[-1][0], ms[-1][0])} @{ms[-1][1]}; " if ms else ""
         egg = "*egg*" if r.get("egg_in_party") else ""
         lines.append(
             f"{r['tag']:8s} {r['step']:5d} {r['map']:24s} {str(tuple(r['pos'])):>8s} {r['return']:8.1f} "
-            f"{r['party']:3d} {marks}  {r['next']} {egg}{stale}"
+            f"{r['party']:3d} {marks}  {latest}NEXT: {r['next']} {egg}{stale}"
         )
     return "\n".join(lines)
 

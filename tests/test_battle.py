@@ -330,3 +330,124 @@ class BattleTests(unittest.TestCase):
 
 
 
+
+
+class TrainerItemLoopTests(unittest.TestCase):
+    def _state(self, hp):
+        return SimpleNamespace(
+            battle_mode=2, battle_mon_hp=hp, battle_mon_max_hp=20, party_hp=((hp, 20),), party_levels=(6,),
+            cur_battle_mon=0, num_items=3, party_moves=((33, 0, 0, 0),),
+        )
+
+    def test_rejected_item_stops_after_two_tries(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        macros.machine.frame = 100
+        for _ in range(6):  # HP never rises: the game keeps rejecting the item
+            tactical_battle_step(self._state(3), macros)
+        self.assertEqual(macros.use_battle_item.call_count, 2)
+        self.assertGreaterEqual(macros.choose_move.call_count, 4)
+
+    def test_working_item_keeps_being_used(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        macros.machine.frame = 100
+        for hp in (3, 5, 6):  # HP rises each time and stays at or below 30%
+            tactical_battle_step(self._state(hp), macros)
+        self.assertEqual(macros.use_battle_item.call_count, 3)
+
+
+class FaintedSwitchLoopTests(unittest.TestCase):
+    def test_does_not_repeat_slots_the_game_rejected(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        macros.machine.frame = 500
+        # Stale party HP: every slot looks alive, 1/3/5 rank highest. Slots 1, 3, 5 are really fainted,
+        # so the active Pokémon stays at 0 HP after each attempted switch.
+        hp = ((30, 30), (10, 30), (28, 30), (9, 30), (26, 30), (8, 30))
+        state = SimpleNamespace(
+            battle_mode=2, battle_mon_hp=0, battle_mon_max_hp=30, party_hp=hp,
+            party_levels=(10, 5, 9, 5, 8, 4), cur_battle_mon=0, num_items=0, party_moves=((33, 0, 0, 0),) * 6,
+        )
+        tried = []
+        for _ in range(5):
+            tactical_battle_step(state, macros)
+            tried.append(macros.switch_fainted_pokemon.call_args.args[0])
+        self.assertEqual(tried[:3], [3, 5, 2])
+        self.assertNotIn(1, tried)
+        self.assertEqual(len(tried), len(set(tried)))
+
+    def test_all_fainted_goes_to_whiteout(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        macros.machine.frame = 900
+        state = SimpleNamespace(
+            battle_mode=2, battle_mon_hp=0, battle_mon_max_hp=30, party_hp=((0, 30), (0, 30)),
+            party_levels=(5, 5), cur_battle_mon=0, num_items=0, party_moves=((33, 0, 0, 0),) * 2,
+        )
+        tactical_battle_step(state, macros)
+        macros.handle_whiteout.assert_called_once()
+
+
+class ReplacementPickerTests(unittest.TestCase):
+    def _state(self, hp, active=0, count=None):
+        return SimpleNamespace(
+            battle_mode=2, battle_mon_hp=0, battle_mon_max_hp=30, party_hp=hp,
+            party_levels=(5,) * len(hp), cur_battle_mon=active, num_items=0,
+            party_moves=((33, 0, 0, 0),) * len(hp), party_count=count if count is not None else len(hp),
+        )
+
+    def test_ignores_padding_slots_past_party_count(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        macros.machine.frame = 10
+        # Slots 4-6 are leftover bytes, not real Pokémon
+        state = self._state(((0, 20), (12, 20), (0, 20), (99, 99), (99, 99), (99, 99)), count=3)
+        tactical_battle_step(state, macros)
+        macros.switch_fainted_pokemon.assert_called_once_with(2)
+
+    def test_never_whiteout_loops_while_someone_still_shows_hp(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        macros.machine.frame = 20
+        state = self._state(((0, 20), (12, 20)))
+        for _ in range(6):  # the game keeps rejecting slot 2
+            tactical_battle_step(state, macros)
+        macros.handle_whiteout.assert_not_called()
+        self.assertEqual(macros.switch_fainted_pokemon.call_count, 6)
+
+
+class RivalTrackerTests(unittest.TestCase):
+    def test_fight_then_win_latches(self):
+        from src.live_status import RIVAL_MAP, RivalTracker
+
+        def st(mode, fainted=False):
+            return SimpleNamespace(map_group=RIVAL_MAP[0], map_number=RIVAL_MAP[1], battle_mode=mode, fainted=fainted)
+
+        t = RivalTracker()
+        t.update(st(0))
+        self.assertEqual(t.label, "-")
+        t.update(st(2))
+        self.assertEqual(t.label, "FIGHT")
+        t.update(st(0))
+        self.assertEqual(t.label, "beaten")
+
+    def test_loss_does_not_count(self):
+        from src.live_status import RIVAL_MAP, RivalTracker
+
+        t = RivalTracker()
+        t.update(SimpleNamespace(map_group=RIVAL_MAP[0], map_number=RIVAL_MAP[1], battle_mode=2, fainted=False))
+        t.update(SimpleNamespace(map_group=RIVAL_MAP[0], map_number=RIVAL_MAP[1], battle_mode=0, fainted=True))
+        self.assertFalse(t.beaten)

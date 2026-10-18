@@ -164,7 +164,7 @@ class MacroTests(unittest.TestCase):
                 return bytes([0] * n)
 
         machine = FakeMachineWithMemory(start_cursor=5)
-        macros = Macros(machine, ScriptedReader([gs(battle_mode=2)]))
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=2), gs(battle_mode=2, battle_mon_hp=15)]))
         res = macros.switch_fainted_pokemon(4)
         self.assertTrue(res.ok)
         self.assertEqual(machine.cursor, 4)
@@ -173,3 +173,28 @@ class MacroTests(unittest.TestCase):
         self.assertIn("a", buttons)
 
 
+    def test_switch_fainted_pokemon_tries_next_slot_when_one_is_rejected(self):
+        class Mem(FakeMachine):
+            def __init__(self):
+                super().__init__()
+                self.cursor = 1
+
+            def press(self, button, frames=8):
+                super().press(button, frames)
+                if button == "up" and self.cursor > 1:
+                    self.cursor -= 1
+                elif button == "down" and self.cursor < 6:
+                    self.cursor += 1
+
+            def read(self, bank, addr, n=1):
+                return bytes([self.cursor]) if addr == 0xcfa9 else bytes([0] * n)
+
+        machine = Mem()
+        # first pick (slot 3) is rejected by the game, the next one (slot 2) goes in
+        states = [gs(battle_mode=2), gs(battle_mode=2, battle_mon_hp=0), gs(battle_mode=2, battle_mon_hp=11)]
+        macros = Macros(machine, ScriptedReader(states))
+        res = macros.switch_fainted_pokemon(3)
+        self.assertTrue(res.ok)
+        self.assertIn("slot 2", res.message)
+        self.assertEqual([b for b, _ in machine.presses].count("down"), 2)
+        self.assertEqual([b for b, _ in machine.presses].count("up"), 1)
