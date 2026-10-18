@@ -29,12 +29,12 @@ def render() -> str:
         return "no live runs found (start tools.play_live first)"
     header = f"{'run':8s} {'step':>5s} {'map':24s} {'pos':>8s} {'ret':>8s} {'pty':>3s} " + " ".join(
         f"{SHORT[l]:>5s}" for l, _ in CHECKLIST
-    ) + "  next"
+    ) + f" {'rival':>6s}  next"
     lines = [header, "-" * len(header)]
     now = time.time()
     for r in rows:
         stale = "" if now - r["updated"] < 120 else "  (stale)"
-        marks = " ".join(f"{('yes' if r['done'].get(l) else '-'):>5s}" for l, _ in CHECKLIST)
+        marks = " ".join(f"{('yes' if r['done'].get(l) else '-'):>5s}" for l, _ in CHECKLIST) + f" {r.get('rival', '-'):>6s}"
         egg = "*egg*" if r.get("egg_in_party") else ""
         lines.append(
             f"{r['tag']:8s} {r['step']:5d} {r['map']:24s} {str(tuple(r['pos'])):>8s} {r['return']:8.1f} "
