@@ -9,7 +9,6 @@ import numpy as np
 
 from src.battle import tactical_battle_step
 from src.emulator import Emulator
-from src.llm_supervisor import Supervisor
 from src.macros import Macros
 from src.mover import Mover, walkable
 from src.ppo import load_policy
@@ -17,7 +16,6 @@ from src.ram_parser import RamParser, dialogue_open
 from src.rl_env import ACTIONS, observe
 from src.states import StateRegistry
 from src.step import TileStepper
-from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
 
 _DIRS = ("up", "down", "left", "right")
@@ -53,6 +51,17 @@ def main(argv=None) -> int:
         default=10,
         help="number of Pokéballs to equip if empty (default 10)",
     )
+    parser.add_argument(
+        "--greedy",
+        action="store_true",
+        help="use greedy argmax action selection instead of stochastic sampling",
+    )
+    parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.5,
+        help="action sampling temperature (default 0.5)",
+    )
     args = parser.parse_args(argv)
 
     print(f"Starting live play from '{args.state}' at {args.speed}x speed.")
@@ -71,7 +80,6 @@ def main(argv=None) -> int:
         macros = Macros(emu, reader)
         mover = Mover(emu, reader)
         stepper = TileStepper(emu, reader)
-        supervisor = Supervisor(client=None, registry=execution_registry(emu, reader, mover=mover, macros=macros))
 
         policy = None
         is_deep_policy = False
@@ -89,6 +97,7 @@ def main(argv=None) -> int:
         visited: set[tuple[int, int, int, int]] = set()
         seen_tiles: set[tuple[int, int, int, int]] = set()
         seen_maps: set[tuple[int, int]] = set()
+        tile_visit_counts: dict[tuple[int, int, int, int], int] = {}
 
         blocked_count = 0
         last_action = None
@@ -126,13 +135,35 @@ def main(argv=None) -> int:
                 step_idx += 1
                 continue
 
-            # 3. Check Triggers (Cut, etc.)
+            # 3. Check Triggers (Cut, Stuck, etc.)
             trigger = evaluate(state, stuck_count=blocked_count)
-            if trigger is not None and getattr(trigger.kind, "value", trigger.kind) == "CUT_BLOCKED" and state.party_can_cut:
-                print(f"[Step {step_idx}] Trigger {trigger.kind}: Using Cut on tree...")
-                macros.use_cut()
-                step_idx += 1
-                continue
+            if trigger is not None or blocked_count >= 4:
+                kind_str = getattr(getattr(trigger, "kind", None), "value", str(getattr(trigger, "kind", "")))
+                if kind_str == "CUT_BLOCKED" and state.party_can_cut:
+                    print(f"[Step {step_idx}] Trigger {trigger.kind}: Using Cut on tree...")
+                    macros.use_cut()
+                    step_idx += 1
+                    continue
+                elif kind_str == "STUCK" or blocked_count >= 4:
+                    tiles = getattr(state, "tiles", {})
+                    # Find all walkable directions and sort by fewest visits
+                    candidates = []
+                    for d in ("left", "right", "up", "down"):
+                        if walkable(tiles.get(d, 0xFF), d):
+                            dx, dy = _DELTA[d]
+                            target = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                            candidates.append((tile_visit_counts.get(target, 0), d))
+                    if candidates:
+                        candidates.sort(key=lambda x: x[0])
+                        escape_dir = candidates[0][1]
+                        print(f"[Step {step_idx}] Stuck at {state.pos}! Escaping via '{escape_dir}' into open frontier...")
+                        mover.run_path([escape_dir])
+                    else:
+                        emu.press("b", frames=8)
+                        emu.tick(16, render=True)
+                    blocked_count = 0
+                    step_idx += 1
+                    continue
 
             # 4. Overworld Movement via Policy
             obs = observe(state, visited)
@@ -144,21 +175,46 @@ def main(argv=None) -> int:
                 elif hasattr(policy, "probs"):
                     probs = policy.probs(obs).copy()
 
-            # Obstacle avoidance: if bumping into obstacle, mask blocked directions
-            if blocked_count >= 2 and probs is not None:
+            if probs is not None:
                 tiles = getattr(state, "tiles", {})
+                OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
+
+                # A. Always mask blocked / non-walkable directions (trees, water, fences)
                 for act_idx, dir_name in enumerate(ACTIONS[:4]):
                     t = tiles.get(dir_name, 0xFF)
                     if not walkable(t, dir_name):
                         probs[act_idx] = 0.0
+
+                # B. Novelty-biased exploration: penalize revisiting already-explored tiles
+                cur_tile = (state.map_group, state.map_number, state.x, state.y)
+                tile_visit_counts[cur_tile] = tile_visit_counts.get(cur_tile, 0) + 1
+                for act_idx, dir_name in enumerate(ACTIONS[:4]):
+                    dx, dy = _DELTA[dir_name]
+                    target = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                    visits = tile_visit_counts.get(target, 0)
+                    if visits > 0:
+                        probs[act_idx] *= (1.0 / (1.0 + 0.4 * visits))
+
+                # C. Anti-backtracking: reduce immediate 180-degree turnarounds
+                if last_action and last_action in OPPOSITE:
+                    opp_dir = OPPOSITE[last_action]
+                    if opp_dir in ACTIONS[:4]:
+                        opp_idx = ACTIONS.index(opp_dir)
+                        probs[opp_idx] *= 0.4
+
                 total_p = probs.sum()
                 if total_p > 1e-6:
                     probs /= total_p
-                    action_idx = int(np.random.choice(len(probs), p=probs))
+                    if args.greedy:
+                        action_idx = int(np.argmax(probs))
+                    else:
+                        logits = np.log(probs + 1e-10) / max(0.01, args.temperature)
+                        logits -= logits.max()
+                        p_scaled = np.exp(logits)
+                        p_scaled /= p_scaled.sum()
+                        action_idx = int(np.random.choice(len(p_scaled), p=p_scaled))
                 else:
                     action_idx = int(np.random.choice(4))
-            elif probs is not None:
-                action_idx = int(np.random.choice(len(probs), p=probs))
             else:
                 action_idx = int(np.random.choice(4))
 

@@ -24,6 +24,7 @@ from src.battle import tactical_battle_step
 from src.deep_policy import SpatialVisionPolicy
 from src.emulator import Emulator
 from src.macros import Macros
+from src.mover import walkable
 from src.ram_parser import RamParser, dialogue_open
 from src.rl_env import ACTIONS, observe, progress_reward
 from src.states import StateRegistry
@@ -58,6 +59,7 @@ def _worker_fn(pipe, seed: int, start_state_name: str, max_steps: int):
         seen_events: set[int] = set()
         seen_waypoints: set[tuple[int, int]] = set()
         caught_counts: dict[int, int] = {}
+        blocked_count = 0
 
         def get_obs():
             st = reader.parse(emu.frame)
@@ -82,6 +84,7 @@ def _worker_fn(pipe, seed: int, start_state_name: str, max_steps: int):
                 seen_events.clear()
                 seen_waypoints.clear()
                 caught_counts.clear()
+                blocked_count = 0
                 steps = 0
                 screen, ram_vec, _ = get_obs()
                 pipe.send((screen, ram_vec))
@@ -95,13 +98,27 @@ def _worker_fn(pipe, seed: int, start_state_name: str, max_steps: int):
                 # Handle in-game events
                 if before.battle_mode != 0:
                     tactical_battle_step(before, macros)
+                    blocked_count = 0
                 elif dialogue_open(before):
                     macros.mash_text(max_frames=80)
+                    blocked_count = 0
                 elif action_name == "a":
                     emu.press("a", frames=8)
                     emu.tick(12, render=False)
+                    moved = False
                 else:
                     moved = stepper.step(action_name)
+                    if not moved:
+                        blocked_count += 1
+                        if blocked_count >= 4:
+                            st_cur = reader.parse(emu.frame)
+                            tiles = getattr(st_cur, "tiles", {})
+                            walkables = [d for d in ("left", "right", "up", "down") if walkable(tiles.get(d, 0xFF), d)]
+                            if walkables:
+                                stepper.step(walkables[seed % len(walkables)])
+                            blocked_count = 0
+                    else:
+                        blocked_count = 0
 
                 after = reader.parse(emu.frame)
                 step_rew, disc_tile, disc_map = progress_reward(

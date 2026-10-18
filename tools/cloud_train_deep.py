@@ -29,7 +29,7 @@ def main(argv=None) -> int:
     parser.add_argument("--key", default=DEFAULT_KEY)
     parser.add_argument("--updates", type=int, default=50)
     parser.add_argument("--rollout", type=int, default=64)
-    parser.add_argument("--envs", type=int, default=12, help="parallel emulators on pod")
+    parser.add_argument("--envs", type=int, default=8, help="parallel emulators on pod (matched to dedicated cores)")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--state", default="route29_entry")

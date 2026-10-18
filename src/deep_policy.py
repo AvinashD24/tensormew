@@ -101,10 +101,14 @@ if TORCH_AVAILABLE:
             num_actions: int = 5,
             ram_hidden_dim: int = 256,
             fusion_dim: int = 512,
+            use_gru: bool = False,
+            gru_hidden_dim: int = 512,
         ):
             super().__init__()
             self.obs_dim = obs_dim
             self.num_actions = num_actions
+            self.use_gru = use_gru
+            self.gru_hidden_dim = gru_hidden_dim
 
             # 1. Visual Backbone (~11.17M params)
             self.vision_trunk = ResNet18VisionTrunk(in_channels=3)
@@ -124,9 +128,17 @@ if TORCH_AVAILABLE:
                 nn.ReLU(inplace=True),
             )
 
-            # 4. Heads (~3k params)
-            self.actor = nn.Linear(fusion_dim, num_actions)
-            self.critic = nn.Linear(fusion_dim, 1)
+            # 4. Recurrent Temporal Memory Layer (~1.57M params)
+            if use_gru:
+                self.gru = nn.GRU(fusion_dim, gru_hidden_dim, batch_first=True)
+                head_dim = gru_hidden_dim
+            else:
+                self.gru = None
+                head_dim = fusion_dim
+
+            # 5. Heads (~3k params)
+            self.actor = nn.Linear(head_dim, num_actions)
+            self.critic = nn.Linear(head_dim, 1)
 
             self._init_weights()
 
@@ -149,15 +161,54 @@ if TORCH_AVAILABLE:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
         def forward(
-            self, screen: torch.Tensor, ram_obs: torch.Tensor
+            self,
+            screen: torch.Tensor,
+            ram_obs: torch.Tensor,
+            hx: torch.Tensor | None = None,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
             """Forward pass returning (action_logits, value)."""
             vis_feat = self.vision_trunk(screen)
             ram_feat = self.ram_trunk(ram_obs)
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
-            logits = self.actor(fused)
-            value = self.critic(fused).squeeze(-1)
+
+            if self.use_gru and self.gru is not None:
+                if fused.dim() == 2:
+                    gru_out, _ = self.gru(fused.unsqueeze(1), hx)
+                    out = gru_out.squeeze(1)
+                else:
+                    out, _ = self.gru(fused, hx)
+            else:
+                out = fused
+
+            logits = self.actor(out)
+            value = self.critic(out).squeeze(-1)
             return logits, value
+
+        def forward_recurrent(
+            self,
+            screen: torch.Tensor,
+            ram_obs: torch.Tensor,
+            hx: torch.Tensor | None = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+            """Recurrent forward pass returning (action_logits, value, new_hx)."""
+            vis_feat = self.vision_trunk(screen)
+            ram_feat = self.ram_trunk(ram_obs)
+            fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
+
+            if self.use_gru and self.gru is not None:
+                if fused.dim() == 2:
+                    gru_out, new_hx = self.gru(fused.unsqueeze(1), hx)
+                    out = gru_out.squeeze(1)
+                else:
+                    out, new_hx = self.gru(fused, hx)
+            else:
+                out = fused
+                new_hx = None
+
+            logits = self.actor(out)
+            value = self.critic(out).squeeze(-1)
+            return logits, value, new_hx
+
 
         @torch.no_grad()
         def act(
@@ -236,6 +287,8 @@ if TORCH_AVAILABLE:
                     "obs_dim": self.obs_dim,
                     "num_actions": self.num_actions,
                     "param_count": self.param_count,
+                    "use_gru": self.use_gru,
+                    "gru_hidden_dim": self.gru_hidden_dim,
                     "model_type": "SpatialVisionPolicy",
                 },
                 str(path),
@@ -244,9 +297,13 @@ if TORCH_AVAILABLE:
         @classmethod
         def load(cls, path: str | Path, device: str = "cpu") -> "SpatialVisionPolicy":
             checkpoint = torch.load(str(path), map_location=device)
+            use_gru = checkpoint.get("use_gru", False)
+            gru_hidden_dim = checkpoint.get("gru_hidden_dim", 512)
             model = cls(
                 obs_dim=checkpoint.get("obs_dim", 17),
                 num_actions=checkpoint.get("num_actions", 5),
+                use_gru=use_gru,
+                gru_hidden_dim=gru_hidden_dim,
             )
             model.load_state_dict(checkpoint["state_dict"])
             model.to(device)
