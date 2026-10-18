@@ -183,7 +183,8 @@ def progress_reward(
     if not moved:
         is_busy = getattr(before, "battle_mode", 0) != 0 or dialogue_open(before)
         if not is_busy:
-            reward -= 0.05
+            bump_count = getattr(info, "consecutive_bumps", 1) if info else 1
+            reward -= 0.05 * min(4, max(1, bump_count))
     else:
         tile = (after.map_group, after.map_number, after.x, after.y)
         if tile not in seen_tiles:
@@ -346,6 +347,7 @@ class StepInfo:
     caught_pokemon: bool = False
     story_progress: bool = False
     level_up: bool = False
+    consecutive_bumps: int = 0
 
 
 @dataclass
@@ -369,6 +371,7 @@ class CrystalEnv:
         self.seen_waypoints: set[tuple[int, int]] = set()
         self.start: bytes | None = None
         self.steps = 0
+        self.consecutive_bumps = 0
 
     def reset(self, start: bytes | None = None) -> np.ndarray:
         if start is not None:
@@ -379,6 +382,7 @@ class CrystalEnv:
         if blob is not None:
             self.machine.load_state(blob)
         self.steps = 0
+        self.consecutive_bumps = 0
         # Discovery bonuses start over each episode. The frontier list does not.
         self.seen_tiles = set()
         self.seen_maps = set()
@@ -421,6 +425,11 @@ class CrystalEnv:
             moved = False
         else:
             moved = self.stepper.step(ACTIONS[action]).moved
+        if not moved and not before.battle_mode and not dialogue_open(before):
+            self.consecutive_bumps += 1
+        else:
+            self.consecutive_bumps = 0
+        info.consecutive_bumps = self.consecutive_bumps
         after = self.reader.parse(self.machine.frame)
         # Read the neighbor before progress_reward records the tile this step discovers.
         unvisited_neighbor = False
