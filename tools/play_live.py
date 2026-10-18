@@ -319,6 +319,10 @@ def main(argv=None) -> int:
                 max_hp = sum(p[1] for p in party_hp) if party_hp else 0
                 needs_heal = max_hp > 0 and cur_hp < max_hp
 
+                has_ev = getattr(state, "has_event", None)
+                has_egg = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+                gave_egg = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+
                 total_p = dir_probs.sum()
                 if is_pc and needs_heal and state.x == 3 and state.y == 3:
                     if state.facing == "up":
@@ -327,6 +331,18 @@ def main(argv=None) -> int:
                     else:
                         # Turn to face Nurse Joy directly across the counter
                         action_idx = 0
+                elif state.map_id == (26, 10) and has_egg and not gave_egg and state.y == 7 and state.x in (2, 3):
+                    # Standing on exit carpet in Mr. Pokémon's House with Mystery Egg -> step out!
+                    action_idx = 1
+                elif state.map_id == (24, 5) and gave_egg and state.y == 11 and state.x in (4, 5):
+                    # Standing on exit carpet in Elm's Lab after delivering egg -> step out!
+                    action_idx = 1
+                elif state.map_id in ((26, 4), (26, 6), (26, 7), (26, 8), (26, 9), (24, 6), (24, 7), (24, 8), (24, 9), (10, 6), (10, 8), (10, 9), (10, 11)) and state.y == 7 and state.x in (2, 3, 4):
+                    # Incidental building exit mat -> step out!
+                    action_idx = 1
+                elif is_pc and not needs_heal and state.y == 7 and state.x in (3, 4):
+                    # Fully healed in Pokémon Center on exit mat -> step out!
+                    action_idx = 1
                 elif total_p > 1e-6:
                     dir_probs /= total_p
                     if args.greedy:
@@ -427,6 +443,20 @@ def main(argv=None) -> int:
                     scr = emu._pb.screen.ndarray[:, :, :3]
                     img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
                     img.save("logs/live_snapshot.png")
+                except Exception:
+                    pass
+
+            # Auto-save checkpoints on major story milestones
+            if has_egg and not os.path.exists("states/mystery_egg_received.state"):
+                try:
+                    emu.save_state("states/mystery_egg_received.state")
+                    print("[Checkpoint] Saved states/mystery_egg_received.state!", flush=True)
+                except Exception:
+                    pass
+            if gave_egg and not os.path.exists("states/mystery_egg_delivered.state"):
+                try:
+                    emu.save_state("states/mystery_egg_delivered.state")
+                    print("[Checkpoint] Saved states/mystery_egg_delivered.state!", flush=True)
                 except Exception:
                     pass
 
