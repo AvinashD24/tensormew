@@ -1,11 +1,11 @@
 # tensormew handoff
 
-**HEAD:** `b11a03f` on `main`  
+**HEAD:** `f813faa` on `main`  
 **Game:** Pokémon Crystal US 1.1, PyBoy. ROM `rom/pokemon_crystal.gbc`, symbols `rom/pokemon_crystal.sym`.  
 **Spec:** `SPEC.md`. Do not treat `pokemon_agent.md` as the hackathon contract.  
 **Near-term goal:** earn the first Johto badge (Falkner, Violet City) by play, not by a stored route.
 
-Saved weights and databases live under `logs/` and are gitignored. The latest policy on this machine is `logs/ppo_policy.npz`. Another machine does not have it until someone copies it.
+Saved weights and databases live under `logs/` and are gitignored. The latest recurrent spatial vision policy on this machine is `logs/deep_policy.pt` (13.2M parameters, trained on RTX 4090 with PPO + curriculum resets). Another machine does not have it until someone copies it.
 
 ---
 
