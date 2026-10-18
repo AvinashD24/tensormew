@@ -74,6 +74,7 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wOptions"),
     Sym("wMoney", size=3),
     Sym("wTMsHMs", size=57),
+    Sym("wEventFlags", size=256, required=False),
 )
 
 
@@ -108,6 +109,17 @@ class GameState:
     money: int = 0
     hm_counts: tuple[int, ...] = ()
     script_mode: int = 0
+    event_flags: tuple[int, ...] = ()
+    story_objective: str = ""
+
+    def has_event(self, flag: str | int) -> bool:
+        if not self.event_flags:
+            return False
+        from src.story_flags import EVENT_FLAGS, is_flag_set
+        flag_id = EVENT_FLAGS.get(flag) if isinstance(flag, str) else int(flag)
+        if flag_id is None:
+            return False
+        return is_flag_set(self.event_flags, flag_id)
 
     @property
     def map_id(self) -> tuple[int, int]:
@@ -186,6 +198,8 @@ class GameState:
             "money": self.money,
             "hm_counts": list(self.hm_counts),
             "script_mode": self.script_mode,
+            "event_flags": list(self.event_flags),
+            "story_objective": self.story_objective,
         }
 
     @classmethod
@@ -223,6 +237,8 @@ class GameState:
             money=int(d.get("money", 0)),
             hm_counts=tuple(d.get("hm_counts") or []),
             script_mode=int(d.get("script_mode", 0)),
+            event_flags=tuple(d.get("event_flags") or []),
+            story_objective=str(d.get("story_objective", "")),
         )
 
     def to_text(self) -> str:
@@ -230,6 +246,7 @@ class GameState:
         mode = "overworld" if self.battle_mode == 0 else f"battle({self.battle_mode})"
         hp = ", ".join(f"{cur}/{mx}" for cur, mx in self.party_hp)
         when = _TIME.get(self.time_of_day, str(self.time_of_day))
+        quest_suffix = f" quest={self.story_objective}" if self.story_objective else ""
         return "\n".join(
             [
                 f"map=({self.map_group},{self.map_number}) pos=({self.x},{self.y}) facing={self.facing}",
@@ -237,7 +254,7 @@ class GameState:
                 f"mode={mode} script={self.script_running} script_mode={self.script_mode} text={self.textbox_flags}",
                 f"party={self.party_count} hp=[{hp}]",
                 f"badges={self.badges} bag: items={self.num_items} key={self.num_key_items} balls={self.num_balls}",
-                f"time={when} {options_text(self.options)}",
+                f"time={when} {options_text(self.options)}{quest_suffix}",
             ]
         )
 
@@ -294,6 +311,13 @@ class RamParser:
             tmhm = (int(tmhm),)
         hm_counts = tuple(int(b) for b in tmhm[50:57])
         facing_raw = int(raw["wFacingDirection"])
+        flags_raw = raw.get("wEventFlags", ())
+        if not isinstance(flags_raw, tuple):
+            flags_raw = (int(flags_raw),) if flags_raw else ()
+        story_objective = ""
+        if flags_raw:
+            from src.story_flags import next_story_milestone
+            story_objective = next_story_milestone(flags_raw)
         return GameState(
             map_group=int(raw["wMapGroup"]),
             map_number=int(raw["wMapNumber"]),
@@ -329,4 +353,6 @@ class RamParser:
             options=int(raw["wOptions"]),
             money=money,
             hm_counts=hm_counts,
+            event_flags=flags_raw,
+            story_objective=story_objective,
         )

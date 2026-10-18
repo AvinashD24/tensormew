@@ -19,6 +19,7 @@ from src.collision import (
     COLL_WATERFALL_UP,
     COLL_WHIRLPOOL,
     COLL_WHIRLPOOL_2C,
+    allows_direction,
     is_cut_tree,
 )
 from src.step import DIRS, TileStepper
@@ -51,10 +52,14 @@ _DELTA = {
 }
 
 
-def walkable(tile: int) -> bool:
+def walkable(tile: int, direction: str | None = None) -> bool:
     if is_cut_tree(tile):
         return False
-    return tile not in _BLOCKED
+    if tile in _BLOCKED:
+        return False
+    if direction is not None and not allows_direction(tile, direction):
+        return False
+    return True
 
 
 def _manhattan(x0: int, y0: int, x1: int, y1: int) -> int:
@@ -129,7 +134,7 @@ class Mover:
                     stuck=self.stuck,
                     steps=steps,
                 )
-            candidates = [d for d in _reducing_dirs(last.x, last.y, x, y) if walkable(last.tiles.get(d, 0xFF))]
+            candidates = [d for d in _reducing_dirs(last.x, last.y, x, y) if walkable(last.tiles.get(d, 0xFF), d)]
             if not candidates:
                 return MoveResult(
                     False,

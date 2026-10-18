@@ -119,9 +119,74 @@ for _name, _value in list(globals().items()):
 
 CUT_TREE_VALUES = frozenset({0x12, 0x1A})
 
+LEDGE_TILES = frozenset({
+    COLL_HOP_RIGHT, COLL_HOP_LEFT, COLL_HOP_UP, COLL_HOP_DOWN,
+    COLL_HOP_DOWN_RIGHT, COLL_HOP_DOWN_LEFT, COLL_HOP_UP_RIGHT, COLL_HOP_UP_LEFT,
+    COLL_WALK_RIGHT, COLL_WALK_LEFT, COLL_WALK_UP, COLL_WALK_DOWN,
+    COLL_WALK_RIGHT_ALT, COLL_WALK_LEFT_ALT, COLL_WALK_UP_ALT, COLL_WALK_DOWN_ALT,
+})
+
+WARP_TILES = frozenset({
+    COLL_WARP_CARPET_DOWN,
+    COLL_DOOR,
+    COLL_LADDER,
+    COLL_STAIRCASE_73,
+    COLL_CAVE_74,
+    COLL_DOOR_75,
+    COLL_WARP_CARPET_LEFT,
+    COLL_WARP_77,
+    COLL_WARP_CARPET_UP,
+    COLL_DOOR_79,
+    COLL_STAIRCASE,
+    COLL_CAVE,
+    COLL_WARP_PANEL,
+    COLL_DOOR_7D,
+    COLL_WARP_CARPET_RIGHT,
+    COLL_WARP_7F,
+})
+
+
 def coll_name(value: int) -> str:
     return COLL_NAMES.get(value, f'0x{value:02x}')
 
+
 def is_cut_tree(value: int) -> bool:
     return value in CUT_TREE_VALUES
+
+
+def is_ledge(value: int) -> bool:
+    return value in LEDGE_TILES
+
+
+def is_warp(value: int) -> bool:
+    return value in WARP_TILES
+
+
+def allows_direction(tile: int, direction: str) -> bool:
+    """Return whether the tile can be stepped into when moving in `direction`."""
+    if tile in (COLL_HOP_DOWN, COLL_WALK_DOWN, COLL_WALK_DOWN_ALT):
+        return direction == "down"
+    if tile in (COLL_HOP_LEFT, COLL_WALK_LEFT, COLL_WALK_LEFT_ALT):
+        return direction == "left"
+    if tile in (COLL_HOP_RIGHT, COLL_WALK_RIGHT, COLL_WALK_RIGHT_ALT):
+        return direction == "right"
+    if tile in (COLL_HOP_UP, COLL_WALK_UP, COLL_WALK_UP_ALT):
+        return direction == "up"
+    if tile == COLL_HOP_DOWN_RIGHT:
+        return direction in ("down", "right")
+    if tile == COLL_HOP_DOWN_LEFT:
+        return direction in ("down", "left")
+    if tile == COLL_HOP_UP_RIGHT:
+        return direction in ("up", "right")
+    if tile == COLL_HOP_UP_LEFT:
+        return direction in ("up", "left")
+    if tile == COLL_DOWN_WALL and direction == "up":
+        return False
+    if tile == COLL_UP_WALL and direction == "down":
+        return False
+    if tile == COLL_RIGHT_WALL and direction == "left":
+        return False
+    if tile == COLL_LEFT_WALL and direction == "right":
+        return False
+    return True
 
