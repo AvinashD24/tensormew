@@ -23,6 +23,7 @@ from src.local_nav import LocalNav
 from src.rl_env import ACTIONS, StepInfo, navigation_potential, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
+from src.game_data import get_map_name, get_party_moveset, get_species_name
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
 
@@ -428,16 +429,37 @@ def main(argv=None) -> int:
             notes_str = f" [{' '.join(notes)}]" if notes else ""
 
             step_idx += 1
+            map_name = get_map_name(after_state.map_group, after_state.map_number)
             print(
-                f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
-                f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
+                f"[Step {step_idx:4d}] {map_name:18s} ({after_state.x:2d}, {after_state.y:2d}) | "
                 f"Act: {direction:5s} | Rew: {step_rew:+.2f} | "
                 f"Return: {cumulative_reward:+.2f} | Phi: {phi_now:5.1f} | "
                 f"Tiles: {len(seen_tiles):3d} | Party: {after_state.party_count}/6{notes_str}",
                 flush=True,
             )
 
+            # Every 25 moves, print dedicated telemetry report with reward, moveset, and location
             if step_idx == 1 or step_idx % 25 == 0:
+                lead_name = get_species_name(after_state.party_species[0]) if after_state.party_species else "None"
+                lead_lvl = after_state.party_levels[0] if getattr(after_state, "party_levels", None) else "?"
+                lead_hp = (
+                    f"{after_state.party_hp[0][0]}/{after_state.party_hp[0][1]}"
+                    if getattr(after_state, "party_hp", None) and len(after_state.party_hp) > 0
+                    else "?/?"
+                )
+                moves = get_party_moveset(getattr(after_state, "party_moves", ()))
+                moves_str = ", ".join(moves) if moves else "None"
+
+                print(
+                    f"\n{'='*75}\n"
+                    f"🎮 [Move {step_idx:4d}] LOCATION : {map_name} (Map {after_state.map_group},{after_state.map_number}) at ({after_state.x:2d}, {after_state.y:2d}) | Facing: {after_state.facing}\n"
+                    f"🏆 [Move {step_idx:4d}] REWARD   : Step={step_rew:+.2f} | Cumulative Return={cumulative_reward:+.2f} | Potential Φ={phi_now:5.2f} | Explored Tiles={len(seen_tiles):3d}\n"
+                    f"🐾 [Move {step_idx:4d}] LEAD MON : {lead_name} Lv.{lead_lvl} (HP: {lead_hp}) | Party: {after_state.party_count}/6\n"
+                    f"⚔️  [Move {step_idx:4d}] MOVESET  : [{moves_str}]\n"
+                    f"{'='*75}\n",
+                    flush=True,
+                )
+
                 try:
                     from PIL import Image
                     scr = emu._pb.screen.ndarray[:, :, :3]
