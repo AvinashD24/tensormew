@@ -29,10 +29,15 @@ def main(argv=None) -> int:
     parser.add_argument("--key", default=DEFAULT_KEY)
     parser.add_argument("--updates", type=int, default=50)
     parser.add_argument("--rollout", type=int, default=64)
-    parser.add_argument("--envs", type=int, default=12, help="parallel emulators on pod")
+    parser.add_argument("--envs", type=int, default=8, help="parallel emulators on pod (matched to dedicated cores)")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--state", default="route29_entry")
+    parser.add_argument("--states", default="", help="comma-separated list of curriculum states")
+    parser.add_argument("--curriculum", action="store_true", default=True, help="use multi-state curriculum resets")
+    parser.add_argument("--no-curriculum", action="store_false", dest="curriculum")
+    parser.add_argument("--recurrent", action="store_true", default=True, help="use recurrent GRU temporal memory (13.2M model)")
+    parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")
     parser.add_argument("--save", default="logs/deep_policy.pt")
     args = parser.parse_args(argv)
 
@@ -61,8 +66,21 @@ def main(argv=None) -> int:
         print("Failed to sync codebase to pod.", file=sys.stderr)
         return 1
 
+    extra_flags = []
+    if not args.curriculum:
+        extra_flags.append("--no-curriculum")
+    if not args.recurrent:
+        extra_flags.append("--no-recurrent")
+    else:
+        extra_flags.append("--recurrent")
+    if args.states:
+        extra_flags.append(f"--states {args.states}")
+
+    flags_str = " ".join(extra_flags)
+    model_desc = "13.2M Recurrent Spatial Vision Policy" if args.recurrent else "11.6M Spatial Vision Policy"
+
     print(
-        f"Step 2: Launching {args.updates} updates of 11.6M Spatial Vision Policy on RTX 4090 GPU...",
+        f"Step 2: Launching {args.updates} updates of {model_desc} on RTX 4090 GPU (curriculum={args.curriculum})...",
         flush=True,
     )
     train_remote = [
@@ -76,13 +94,13 @@ def main(argv=None) -> int:
         f"root@{args.host}",
         f"cd /workspace/tensormew && PYTHONUNBUFFERED=1 python3 -m tools.train_deep_ppo --updates {args.updates} "
         f"--rollout {args.rollout} --envs {args.envs} --batch-size {args.batch_size} --lr {args.lr} "
-        f"--state {args.state} --save {args.save} --resume",
+        f"--state {args.state} --save {args.save} --resume {flags_str}",
     ]
     if run_cmd(train_remote) != 0:
         print("Remote GPU training encountered an error.", file=sys.stderr)
         return 1
 
-    print("Step 3: Syncing trained 11.6M checkpoint back to local machine...", flush=True)
+    print("Step 3: Syncing trained checkpoint back to local machine...", flush=True)
     sync_down = [
         "rsync",
         "-avz",

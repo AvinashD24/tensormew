@@ -101,10 +101,14 @@ if TORCH_AVAILABLE:
             num_actions: int = 5,
             ram_hidden_dim: int = 256,
             fusion_dim: int = 512,
+            use_gru: bool = False,
+            gru_hidden_dim: int = 512,
         ):
             super().__init__()
             self.obs_dim = obs_dim
             self.num_actions = num_actions
+            self.use_gru = use_gru
+            self.gru_hidden_dim = gru_hidden_dim
 
             # 1. Visual Backbone (~11.17M params)
             self.vision_trunk = ResNet18VisionTrunk(in_channels=3)
@@ -124,9 +128,17 @@ if TORCH_AVAILABLE:
                 nn.ReLU(inplace=True),
             )
 
-            # 4. Heads (~3k params)
-            self.actor = nn.Linear(fusion_dim, num_actions)
-            self.critic = nn.Linear(fusion_dim, 1)
+            # 4. Recurrent Temporal Memory Layer (~1.57M params)
+            if use_gru:
+                self.gru = nn.GRU(fusion_dim, gru_hidden_dim, batch_first=True)
+                head_dim = gru_hidden_dim
+            else:
+                self.gru = None
+                head_dim = fusion_dim
+
+            # 5. Heads (~3k params)
+            self.actor = nn.Linear(head_dim, num_actions)
+            self.critic = nn.Linear(head_dim, 1)
 
             self._init_weights()
 
@@ -149,15 +161,54 @@ if TORCH_AVAILABLE:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
         def forward(
-            self, screen: torch.Tensor, ram_obs: torch.Tensor
+            self,
+            screen: torch.Tensor,
+            ram_obs: torch.Tensor,
+            hx: torch.Tensor | None = None,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
             """Forward pass returning (action_logits, value)."""
             vis_feat = self.vision_trunk(screen)
             ram_feat = self.ram_trunk(ram_obs)
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
-            logits = self.actor(fused)
-            value = self.critic(fused).squeeze(-1)
+
+            if self.use_gru and self.gru is not None:
+                if fused.dim() == 2:
+                    gru_out, _ = self.gru(fused.unsqueeze(1), hx)
+                    out = gru_out.squeeze(1)
+                else:
+                    out, _ = self.gru(fused, hx)
+            else:
+                out = fused
+
+            logits = self.actor(out)
+            value = self.critic(out).squeeze(-1)
             return logits, value
+
+        def forward_recurrent(
+            self,
+            screen: torch.Tensor,
+            ram_obs: torch.Tensor,
+            hx: torch.Tensor | None = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
+            """Recurrent forward pass returning (action_logits, value, new_hx)."""
+            vis_feat = self.vision_trunk(screen)
+            ram_feat = self.ram_trunk(ram_obs)
+            fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
+
+            if self.use_gru and self.gru is not None:
+                if fused.dim() == 2:
+                    gru_out, new_hx = self.gru(fused.unsqueeze(1), hx)
+                    out = gru_out.squeeze(1)
+                else:
+                    out, new_hx = self.gru(fused, hx)
+            else:
+                out = fused
+                new_hx = None
+
+            logits = self.actor(out)
+            value = self.critic(out).squeeze(-1)
+            return logits, value, new_hx
+
 
         @torch.no_grad()
         def act(
@@ -218,12 +269,76 @@ if TORCH_AVAILABLE:
             return p
 
 
+        @torch.no_grad()
+        def probs_recurrent(
+            self,
+            screen_np: np.ndarray,
+            ram_np: np.ndarray,
+            hx: torch.Tensor | None = None,
+            device: str = "cpu",
+        ) -> Tuple[np.ndarray, torch.Tensor | None]:
+            """Compute action probabilities and next hidden state for recurrent models."""
+            self.eval()
+            if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
+                rgb = screen_np[:, :, :3]
+            else:
+                rgb = np.repeat(screen_np[:, :, None], 3, axis=2)
+            screen_t = (
+                torch.from_numpy(rgb.transpose(2, 0, 1))
+                .unsqueeze(0)
+                .float()
+                .to(device)
+                .div_(255.0)
+            )
+            ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
+            logits, _, next_hx = self.forward_recurrent(screen_t, ram_t, hx)
+            p = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+            return p, next_hx
+
         def evaluate_actions(
             self, screen: torch.Tensor, ram_obs: torch.Tensor, actions: torch.Tensor
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             """Evaluate actions for PPO loss updates."""
+            if screen.dim() == 5:
+                # Sequential evaluation (B, T, C, H, W)
+                return self.evaluate_actions_sequence(screen, ram_obs, actions)
             logits, values = self.forward(screen, ram_obs)
             dist = Categorical(logits=logits)
+            log_probs = dist.log_prob(actions)
+            entropy = dist.entropy()
+            return log_probs, entropy, values
+
+        def evaluate_actions_sequence(
+            self,
+            screens: torch.Tensor,
+            ram_obs: torch.Tensor,
+            actions: torch.Tensor,
+            hx: torch.Tensor | None = None,
+        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            """Evaluate sequential trajectory chunk for recurrent PPO loss updates.
+
+            Args:
+                screens: (B, T, 3, H, W)
+                ram_obs: (B, T, obs_dim)
+                actions: (B, T)
+                hx: (1, B, gru_hidden_dim) initial hidden state for each chunk
+            """
+            B, T = screens.shape[:2]
+            screens_flat = screens.reshape(B * T, *screens.shape[2:])
+            ram_flat = ram_obs.reshape(B * T, -1)
+            vis_feat = self.vision_trunk(screens_flat)
+            ram_feat = self.ram_trunk(ram_flat)
+            fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1)).reshape(B, T, -1)
+
+            if self.use_gru and self.gru is not None:
+                gru_out, _ = self.gru(fused, hx)
+                out = gru_out.reshape(B * T, -1)
+            else:
+                out = fused.reshape(B * T, -1)
+
+            logits = self.actor(out)
+            values = self.critic(out).squeeze(-1).reshape(B, T)
+            dist = Categorical(logits=logits.reshape(B, T, self.num_actions))
             log_probs = dist.log_prob(actions)
             entropy = dist.entropy()
             return log_probs, entropy, values
@@ -236,19 +351,32 @@ if TORCH_AVAILABLE:
                     "obs_dim": self.obs_dim,
                     "num_actions": self.num_actions,
                     "param_count": self.param_count,
+                    "use_gru": self.use_gru,
+                    "gru_hidden_dim": self.gru_hidden_dim,
                     "model_type": "SpatialVisionPolicy",
                 },
                 str(path),
             )
 
         @classmethod
-        def load(cls, path: str | Path, device: str = "cpu") -> "SpatialVisionPolicy":
+        def load(
+            cls,
+            path: str | Path,
+            device: str = "cpu",
+            override_use_gru: bool | None = None,
+        ) -> "SpatialVisionPolicy":
             checkpoint = torch.load(str(path), map_location=device)
+            saved_use_gru = checkpoint.get("use_gru", False)
+            use_gru = saved_use_gru if override_use_gru is None else override_use_gru
+            gru_hidden_dim = checkpoint.get("gru_hidden_dim", 512)
             model = cls(
                 obs_dim=checkpoint.get("obs_dim", 17),
                 num_actions=checkpoint.get("num_actions", 5),
+                use_gru=use_gru,
+                gru_hidden_dim=gru_hidden_dim,
             )
-            model.load_state_dict(checkpoint["state_dict"])
+            strict = (use_gru == saved_use_gru)
+            model.load_state_dict(checkpoint["state_dict"], strict=strict)
             model.to(device)
             model.eval()
             return model
