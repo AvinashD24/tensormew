@@ -120,6 +120,7 @@ class _ItemGuard:
         self.fainted: set[int] = set()   # party slots known to be unusable this battle
         self.last_switch: int | None = None  # slot we tried to bring in last time
         self.attempts: dict[int, int] = {}   # failed switch tries per party slot
+        self.switches = 0                    # voluntary (low-HP) switches already made this battle
 
     def observe_frame(self, frame) -> None:
         """A long gap since the last decision means a new battle: forget per-battle memory."""
@@ -171,6 +172,19 @@ def pick_replacement_slot(state, guard: "_ItemGuard") -> int | None:
         return (-guard.attempts.get(slot, 0), party_hp[slot - 1][0], lvl)
 
     return max(cands, key=key)
+
+
+def _worth_switching_to(state, slot: int, active_idx: int, max_level_gap: int = 2) -> bool:
+    """A backup is only worth bringing in when it is healthy and not far below the Pokémon it replaces."""
+    party_hp = tuple(getattr(state, "party_hp", ()) or ())
+    levels = tuple(getattr(state, "party_levels", ()) or ())
+    if slot - 1 >= len(party_hp) or party_hp[slot - 1][1] <= 0:
+        return False
+    if party_hp[slot - 1][0] / party_hp[slot - 1][1] <= 0.5:
+        return False
+    if slot - 1 < len(levels) and active_idx < len(levels):
+        return levels[slot - 1] >= levels[active_idx] - max_level_gap
+    return True
 
 
 _GUARDS: dict[int, _ItemGuard] = {}
@@ -255,9 +269,12 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), g
             if num_items > 0 and guard.allows(cur_hp, frame):
                 guard.note_use(cur_hp)
                 return macros.use_battle_item(item_slot=1, target_slot=active_idx + 1)
-            # Second priority: switch to a conscious backup Pokémon if low HP and out of items
+            # Second priority: switch to a conscious backup Pokémon if low HP and out of items, but only
+            # one that can really fight (a Lv 3 backup against a gym leader just faints) and only once per
+            # battle: a switch that reports success without changing the active Pokémon looped forever.
             backup = pick_replacement_slot(state, guard)
-            if backup is not None:
+            if backup is not None and guard.switches < 1 and _worth_switching_to(state, backup, active_idx):
+                guard.switches += 1
                 return macros.switch_pokemon(backup)
         # Decisive combat: Fight to the end using the best offensive move!
         slot = pick_best_move(state, enemy_types)

@@ -278,6 +278,38 @@ class BattleTests(unittest.TestCase):
         macros.switch_pokemon.assert_called_once_with(2)
         macros.choose_move.assert_not_called()
 
+    def test_trainer_battle_does_not_switch_to_a_far_weaker_backup(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Falkner's gym: Lv 13 lead nearly dead, but the only backup is a healthy Lv 3 that would be one-shot
+        state = SimpleNamespace(
+            battle_mode=2, num_items=0, party_count=2, party_species=(155, 16),
+            party_hp=((4, 35), (15, 15)), party_levels=(13, 3),
+            party_moves=((33, 0, 0, 0), (33, 0, 0, 0)),
+            enemy_species=17, enemy_hp=23, enemy_max_hp=23,
+        )
+        tactical_battle_step(state, macros)
+        macros.switch_pokemon.assert_not_called()
+        macros.choose_move.assert_called_once()
+
+    def test_trainer_battle_switches_at_most_once_so_it_cannot_loop(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        state = SimpleNamespace(
+            battle_mode=2, num_items=0, party_count=2, party_species=(155, 16),
+            party_hp=((5, 20), (18, 18)), party_levels=(5, 5),
+            party_moves=((33, 0, 0, 0), (33, 0, 0, 0)),
+            enemy_species=152, enemy_hp=10, enemy_max_hp=20,
+        )
+        for _ in range(5):  # the switch "succeeds" but the active Pokémon never changes
+            tactical_battle_step(state, macros)
+        self.assertEqual(macros.switch_pokemon.call_count, 1)
+        self.assertEqual(macros.choose_move.call_count, 4)
+
     def test_tactical_battle_never_runs_away_in_trainer_battle_even_if_low_and_no_backups(self):
         from unittest.mock import MagicMock
         from src.battle import tactical_battle_step

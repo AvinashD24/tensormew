@@ -20,12 +20,17 @@ from functools import lru_cache
 from src.mover import walkable
 from src.return_nav import _DIRS, _Rom
 
-TARGET_LEVEL = 13
+TARGET_LEVEL = 15
 HEAL_BELOW = 0.5
+GYM_HEAL_BELOW = 0.6   # inside the gym: walk out to the Pokémon Center between trainers below this
 
 ROUTE_30 = (26, 1)
 CHERRYGROVE = (26, 3)
+VIOLET_CITY = (10, 5)
+VIOLET_GYM = (10, 7)
 PC_DOOR_OUTSIDE = (29, 4)  # standing here, "up" walks onto the Pokémon Center door at (29, 3)
+VIOLET_PC_DOOR = (31, 25)  # the Pokémon Center warp tile in Violet City
+VIOLET_GYM_ARRIVAL = (18, 17)  # where leaving the gym puts you in Violet City
 TALL_GRASS = 0x18
 _OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
 
@@ -62,12 +67,16 @@ class _PrepNav:
         rom = _Rom()
         self.cells: dict[tuple[int, int], dict[tuple[int, int], int]] = {}
         self.size: dict[tuple[int, int], tuple[int, int]] = {}
-        for mid, prefix in ((ROUTE_30, "Route30"), (CHERRYGROVE, "CherrygroveCity")):
+        # (The gym interior is not in this graph: its tiles use their own collision table, so it is
+        # walked with the hardcoded `gym_exit_step` below, like `falkner_nav` does on the way in.)
+        for mid, prefix in (
+            (ROUTE_30, "Route30"), (CHERRYGROVE, "CherrygroveCity"), (VIOLET_CITY, "VioletCity"),
+        ):
             w, h, cells, conns = rom.grid(prefix)
             self.cells[mid], self.size[mid] = cells, (w, h)
             if mid == ROUTE_30:
                 self.south_dx = conns["south"][3]   # Route 30 (x, h) -> Cherrygrove (x + dx, 0)
-            else:
+            elif mid == CHERRYGROVE:
                 self.north_dx = conns["north"][3]   # Cherrygrove (x, -1) -> Route 30 (x + dx, h - 1)
         self.rev: dict[tuple, list] = {}
         for mid, cells in self.cells.items():
@@ -135,16 +144,51 @@ def _nav() -> _PrepNav:
     return _PrepNav()
 
 
+def gym_exit_step(x: int, y: int) -> str:
+    """Walk back out of Violet Gym: the S-curve bridge of `falkner_nav.violet_gym_step`, in reverse.
+
+    Forward: bottom straight (x 4..5, y 15->11), east along y 9..10 to x>=7, up, west along y 7..8 to
+    x<=2, up, east along y 4..6 to the centre column, up to Falkner. The exit is the bottom of the straight.
+    """
+    if y >= 11:
+        if x < 4:
+            return "right"
+        if x > 5:
+            return "left"
+        return "down"
+    if y in (9, 10):
+        return "left" if x > 5 else "down"
+    if y in (7, 8):
+        return "right" if x < 7 else "down"
+    return "left" if x > 2 else "down"   # centre platform (y<=6) back to the west bridge
+
+
+def in_falkner_quest(state) -> bool:
+    has = getattr(state, "has_event", None)
+    return callable(has) and bool(has("EVENT_GAVE_MYSTERY_EGG_TO_ELM")) and not has("EVENT_BEAT_FALKNER")
+
+
 def prep_direction(state) -> str | None:
     """Direction to step while training or healing, or None to leave movement to the normal route."""
     global _last_pace
-    if not needs_training(state) or getattr(state, "battle_mode", 0):
+    if getattr(state, "battle_mode", 0) or not in_falkner_quest(state):
         return None
     mid = (state.map_group, state.map_number)
-    if mid not in (ROUTE_30, CHERRYGROVE):
-        return None
     x, y = state.x, state.y
     nav = _nav()
+
+    # Violet City / the gym: arrive at full HP, and walk back out to heal between gym trainers.
+    # Beaten trainers stay beaten, so a trip to the Pokémon Center costs only the walk.
+    if mid in (VIOLET_CITY, VIOLET_GYM):
+        limit = 0.999 if mid == VIOLET_CITY else GYM_HEAL_BELOW
+        if lead_hp_fraction(state) >= limit:
+            return None
+        if mid == VIOLET_GYM:
+            return gym_exit_step(x, y)
+        return nav.toward("heal_violet", [(VIOLET_CITY,) + VIOLET_PC_DOOR], mid, x, y)
+
+    if not needs_training(state) or mid not in (ROUTE_30, CHERRYGROVE):
+        return None
 
     if lead_hp_fraction(state) < HEAL_BELOW:
         if mid == CHERRYGROVE and (x, y) == PC_DOOR_OUTSIDE:

@@ -85,6 +85,53 @@ class GymPrepTests(unittest.TestCase):
         self.assertEqual((state.x, state.y), (PC_DOOR_OUTSIDE[0], PC_DOOR_OUTSIDE[1] - 1))
 
 
+class VioletHealTests(unittest.TestCase):
+    def test_gym_exit_retraces_the_forward_route_in_reverse(self):
+        from src.falkner_nav import violet_gym_step
+
+        # Walk the forward route (entrance -> Falkner), recording every tile, ignoring walls.
+        delta = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
+        x, y, facing, forward = 4, 14, "up", [(4, 14)]
+        for _ in range(200):
+            step = violet_gym_step(x, y, facing)
+            if step == "a":
+                break
+            facing = step
+            x, y = x + delta[step][0], y + delta[step][1]
+            forward.append((x, y))
+        self.assertEqual(violet_gym_step(x, y, facing), "a", "forward route should end facing Falkner")
+
+        # From any tile on it, the exit steps must stay on the route and reach the bottom of the straight.
+        # the bottom straight is two tiles wide (x 4..5, y 11..15), including the two exit tiles at y=15
+        on_route = set(forward) | {(x, y) for x in (4, 5) for y in range(11, 16)}
+        for sx, sy in forward:
+            x, y = sx, sy
+            for _ in range(200):
+                if y >= 15:
+                    break
+                d = gym_prep.gym_exit_step(x, y)
+                x, y = x + delta[d][0], y + delta[d][1]
+                self.assertIn((x, y), on_route, f"left the route at {(x, y)} starting from {(sx, sy)}")
+            self.assertGreaterEqual(y, 15, f"never reached the exit from {(sx, sy)}")
+
+    def test_hurt_in_the_gym_heads_for_the_exit_and_a_healthy_lead_is_left_alone(self):
+        hurt = make_state(mid=gym_prep.VIOLET_GYM, x=4, y=5, level=15, hp=(10, 35))
+        self.assertEqual(prep_direction(hurt), gym_prep.gym_exit_step(4, 5))
+        self.assertIsNone(prep_direction(make_state(mid=gym_prep.VIOLET_GYM, x=4, y=5, level=15, hp=(30, 35))))
+
+    def test_walks_across_violet_city_from_the_gym_door_to_the_pokemon_center(self):
+        state = walk(make_state(mid=gym_prep.VIOLET_CITY, x=18, y=17, level=15, hp=(10, 35)), limit=600)
+        self.assertEqual((state.x, state.y), gym_prep.VIOLET_PC_DOOR)
+
+    def test_arriving_in_violet_city_hurt_heals_before_the_gym(self):
+        d = prep_direction(make_state(mid=gym_prep.VIOLET_CITY, x=18, y=17, level=15, hp=(34, 35)))
+        self.assertIn(d, _DIRS)
+        self.assertIsNone(prep_direction(make_state(mid=gym_prep.VIOLET_CITY, x=18, y=17, level=15, hp=(35, 35))))
+
+    def test_no_prep_once_falkner_is_beaten(self):
+        self.assertIsNone(prep_direction(make_state(mid=gym_prep.VIOLET_CITY, x=18, y=17, hp=(5, 35), beat_falkner=True)))
+
+
 def walk_one(state):
     nav = _nav()
     d = prep_direction(state)
