@@ -6,6 +6,7 @@ import argparse
 import collections
 import os
 import sys
+import time
 from dotenv import load_dotenv
 import numpy as np
 
@@ -23,7 +24,14 @@ from src.local_nav import LocalNav
 from src.rl_env import ACTIONS, StepInfo, navigation_potential, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
-from src.live_status import checklist_line, story_snapshot, write_status
+from src.live_status import (
+    MilestoneTracker,
+    checklist_line,
+    milestone_line,
+    seed_seen_events,
+    story_snapshot,
+    write_status,
+)
 from src.game_data import get_map_name, get_party_moveset, get_species_name
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
@@ -156,6 +164,9 @@ def main(argv=None) -> int:
         render_screen = not args.headless
 
         last_story_flags = None
+        milestones = MilestoneTracker()
+        last_status_write = 0.0
+        seed_seen_events(reader.parse(emu.frame), seen_events)
         while True:
             # Check if PyBoy window was closed
             if not emu.tick(1, render=render_screen):
@@ -163,6 +174,12 @@ def main(argv=None) -> int:
                 break
 
             state = reader.parse(emu.frame)
+            if time.time() - last_status_write > 3.0:
+                write_status(args.tag, state, story_snapshot(state, milestones), step_idx, cumulative_reward)
+                last_status_write = time.time()
+            for _key in milestones.update(state, step_idx):
+                print(milestone_line(_key, step_idx, milestones), flush=True)
+                write_status(args.tag, state, story_snapshot(state, milestones), step_idx, cumulative_reward)
             tile = (state.map_group, state.map_number, state.x, state.y)
             visited.add(tile)
             seen_tiles.add(tile)
@@ -515,7 +532,7 @@ def main(argv=None) -> int:
             )
 
             # Story progress: announce every milestone change, restate the checklist with the telemetry report
-            snap = story_snapshot(after_state)
+            snap = story_snapshot(after_state, milestones)
             if snap["known_flags"] != last_story_flags:
                 new = sorted(set(snap["known_flags"]) - set(last_story_flags or ()))
                 if last_story_flags is not None and new:

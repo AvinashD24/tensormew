@@ -31,3 +31,31 @@ class LiveStatusTests(unittest.TestCase):
     def test_unreadable_flags(self):
         st = SimpleNamespace(event_flags=(), party_species=(), has_event=lambda n: False)
         self.assertEqual(story_snapshot(st)["next"], "event flags unreadable")
+
+
+class MilestoneTrackerTests(unittest.TestCase):
+    def _st(self, group, number, mode=0, hp=((5, 20),), events=()):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            map_group=group, map_number=number, battle_mode=mode, party_hp=hp,
+            event_flags=b"\x01", has_event=lambda name: name in events,
+            fainted=bool(hp) and all(h == 0 for h, _ in hp),
+        )
+
+    def test_rival_heal_and_gym_sequence(self):
+        from src.live_status import MilestoneTracker
+
+        t = MilestoneTracker()
+        t.update(self._st(26, 3), 1)
+        t.update(self._st(26, 3, mode=2), 2)
+        t.update(self._st(26, 3, mode=0), 3)
+        t.update(self._st(26, 5, hp=((5, 20),)), 4)
+        t.update(self._st(26, 5, hp=((20, 20),)), 5)
+        t.update(self._st(10, 7, mode=2), 6)
+        t.update(self._st(10, 7, events=("EVENT_BEAT_FALKNER",)), 7)
+        for key in ("cherrygrove", "rival_fight", "rival_beaten", "pokecenter", "healed",
+                    "gym_entered", "falkner_fight", "falkner_beaten"):
+            self.assertIn(key, t.reached)
+        self.assertEqual(t.reached["rival_beaten"], 3)
+        self.assertEqual(t.heals, 1)
