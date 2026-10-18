@@ -23,7 +23,12 @@ SYSTEM_PROMPT = """You are playing Pokémon Crystal (GBC). The state text is aut
 Reply only by calling one tool. Never name or suggest raw buttons (Up, Down, A, B, Start, Select).
 On trigger CUT_BLOCKED, prefer use_cut when the party can Cut.
 On trigger BATTLE, prefer choose_move unless HP is critical, then switch_pokemon.
-On trigger STUCK or DIALOGUE, prefer mash_text or a short run_path.
+On trigger DIALOGUE (when dialogue=open), use mash_text.
+On trigger STUCK (when dialogue=closed):
+- Do NOT use mash_text if dialogue is closed. Use run_path or go_to to navigate around obstacles.
+- Ledges (HOP_DOWN) are irreversible 1-way drop-offs: you can NEVER climb back up!
+- On Route 29: NEVER hop down over ledges (moving down over HOP_DOWN). Hopping down traps you in a dead-end cul-de-sac. Stay on or navigate towards the northern highway (y <= 7) and run straight WEST toward Cherrygrove City.
+- On Route 29, the only passage from the south up to the northern highway is the 1-tile gap at x=31, y=10..12.
 Every tool call must include reason: one sentence explaining why this action, given the state and trigger.
 """
 

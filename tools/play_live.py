@@ -12,6 +12,7 @@ import numpy as np
 load_dotenv()
 
 from src.battle import tactical_battle_step
+from src.collision import is_ledge
 from src.emulator import Emulator
 from src.llm_supervisor import Supervisor
 from src.macros import Macros
@@ -263,6 +264,9 @@ def main(argv=None) -> int:
                 for act_idx, dir_name in enumerate(ACTIONS[:4]):
                     t = tiles.get(dir_name, 0xFF)
                     if not walkable(t, dir_name):
+                        dir_probs[act_idx] = 0.0
+                    # On Route 29, NEVER hop down over a ledge into the southern trap!
+                    if state.map_id == (24, 3) and state.y <= 10 and is_ledge(t) and dir_name == "down":
                         dir_probs[act_idx] = 0.0
 
                 # B. Novelty-biased exploration: penalize revisiting already-explored tiles
