@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -15,11 +16,47 @@ from src.states import StateRegistry
 from src.step import TileStepper
 
 
+def _one_rollout(payload):
+    """Play one batch in its own emulator. Returns lists plus how many new maps appeared."""
+    state_bytes, steps, seed, weights = payload
+    emu = Emulator(headless=True, rtc_lock=True, speed=0)
+    try:
+        reader = RamParser(emu)
+        env = CrystalEnv(
+            emu,
+            reader,
+            TileStepper(emu, reader),
+            Macros(emu, reader),
+            rng=np.random.default_rng(seed),
+            max_steps=steps,
+        )
+        env.start = state_bytes
+        policy = Policy(rng=np.random.default_rng(seed))
+        policy.w = np.array(weights["w"], copy=True)
+        policy.b = np.array(weights["b"], copy=True)
+        policy.vw = np.array(weights["vw"], copy=True)
+        policy.vb = float(weights["vb"])
+        batch = collect_rollout(env, policy, steps)
+        return batch, len(env.frontier)
+    finally:
+        emu.close()
+
+
+def _merge(parts):
+    merged = {"obs": [], "actions": [], "logp": [], "rew": [], "ret": [], "adv": []}
+    for batch, _maps in parts:
+        for key in merged:
+            merged[key].extend(batch[key])
+    return merged
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Train PPO by playing")
     parser.add_argument("--state", default="new_bark_outside")
     parser.add_argument("--updates", type=int, default=3)
     parser.add_argument("--rollout", type=int, default=32)
+    parser.add_argument("--envs", type=int, default=1, help="parallel emulators per update")
+    parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--save", default="logs/ppo_policy.npz")
     parser.add_argument("--resume", action="store_true")
@@ -44,14 +81,39 @@ def main(argv=None) -> int:
         if args.resume and Path(args.save).exists():
             policy.load(args.save)
             print(f"loaded={args.save}")
-        for update in range(args.updates):
-            batch = collect_rollout(env, policy, args.rollout)
-            delta = ppo_update(policy, batch)
-            mean_reward = float(np.mean(batch["rew"]))
-            print(
-                f"update={update} mean_reward={mean_reward:.3f} "
-                f"weight_change={delta:.5f} frontier={len(env.frontier)}"
-            )
+        weights = lambda: {
+            "w": policy.w,
+            "b": policy.b,
+            "vw": policy.vw,
+            "vb": policy.vb,
+        }
+        pool = ProcessPoolExecutor(max_workers=args.envs) if args.envs > 1 else None
+        try:
+            for update in range(args.updates):
+                payloads = [
+                    (start, args.rollout, args.seed + update * args.envs + i, weights())
+                    for i in range(args.envs)
+                ]
+                if args.envs == 1 and not args.window:
+                    batch, frontier = _one_rollout(payloads[0])
+                    parts = [(batch, frontier)]
+                elif args.envs == 1:
+                    batch = collect_rollout(env, policy, args.rollout)
+                    parts = [(batch, len(env.frontier))]
+                else:
+                    parts = list(pool.map(_one_rollout, payloads))
+                    batch = _merge(parts)
+                delta = ppo_update(policy, batch, batch_size=args.batch_size)
+                mean_reward = float(np.mean(batch["rew"]))
+                frontier = sum(item[1] for item in parts)
+                print(
+                    f"update={update} samples={len(batch['rew'])} mean_reward={mean_reward:.3f} "
+                    f"weight_change={delta:.5f} new_maps={frontier}",
+                    flush=True,
+                )
+        finally:
+            if pool is not None:
+                pool.shutdown()
         policy.save(args.save)
         print(f"saved={args.save}")
         return 0

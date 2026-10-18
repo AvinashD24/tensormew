@@ -60,6 +60,7 @@ def ppo_update(
     epochs: int = 4,
     lr: float = 0.05,
     entropy_coef: float = 0.01,
+    batch_size: int | None = None,
 ) -> float:
     """One clipped policy update plus an entropy bonus. Returns mean absolute weight change."""
     obs = np.stack(batch["obs"])
@@ -70,30 +71,42 @@ def ppo_update(
     if adv.std() > 1e-6:
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
     before = policy.w.copy()
+    order = np.arange(len(actions))
+    size = len(actions) if batch_size is None else max(1, batch_size)
     for _ in range(epochs):
-        for i in range(len(actions)):
-            probabilities = policy.probs(obs[i])
-            logp = np.log(probabilities[actions[i]] + 1e-8)
-            ratio = np.exp(logp - old_logp[i])
-            clipped = np.clip(ratio, 1.0 - clip, 1.0 + clip)
-            weight = adv[i]
-            if ratio * weight <= clipped * weight:
-                chosen = probabilities[actions[i]]
-                grad_logits = -probabilities
-                grad_logits[actions[i]] += 1.0
-                scale = lr * weight * ratio
-                policy.w += scale * np.outer(grad_logits, obs[i])
-                policy.b += scale * grad_logits
-            # Entropy H = -sum(p log p). dH/dlogits raises the less likely actions.
-            log_probs = np.log(probabilities + 1e-8)
-            entropy = -float(np.sum(probabilities * log_probs))
-            grad = -probabilities * (log_probs + entropy)
-            policy.w += lr * entropy_coef * np.outer(grad, obs[i])
-            policy.b += lr * entropy_coef * grad
-            value = policy.value(obs[i])
-            value_error = returns[i] - value
-            policy.vw += lr * value_error * obs[i]
-            policy.vb += lr * value_error
+        if batch_size is not None:
+            policy.rng.shuffle(order)
+        for start in range(0, len(actions), size):
+            chosen = order[start : start + size]
+            dw = np.zeros_like(policy.w)
+            db = np.zeros_like(policy.b)
+            dvw = np.zeros_like(policy.vw)
+            dvb = 0.0
+            for i in chosen:
+                probabilities = policy.probs(obs[i])
+                logp = np.log(probabilities[actions[i]] + 1e-8)
+                ratio = np.exp(logp - old_logp[i])
+                clipped = np.clip(ratio, 1.0 - clip, 1.0 + clip)
+                weight = adv[i]
+                if ratio * weight <= clipped * weight:
+                    grad_logits = -probabilities
+                    grad_logits[actions[i]] += 1.0
+                    scale = weight * ratio
+                    dw += scale * np.outer(grad_logits, obs[i])
+                    db += scale * grad_logits
+                log_probs = np.log(probabilities + 1e-8)
+                entropy = -float(np.sum(probabilities * log_probs))
+                grad = -probabilities * (log_probs + entropy)
+                dw += entropy_coef * np.outer(grad, obs[i])
+                db += entropy_coef * grad
+                value_error = returns[i] - policy.value(obs[i])
+                dvw += value_error * obs[i]
+                dvb += value_error
+            scale = lr / len(chosen)
+            policy.w += scale * dw
+            policy.b += scale * db
+            policy.vw += scale * dvw
+            policy.vb += scale * dvb
     return float(np.mean(np.abs(policy.w - before)))
 
 
