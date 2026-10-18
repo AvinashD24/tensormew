@@ -23,6 +23,7 @@ from src.local_nav import LocalNav
 from src.rl_env import ACTIONS, StepInfo, navigation_potential, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
+from src.live_status import checklist_line, story_snapshot, write_status
 from src.game_data import get_map_name, get_party_moveset, get_species_name
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
@@ -75,6 +76,11 @@ def main(argv=None) -> int:
         "--headless",
         action="store_true",
         help="run headless without opening an SDL window for maximum throughput (~5,000 FPS)",
+    )
+    parser.add_argument(
+        "--tag",
+        default=f"p{os.getpid()}",
+        help="name for this run in logs/live_status (used by tools.live_status)",
     )
     args = parser.parse_args(argv)
 
@@ -149,6 +155,7 @@ def main(argv=None) -> int:
         recent_positions: collections.deque[tuple[int, int]] = collections.deque(maxlen=8)
         render_screen = not args.headless
 
+        last_story_flags = None
         while True:
             # Check if PyBoy window was closed
             if not emu.tick(1, render=render_screen):
@@ -468,6 +475,19 @@ def main(argv=None) -> int:
                 f"Tiles: {len(seen_tiles):3d} | Party: {after_state.party_count}/6{notes_str}",
                 flush=True,
             )
+
+            # Story progress: announce every milestone change, restate the checklist with the telemetry report
+            snap = story_snapshot(after_state)
+            if snap["known_flags"] != last_story_flags:
+                new = sorted(set(snap["known_flags"]) - set(last_story_flags or ()))
+                if last_story_flags is not None and new:
+                    print(f"[Story] +{', '.join(new)}", flush=True)
+                if last_story_flags is None or new:
+                    print(f"[Story] {checklist_line(snap)}", flush=True)
+                last_story_flags = snap["known_flags"]
+            if step_idx == 1 or step_idx % 25 == 0:
+                print(f"[Story] {checklist_line(snap)}", flush=True)
+                write_status(args.tag, after_state, snap, step_idx, cumulative_reward)
 
             # Every 25 moves, print dedicated telemetry report with reward, moveset, and location
             if step_idx == 1 or step_idx % 25 == 0:
