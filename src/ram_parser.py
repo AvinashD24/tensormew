@@ -86,6 +86,7 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wCurBattleMon", required=False),
     Sym("wCherrygroveCitySceneID", required=False),
     Sym("wElmsLabSceneID", required=False),
+    Sym("wOtherTrainerClass", required=False),
 )
 
 
@@ -133,6 +134,11 @@ class GameState:
     battle_mon_max_hp: int = 0
     cherrygrove_scene: int = 0
     elms_lab_scene: int = 0
+    other_trainer_class: int = 0
+
+    @property
+    def is_trainer_battle(self) -> bool:
+        return self.battle_mode == 2 or self.other_trainer_class > 0
 
     @property
     def beat_rival(self) -> bool:
@@ -259,6 +265,7 @@ class GameState:
             "battle_mon_max_hp": self.battle_mon_max_hp,
             "cherrygrove_scene": self.cherrygrove_scene,
             "elms_lab_scene": self.elms_lab_scene,
+            "other_trainer_class": self.other_trainer_class,
         }
 
 
@@ -308,6 +315,7 @@ class GameState:
             battle_mon_max_hp=int(d.get("battle_mon_max_hp", 0)),
             cherrygrove_scene=int(d.get("cherrygrove_scene", 0)),
             elms_lab_scene=int(d.get("elms_lab_scene", 0)),
+            other_trainer_class=int(d.get("other_trainer_class", 0)),
         )
 
 
@@ -439,5 +447,6 @@ class RamParser:
             battle_mon_max_hp=int(raw.get("wBattleMonMaxHP", 0)),
             cherrygrove_scene=int(raw.get("wCherrygroveCitySceneID", 0)),
             elms_lab_scene=int(raw.get("wElmsLabSceneID", 0)),
+            other_trainer_class=int(raw.get("wOtherTrainerClass", 0)),
         )
 

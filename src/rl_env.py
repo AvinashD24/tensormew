@@ -187,6 +187,42 @@ def _route29_potential(x: float, y: float, base: float = 0.0) -> float:
         return base + 10.0 + max(0.0, (59 - x) * 0.2)
 
 
+def _route29_eastbound_potential(x: float, y: float, base: float = 145.0) -> float:
+    """Accurate topological potential for Route 29 Eastbound (Cherrygrove -> New Bark Town).
+
+    Topological structure (spans 145.0 at Cherrygrove exit to 175.0 at New Bark gate):
+    1. Walkway entry (x <= 7): Moves east along y=7 to (7, 7), then south down to y=10.
+    2. Lower connector (7 <= x <= 11, y in 8..11): Moves east along y=10 to chute at x=11.
+    3. Vertical chute (10 <= x <= 12, 3 <= y <= 10): Moves north from y=10 up to y=3.
+    4. Upper Northern Highway (11 <= x <= 21, y <= 5): Moves east along y=3..4 to x=21.
+    5. Mid corridor (21 <= x <= 35, y <= 8): Moves east along y=5..7 to x=35.
+    6. Eastern approach (x >= 35): Approaches New Bark Town gate at (59, 9).
+    """
+    if x <= 7.0 and y <= 7.5:
+        # Initial walkway from Cherrygrove east to (7, 7)
+        return base + x * 0.4
+    elif x <= 8.5 and 7.0 < y <= 10.5:
+        # Step down at x=7 corridor to y=10
+        return base + 2.8 + (y - 7.0) * 0.8
+    elif 7.0 < x <= 11.5 and 9.0 <= y <= 11.0:
+        # Move east along y=10 to chute entrance at (11, 10)
+        return base + 5.2 + (x - 7.0) * 0.6
+    elif 10.0 <= x <= 12.5 and 3.0 <= y < 9.5:
+        # Move north up through chute (11, 10) -> (11, 3)
+        return base + 7.6 + (10.0 - y) * 0.9
+    elif 11.0 < x <= 21.5 and y <= 5.0:
+        # Upper northern highway heading east (11, 3) -> (21, 3)
+        return base + 13.9 + (x - 11.0) * 0.5 - max(0.0, y - 3.5) * 0.5
+    elif 21.0 < x <= 35.0:
+        # Mid corridor heading east to x=35
+        dist_y_pen = max(0.0, y - 8.0) * 0.4
+        return base + 18.9 + (x - 21.0) * 0.4 - dist_y_pen
+    else:
+        # Approach New Bark Town gate at (59, 9)
+        dist_gate = abs(x - 59.0) + abs(y - 9.0)
+        return base + 24.5 + max(0.0, 5.5 - 0.25 * dist_gate)
+
+
 def is_party_low_hp(state) -> bool:
     """Return True if any party member is not at full health."""
     hp_list = getattr(state, "party_hp", ()) or ()
@@ -312,13 +348,8 @@ def navigation_potential(state) -> float:
             dist_gate = abs(x - 39.0) + abs(y - 7.0)
             pen_south = max(0.0, y - 8.0) * 0.8  # Penalty for wandering into south cul-de-sac/trees
             return 130.0 + max(0.0, 15.0 - 0.6 * dist_gate) - pen_south
-        elif map_id == (24, 3):  # Route 29 Eastbound -> head east along northern highway to New Bark gate at (59, 9)
-            if x <= 37.0:
-                pen_south = max(0.0, y - 7.0) * 1.5  # Penalize falling into southern ledge trap
-                return 145.0 + x * 0.5 - pen_south
-            else:
-                dist_gate = abs(x - 59.0) + abs(y - 9.0)
-                return 163.5 + max(0.0, 12.0 - 0.5 * dist_gate)
+        elif map_id == (24, 3):  # Route 29 Eastbound -> head east across topological path to New Bark gate
+            return _route29_eastbound_potential(x, y, base=145.0)
         elif map_id == (24, 4):  # New Bark Town -> Elm Lab entrance at (6, 4)
             dist_lab = abs(x - 6.0) + abs(y - 4.0)
             return 176.0 + max(0.0, 10.0 - 0.7 * dist_lab)

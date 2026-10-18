@@ -183,6 +183,10 @@ def main(argv=None) -> int:
                     p_max = state.party_hp[act_idx][1] if state.party_hp else 1
                 res = tactical_battle_step(state, macros)
                 reason = getattr(res, "message", getattr(res, "reason", "acted"))
+                if not getattr(res, "ok", True) or "refused" in reason:
+                    # Fallback to direct attack move so battle never gets stuck in a refusal loop
+                    res = macros.choose_move()
+                    reason = getattr(res, "message", getattr(res, "reason", "attacked"))
                 mon_name = get_species_name(state.party_species[act_idx]) if state.party_species and act_idx < len(state.party_species) else "Mon"
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
@@ -222,9 +226,21 @@ def main(argv=None) -> int:
                 step_idx += 1
                 continue
 
-            # 3. Check Triggers (Cut, Stuck, etc.)
+            # 3. Check Triggers (Cut, NPC Interaction, Lateral Obstacle Bypass)
+            if blocked_count == 2:
+                # Try interacting with whatever entity is directly ahead (talk to NPC / inspect sign)
+                emu.press("a", frames=8)
+                emu.tick(20, render=render_screen)
+                after_a = reader.parse(emu.frame)
+                if dialogue_open(after_a):
+                    print(f"[Step {step_idx}] Talked to NPC / interacted with object at {state.pos} facing {state.facing}! Mashing text...", flush=True)
+                    macros.mash_text(max_frames=300)
+                    blocked_count = 0
+                    step_idx += 1
+                    continue
+
             trigger = evaluate(state, stuck_count=blocked_count)
-            if trigger is not None or blocked_count >= 4:
+            if trigger is not None or blocked_count >= 3:
                 recurrent_hx = None
                 kind_str = getattr(getattr(trigger, "kind", None), "value", str(getattr(trigger, "kind", "")))
                 if kind_str == "CUT_BLOCKED" and state.party_can_cut:
@@ -232,8 +248,15 @@ def main(argv=None) -> int:
                     macros.use_cut()
                     step_idx += 1
                     continue
-                elif kind_str == "STUCK" or blocked_count >= 4:
-                    if supervisor is not None:
+                elif kind_str == "STUCK" or blocked_count >= 3:
+                    # Penalize the forward blocked tile so compass/policy avoids walking into the blocking entity
+                    forward_dir = last_action if last_action in _DIRS else state.facing
+                    if forward_dir in _DELTA:
+                        fdx, fdy = _DELTA[forward_dir]
+                        blocked_target = (state.map_group, state.map_number, state.x + fdx, state.y + fdy)
+                        tile_visit_counts[blocked_target] = tile_visit_counts.get(blocked_target, 0) + 150
+
+                    if supervisor is not None and blocked_count >= 5:
                         trigger_arg = trigger or "STUCK: agent blocked or oscillating near dead-end"
                         print(f"[Step {step_idx}] Asking LLM Director ({supervisor.model}) to resolve bottleneck at {state.pos}...", flush=True)
                         try:
@@ -256,18 +279,28 @@ def main(argv=None) -> int:
                             print(f"[Step {step_idx}] LLM Director error ({exc}), falling back to reflexive escape...", flush=True)
 
                     tiles = getattr(state, "tiles", {})
-                    # Find all walkable directions and sort by fewest visits
-                    candidates = []
-                    for d in ("left", "right", "up", "down"):
-                        if walkable(tiles.get(d, 0xFF), d):
-                            dx, dy = _DELTA[d]
-                            target = (state.map_group, state.map_number, state.x + dx, state.y + dy)
-                            candidates.append((tile_visit_counts.get(target, 0), d))
-                    if candidates:
+                    # Prioritize perpendicular lateral detour directions around the blocking entity
+                    laterals = ["up", "down"] if forward_dir in ("left", "right") else ["left", "right"]
+                    lateral_candidates = [
+                        (tile_visit_counts.get((state.map_group, state.map_number, state.x + _DELTA[d][0], state.y + _DELTA[d][1]), 0), d)
+                        for d in laterals if walkable(tiles.get(d, 0xFF), d)
+                    ]
+                    if lateral_candidates:
+                        lateral_candidates.sort(key=lambda x: x[0])
+                        escape_dir = lateral_candidates[0][1]
+                    else:
+                        candidates = []
+                        for d in _DIRS:
+                            if walkable(tiles.get(d, 0xFF), d):
+                                dx, dy = _DELTA[d]
+                                target = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                                candidates.append((tile_visit_counts.get(target, 0), d))
                         candidates.sort(key=lambda x: x[0])
-                        escape_dir = candidates[0][1]
+                        escape_dir = candidates[0][1] if candidates else None
+
+                    if escape_dir:
                         print(
-                            f"[Step {step_idx}] Stuck at {state.pos}! Escaping via '{escape_dir}' into open frontier...",
+                            f"[Step {step_idx}] Stuck facing {forward_dir} at {state.pos}! Detouring around obstacle via '{escape_dir}'...",
                             flush=True,
                         )
                         res = mover.run_path([escape_dir])
@@ -375,18 +408,13 @@ def main(argv=None) -> int:
                     # Defeated rival, standing at Cherrygrove east gate -> step right into Route 29!
                     action_idx = 3
                 elif state.map_id == (24, 3) and has_egg and beat_rival and not gave_egg:
-                    # Route 29 Eastbound to Elm: stay on upper northern highway to avoid one-way ledge traps
+                    # Route 29 Eastbound to Elm
                     if state.x == 59 and state.y in (8, 9):
-                        action_idx = 3
-                    elif state.y >= 7 and state.x <= 38:
-                        dir_probs[1] = 0.0  # Mask 'down' to strictly prevent falling off ledges
-                        if dir_probs[3] > 0:
-                            dir_probs[3] *= 3.0  # Boost 'right'
-                        if dir_probs[0] > 0:
-                            dir_probs[0] *= 2.0  # Boost 'up'
-                        total_p = dir_probs.sum()
-                        if total_p > 0:
-                            dir_probs /= total_p
+                        action_idx = 3  # Step right through eastern gate into New Bark Town
+                    elif state.x == 7 and state.y in (7, 8, 9):
+                        action_idx = 1  # Step down at (7, 7) corridor to avoid wall and reach y=10
+                    elif state.x == 11 and state.y in (8, 9, 10):
+                        action_idx = 0  # Step up through chute to reach upper highway
                 elif state.map_id == (24, 4) and has_egg and beat_rival and not gave_egg and state.x == 6 and state.y == 4:
                     # Outside Elm's Lab in New Bark Town with Mystery Egg -> enter lab!
                     action_idx = 0

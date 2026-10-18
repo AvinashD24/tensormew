@@ -263,6 +263,39 @@ class Macros:
             self.machine.press("b", frames=6)
             self.machine.tick(20, render=False)
             frames += 26
+
+        # Hardcoded recovery policy: if party selection menu is still open or active mon has 0 HP,
+        # repeatedly click down arrow and A until a Pokémon that can play and has HP is deployed.
+        if hasattr(self.machine, "_pb"):
+            st = self._state()
+            if st.battle_mode != 0 and getattr(st, "battle_mon_hp", 0) == 0:
+                party_cnt = getattr(st, "party_count", 6) or 6
+                for _ in range(party_cnt):
+                    st_now = self._state()
+                    if st_now.battle_mode == 0 or getattr(st_now, "battle_mon_hp", 0) > 0:
+                        break
+                    # Dismiss any "There's no will to fight!" or modal
+                    self.machine.press("b", frames=6)
+                    self.machine.tick(12, render=False)
+                    frames += 18
+                    # Move to next party slot
+                    self.machine.press("down", frames=8)
+                    self.machine.tick(16, render=False)
+                    frames += 24
+                    # Select Pokémon
+                    self.machine.press("a", frames=8)
+                    self.machine.tick(28, render=False)
+                    frames += 36
+                    # Confirm switch
+                    self.machine.press("a", frames=8)
+                    self.machine.tick(40, render=False)
+                    frames += 48
+                    # Clear entrance dialog
+                    for _ in range(3):
+                        self.machine.press("b", frames=6)
+                        self.machine.tick(16, render=False)
+                        frames += 22
+
         return MacroResult(True, f"switched fainted Pokémon to party slot {slot}", frames=frames)
 
     def handle_whiteout(self) -> MacroResult:
@@ -369,7 +402,7 @@ class Macros:
         state = self._state()
         if state.battle_mode == 0:
             return MacroResult(False, "run_away refused: not in battle")
-        if state.battle_mode == 2:
+        if state.battle_mode == 2 or getattr(state, "is_trainer_battle", False) or (getattr(state, "other_trainer_class", 0) > 0):
             return MacroResult(False, "run_away refused: cannot run from a trainer battle")
         frames = self._reset_to_battle_fight()
         # From FIGHT (top-left), move down to PACK, then right to RUN (bottom-right)

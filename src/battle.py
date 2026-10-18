@@ -156,10 +156,11 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
     is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
     num_items = getattr(state, "num_items", 0)
+    is_trainer = (mode == 2) or getattr(state, "is_trainer_battle", False) or (getattr(state, "other_trainer_class", 0) > 0)
 
-    # 1. TRAINER BATTLES (mode == 2): Running away is physically impossible in Gen 2.
+    # 1. TRAINER BATTLES: Running away is physically impossible in Gen 2.
     # Under no circumstances should the policy ever attempt to flee a trainer battle.
-    if mode == 2:
+    if is_trainer:
         if is_low_hp:
             # First priority: heal active Pokémon if Pack has items (e.g. Potions)
             if num_items > 0:
@@ -182,12 +183,12 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
         slot = pick_best_move(state, enemy_types)
         return macros.choose_move(slot)
 
-    # 2. WILD BATTLES (mode == 1): Strategic capture, self-preservation, and anti-grinding
+    # 2. WILD BATTLES: Strategic capture, self-preservation, and anti-grinding
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
     gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
 
-    if mode == 1:
+    if mode == 1 and not is_trainer:
         # Flee if active Pokémon is at risk of fainting
         if is_low_hp:
             return macros.run_away()

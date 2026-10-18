@@ -302,5 +302,31 @@ class BattleTests(unittest.TestCase):
         macros.run_away.assert_not_called()
         macros.switch_pokemon.assert_not_called()
 
+    def test_tactical_battle_never_runs_away_in_trainer_battle_with_egg(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Rival battle while carrying mystery egg (has_egg=True, gave_egg=False)
+        state = SimpleNamespace(
+            battle_mode=2,
+            is_trainer_battle=True,
+            other_trainer_class=1,  # Rival
+            num_items=0,
+            party_count=1,
+            party_species=(155,),
+            party_hp=((3, 20),),
+            party_levels=(5,),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=152,
+            enemy_hp=10,
+            enemy_max_hp=20,
+            has_event=lambda f: f == "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON",
+        )
+        tactical_battle_step(state, macros)
+        # Even with Mystery Egg and low HP, trainer battles MUST NEVER flee!
+        macros.run_away.assert_not_called()
+        macros.choose_move.assert_called_once_with(1)
+
 
 
