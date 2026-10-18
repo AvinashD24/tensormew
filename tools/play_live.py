@@ -182,7 +182,12 @@ def main(argv=None) -> int:
             if dialogue_open(state):
                 blocked_count = 0
                 recurrent_hx = None
-                macros.mash_text(max_frames=120)
+                hp_before = sum(p[0] for p in getattr(state, "party_hp", ()) or ())
+                macros.mash_text(max_frames=300)
+                state_after_text = reader.parse(emu.frame)
+                hp_after = sum(p[0] for p in getattr(state_after_text, "party_hp", ()) or ())
+                if hp_after > hp_before:
+                    print(f"[Step {step_idx}] [Pokémon Center] Party healed to full health! ({hp_after} HP)", flush=True)
                 step_idx += 1
                 continue
 
@@ -270,9 +275,6 @@ def main(argv=None) -> int:
                     t = tiles.get(dir_name, 0xFF)
                     if not walkable(t, dir_name):
                         dir_probs[act_idx] = 0.0
-                    # On Route 29, NEVER hop down over a ledge into the southern trap!
-                    if state.map_id == (24, 3) and state.y <= 10 and is_ledge(t) and dir_name == "down":
-                        dir_probs[act_idx] = 0.0
 
                 # B. Novelty-biased exploration: penalize revisiting already-explored tiles
                 cur_tile = (state.map_group, state.map_number, state.x, state.y)
@@ -310,8 +312,22 @@ def main(argv=None) -> int:
                         except Exception:
                             pass
 
+                # E. Pokémon Center Nurse Joy Interaction when low HP
+                is_pc = state.map_id in ((26, 5), (10, 10), (10, 13))
+                party_hp = getattr(state, "party_hp", ()) or ()
+                cur_hp = sum(p[0] for p in party_hp) if party_hp else 0
+                max_hp = sum(p[1] for p in party_hp) if party_hp else 0
+                needs_heal = max_hp > 0 and cur_hp < max_hp
+
                 total_p = dir_probs.sum()
-                if total_p > 1e-6:
+                if is_pc and needs_heal and state.x == 3 and state.y == 3:
+                    if state.facing == "up":
+                        # Standing at Nurse Joy counter facing up with damaged party -> interact to heal!
+                        action_idx = 4
+                    else:
+                        # Turn to face Nurse Joy directly across the counter
+                        action_idx = 0
+                elif total_p > 1e-6:
                     dir_probs /= total_p
                     if args.greedy:
                         action_idx = int(np.argmax(dir_probs))
