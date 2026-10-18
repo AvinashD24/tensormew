@@ -7,15 +7,16 @@ import collections
 import os
 import sys
 import time
-from dotenv import load_dotenv
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass
 import numpy as np
-
-load_dotenv()
 
 from src.battle import tactical_battle_step
 from src.collision import is_ledge
 from src.emulator import Emulator
-from src.llm_supervisor import Supervisor
 from src.macros import Macros
 from src.return_nav import egg_return_direction
 from src.falkner_nav import falkner_nav_direction
@@ -118,6 +119,7 @@ def main(argv=None) -> int:
         supervisor = None
         if os.environ.get("ANTHROPIC_API_KEY"):
             try:
+                from src.llm_supervisor import Supervisor
                 registry = execution_registry(emu, reader, mover=mover, macros=macros)
                 supervisor = Supervisor(registry=registry)
                 print(
@@ -205,10 +207,12 @@ def main(argv=None) -> int:
                     p_max = state.party_hp[act_idx][1] if state.party_hp else 1
                 res = tactical_battle_step(state, macros)
                 reason = getattr(res, "message", getattr(res, "reason", "acted"))
-                if not getattr(res, "ok", True) or "refused" in reason:
-                    # Fallback to direct attack move so battle never gets stuck in a refusal loop
+                if p_cur > 0 and (not getattr(res, "ok", True) or "refused" in reason):
                     res = macros.choose_move()
                     reason = getattr(res, "message", getattr(res, "reason", "attacked"))
+                elif p_cur == 0 and not getattr(res, "ok", True):
+                    res = macros.handle_whiteout()
+                    reason = "handling whiteout / fainted"
                 mon_name = get_species_name(state.party_species[act_idx]) if state.party_species and act_idx < len(state.party_species) else "Mon"
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
