@@ -5,7 +5,7 @@
 **Spec:** `SPEC.md`. Do not treat `pokemon_agent.md` as the hackathon contract.  
 **Near-term goal:** earn the first Johto badge (Falkner, Violet City) by play, not by a stored route.
 
-Saved weights and databases live under `logs/` and are gitignored. The latest recurrent spatial vision policy on this machine is `logs/deep_policy.pt` (13.2M parameters, trained on RTX 4090 with PPO + curriculum resets). Another machine does not have it until someone copies it.
+Public weights and baseline models are tracked under `models/` (`models/deep_policy.pt` for the 13.2M parameter recurrent spatial vision policy, and `models/ppo_policy.npz` for linear/MLP PPO). Ephemeral runtime databases and logs live under `logs/` and are gitignored. Loaders automatically check `logs/` first (for active local training runs) and seamlessly fall back to `models/`.
 
 ---
 

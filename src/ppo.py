@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable
+import os
 
 import numpy as np
 
@@ -477,7 +478,12 @@ def collect_rollout(
 def load_policy(path: str, rng: np.random.Generator | None = None) -> Policy | MlpPolicy:
     """Load a policy from npz, automatically selecting MlpPolicy or Policy."""
     generator = np.random.default_rng(0) if rng is None else rng
-    data = np.load(path)
+    p = path
+    if not os.path.exists(p):
+        fallback = os.path.join("models", os.path.basename(p))
+        if os.path.exists(fallback):
+            p = fallback
+    data = np.load(p)
     if "w1" in data or str(data.get("model_type", "")) == "mlp":
         hidden_dim = int(data.get("hidden_dim", data["w1"].shape[0]))
         obs_dim = int(data.get("obs_dim", data["w1"].shape[1]))
@@ -485,6 +491,6 @@ def load_policy(path: str, rng: np.random.Generator | None = None) -> Policy | M
     else:
         obs_dim = int(data["w"].shape[1])
         policy = Policy(rng=generator, obs_dim=obs_dim)
-    policy.load(path)
+    policy.load(p)
     return policy
 
