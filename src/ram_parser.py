@@ -15,7 +15,8 @@ def dialogue_open(state: "GameState") -> bool:
 
 TEXT_GATE: Callable[["GameState"], bool] = dialogue_open
 
-_FACING = {8: "down", 4: "up", 2: "left", 1: "right"}
+_PLAYER_DIR_TO_FACING = {0: "down", 4: "up", 8: "left", 12: "right"}
+_FACING = {8: "down", 4: "up", 2: "left", 1: "right", 0: "down"}
 _TIME = {0: "morning", 1: "day", 2: "night"}
 
 
@@ -362,7 +363,7 @@ class RamParser:
             map_number=int(raw["wMapNumber"]),
             x=int(raw["wXCoord"]),
             y=int(raw["wYCoord"]),
-            facing=_FACING.get(facing_raw, f"?{facing_raw:#04x}"),
+            facing=_PLAYER_DIR_TO_FACING[int(raw["wPlayerDirection"])] if int(raw.get("wPlayerDirection", -1)) in (4, 8, 12) else (_FACING[facing_raw] if facing_raw in _FACING else _PLAYER_DIR_TO_FACING.get(int(raw.get("wPlayerDirection", -1)), "down")),
             facing_raw=facing_raw,
             player_direction=int(raw["wPlayerDirection"]),
             tiles={

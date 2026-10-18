@@ -320,9 +320,13 @@ def main(argv=None) -> int:
                 needs_heal = max_hp > 0 and cur_hp < max_hp
 
                 total_p = dir_probs.sum()
-                if is_pc and needs_heal and state.x in (3, 4) and state.y == 3 and state.facing == "up":
-                    # Standing at Nurse Joy counter facing up with damaged party -> interact to heal!
-                    action_idx = 4
+                if is_pc and needs_heal and state.x == 3 and state.y == 3:
+                    if state.facing == "up":
+                        # Standing at Nurse Joy counter facing up with damaged party -> interact to heal!
+                        action_idx = 4
+                    else:
+                        # Turn to face Nurse Joy directly across the counter
+                        action_idx = 0
                 elif total_p > 1e-6:
                     dir_probs /= total_p
                     if args.greedy:

@@ -184,25 +184,30 @@ def navigation_potential(state) -> float:
                 dist_pc = abs(x - 29.0) + abs(y - 3.0)
                 return 45.0 + max(0.0, 6.0 - 0.3 * dist_pc)
             return 45.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id == (26, 1):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
-            return 60.0 + max(0.0, (40.0 - y) * 0.5)
-        elif map_id in ((26, 10), (24, 10)):  # Mr. Pokémon's House
-            return 85.0
+        elif map_id == (26, 1):  # Route 30 -> head north to Mr. Pokémon's House at (17, 5)
+            dist_to_house = abs(x - 17.0) + abs(y - 5.0)
+            return 60.0 + max(0.0, 25.0 - 0.4 * dist_to_house)
+        elif map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> approach Mr. Pokémon at (3, 5)
+            dist_mr = abs(x - 3.0) + abs(y - 5.0)
+            return 85.0 + max(0.0, 5.0 - 0.5 * dist_mr)
 
     # Stage 2: Return Egg to Elm in New Bark Town
     elif not gave_egg:
-        if map_id in ((26, 10), (24, 10)):  # Mr. Pokémon's House
-            return 85.0
-        elif map_id == (26, 1):  # Route 30 -> head south to Cherrygrove (y -> 40)
-            return 70.0 + y * 0.3
+        if map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> exit doors at (2.5, 7.0)
+            dist_exit = abs(x - 2.5) + abs(y - 7.0)
+            return 85.0 + max(0.0, 5.0 - 0.7 * dist_exit)
+        elif map_id == (26, 1):  # Route 30 -> head south to Cherrygrove (y -> 53)
+            return 70.0 + (y / 53.0) * 15.0
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 (x -> 39)
             return 85.0 + (x / 39.0) * 10.0
         elif map_id == (24, 3):  # Route 29 -> head east to New Bark (x -> 60)
             return 95.0 + (x / 60.0) * 25.0
-        elif map_id == (24, 4):  # New Bark Town -> Elm Lab
-            return 120.0
-        elif map_id == (24, 5):  # Inside Elm's Lab
-            return 130.0
+        elif map_id == (24, 4):  # New Bark Town -> Elm Lab at (6, 4)
+            dist_lab = abs(x - 6.0) + abs(y - 4.0)
+            return 120.0 + max(0.0, 10.0 - 0.5 * dist_lab)
+        elif map_id == (24, 5):  # Inside Elm's Lab -> approach Elm at (4, 2)
+            dist_elm = abs(x - 4.0) + abs(y - 2.0)
+            return 130.0 + max(0.0, 5.0 - 0.5 * dist_elm)
 
     # Stage 3: Head to Violet City Gym & Falkner
     else:
