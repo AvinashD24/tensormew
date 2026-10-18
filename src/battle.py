@@ -125,6 +125,7 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
     # 1. Health check: active Pokémon HP
     party_hp = getattr(state, "party_hp", ())
+    party_levels = getattr(state, "party_levels", ())
     active_idx = getattr(state, "cur_battle_mon", 0)
     active_idx = min(active_idx, len(party_hp) - 1) if party_hp else 0
 
@@ -143,7 +144,15 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
         ]
         if not alive_slots:
             return macros.handle_whiteout()
-        return macros.switch_fainted_pokemon(alive_slots[0])
+        # Prioritize conscious backup with highest remaining HP, then highest level
+        best_slot = max(
+            alive_slots,
+            key=lambda s: (
+                party_hp[s - 1][0] if s - 1 < len(party_hp) else 0,
+                party_levels[s - 1] if s - 1 < len(party_levels) else 0,
+            ),
+        )
+        return macros.switch_fainted_pokemon(best_slot)
 
     is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
     num_items = getattr(state, "num_items", 0)
@@ -154,12 +163,19 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
     # 2. Tactical Backup Switch in Trainer Battles when out of healing items
     if mode == 2 and is_low_hp and num_items == 0:
-        healthy_backups = [
+        conscious_backups = [
             i + 1 for i, (hp, mx) in enumerate(party_hp)
-            if i != active_idx and mx > 0 and (hp / mx) > 0.50
+            if i != active_idx and hp > 0 and (hp > cur_hp or (mx > 0 and (hp / mx) > 0.50))
         ]
-        if healthy_backups:
-            return macros.switch_pokemon(healthy_backups[0])
+        if conscious_backups:
+            best_backup = max(
+                conscious_backups,
+                key=lambda s: (
+                    party_hp[s - 1][0] if s - 1 < len(party_hp) else 0,
+                    party_levels[s - 1] if s - 1 < len(party_levels) else 0,
+                ),
+            )
+            return macros.switch_pokemon(best_backup)
 
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")

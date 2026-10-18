@@ -190,6 +190,28 @@ class BattleTests(unittest.TestCase):
         macros.choose_move.assert_not_called()
         macros.handle_whiteout.assert_not_called()
 
+    def test_tactical_battle_switches_to_highest_hp_backup_when_fainted(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Team with fainted mons in slots 1, 3, 5, and alive mons in slot 2 (13 HP) and slot 4 (16 HP)
+        state = SimpleNamespace(
+            battle_mode=2,
+            party_count=5,
+            party_species=(155, 19, 161, 10, 165),
+            party_hp=((0, 21), (13, 13), (0, 16), (16, 16), (0, 15)),
+            party_levels=(6, 2, 3, 3, 3),
+            party_moves=((33, 0, 0, 0),) * 5,
+            enemy_species=152,
+            enemy_hp=2,
+            enemy_max_hp=21,
+        )
+        tactical_battle_step(state, macros)
+        # Should choose Caterpie (slot 4, 16 HP) over Rattata (slot 2, 13 HP)
+        macros.switch_fainted_pokemon.assert_called_once_with(4)
+        macros.choose_move.assert_not_called()
+
     def test_tactical_battle_handles_whiteout_when_all_fainted(self):
         from unittest.mock import MagicMock
         from src.battle import tactical_battle_step

@@ -145,33 +145,40 @@ class Macros:
             return MacroResult(False, f"party slot {slot} not in 1–6")
         frames = 0
         # 1. Advance through faint dialog and confirm YES on 'Use next POKéMON?'
-        for _ in range(4):
+        for _ in range(2):
             self.machine.press("a", frames=6)
-            self.machine.tick(14, render=False)
-            frames += 20
-        # 2. In party menu, reset cursor to top (slot 1)
+            self.machine.tick(16, render=False)
+            frames += 22
+        # Allow party menu to fully load/fade in
+        self.machine.tick(32, render=False)
+        frames += 32
+        # 2. Dismiss any text popup (e.g. "There's no will to fight!" if A was pressed on fainted mon)
+        self.machine.press("b", frames=6)
+        self.machine.tick(16, render=False)
+        frames += 22
+        # 3. In party menu, reset cursor to top (slot 1)
         for _ in range(5):
             self.machine.press("up", frames=6)
-            self.machine.tick(8, render=False)
-            frames += 14
-        # 3. Navigate down to the target alive Pokémon (1-indexed slot)
+            self.machine.tick(10, render=False)
+            frames += 16
+        # 4. Navigate down to the target alive Pokémon (1-indexed slot)
         for _ in range(slot - 1):
-            self.machine.press("down", frames=6)
-            self.machine.tick(8, render=False)
-            frames += 14
-        # 4. Press A to select the Pokémon
+            self.machine.press("down", frames=8)
+            self.machine.tick(14, render=False)
+            frames += 22
+        # 5. Press A to select the Pokémon
         self.machine.press("a", frames=8)
-        self.machine.tick(20, render=False)
-        frames += 28
-        # 5. Press A to confirm SWITCH (top option in popup)
+        self.machine.tick(24, render=False)
+        frames += 32
+        # 6. Press A to confirm SWITCH (top option in popup)
         self.machine.press("a", frames=8)
-        self.machine.tick(40, render=False)
-        frames += 48
-        # 6. Clear entrance dialog text ('<PLAYER> sent out <MON>!')
+        self.machine.tick(48, render=False)
+        frames += 56
+        # 7. Clear entrance dialog text ('<PLAYER> sent out <MON>!')
         for _ in range(4):
             self.machine.press("b", frames=6)
-            self.machine.tick(12, render=False)
-            frames += 18
+            self.machine.tick(16, render=False)
+            frames += 22
         return MacroResult(True, f"switched fainted Pokémon to party slot {slot}", frames=frames)
 
     def handle_whiteout(self) -> MacroResult:

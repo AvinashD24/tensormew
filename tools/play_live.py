@@ -165,13 +165,21 @@ def main(argv=None) -> int:
             if state.battle_mode != 0:
                 blocked_count = 0
                 recurrent_hx = None
-                p_cur = state.party_hp[0][0] if state.party_hp else 0
-                p_max = state.party_hp[0][1] if state.party_hp else 1
+                act_idx = getattr(state, "cur_battle_mon", 0)
+                act_idx = min(act_idx, len(state.party_hp) - 1) if state.party_hp else 0
+                b_cur = getattr(state, "battle_mon_hp", 0)
+                b_max = getattr(state, "battle_mon_max_hp", 0)
+                if b_max > 0:
+                    p_cur, p_max = b_cur, b_max
+                else:
+                    p_cur = state.party_hp[act_idx][0] if state.party_hp else 0
+                    p_max = state.party_hp[act_idx][1] if state.party_hp else 1
                 res = tactical_battle_step(state, macros)
                 reason = getattr(res, "message", getattr(res, "reason", "acted"))
+                mon_name = get_species_name(state.party_species[act_idx]) if state.party_species and act_idx < len(state.party_species) else "Mon"
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
-                    f"lead_hp={p_cur}/{p_max}, "
+                    f"active={mon_name} {p_cur}/{p_max}, "
                     f"enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}",
                     flush=True,
                 )
