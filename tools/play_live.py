@@ -18,7 +18,7 @@ from src.macros import Macros
 from src.mover import Mover, walkable
 from src.ppo import load_policy
 from src.ram_parser import RamParser, dialogue_open
-from src.rl_env import ACTIONS, observe
+from src.rl_env import ACTIONS, StepInfo, navigation_potential, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.tool_dispatch import execution_registry
@@ -108,24 +108,34 @@ def main(argv=None) -> int:
 
         policy = None
         is_deep_policy = False
-        if args.policy and os.path.exists(args.policy):
-            if args.policy.endswith(".pt"):
+        policy_path = args.policy
+        if policy_path and not os.path.exists(policy_path):
+            fallback = os.path.join("models", os.path.basename(policy_path))
+            if os.path.exists(fallback):
+                policy_path = fallback
+
+        if policy_path and os.path.exists(policy_path):
+            if policy_path.endswith(".pt"):
                 from src.deep_policy import SpatialVisionPolicy
-                policy = SpatialVisionPolicy.load(args.policy, device="cpu")
+                policy = SpatialVisionPolicy.load(policy_path, device="cpu")
                 is_deep_policy = True
                 print(
                     f"Loaded {policy.param_count:,} parameter SpatialVisionPolicy "
-                    f"(recurrent={getattr(policy, 'use_gru', False)}) from {args.policy}"
+                    f"(recurrent={getattr(policy, 'use_gru', False)}) from {policy_path}"
                 )
             else:
-                policy = load_policy(args.policy)
+                policy = load_policy(policy_path)
                 if policy is not None:
-                    print(f"Loaded policy from {args.policy} ({policy.__class__.__name__})")
+                    print(f"Loaded policy from {policy_path} ({policy.__class__.__name__})")
 
         visited: set[tuple[int, int, int, int]] = set()
         seen_tiles: set[tuple[int, int, int, int]] = set()
         seen_maps: set[tuple[int, int]] = set()
+        seen_events: set[int] = set()
+        seen_waypoints: set[tuple[int, int]] = set()
+        caught_counts: dict[int, int] = {}
         tile_visit_counts: dict[tuple[int, int, int, int], int] = {}
+        cumulative_reward: float = 0.0
 
         blocked_count = 0
         last_action = None
@@ -340,15 +350,52 @@ def main(argv=None) -> int:
             else:
                 blocked_count = 0
 
+            # Calculate live active reward
+            unvisited_neighbor = False
+            if 0 <= action_idx < 4:
+                d_name = ACTIONS[action_idx]
+                dx, dy = _DELTA[d_name]
+                neighbor = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                unvisited_neighbor = neighbor not in seen_tiles
+
+            info = StepInfo(consecutive_bumps=blocked_count)
+            step_rew, disc_tile, disc_map = progress_reward(
+                before=state,
+                after=after_state,
+                moved=moved,
+                seen_tiles=seen_tiles,
+                seen_maps=seen_maps,
+                unvisited_neighbor=unvisited_neighbor,
+                caught_counts=caught_counts,
+                seen_events=seen_events,
+                seen_waypoints=seen_waypoints,
+                info=info,
+            )
+            cumulative_reward += step_rew
+            phi_now = navigation_potential(after_state)
+
+            notes = []
+            if disc_map:
+                notes.append("NEW MAP!")
+            elif disc_tile:
+                notes.append("NEW TILE")
+            if info.caught_pokemon:
+                notes.append("CAUGHT POKEMON!")
+            if not moved and after_pos == before_pos and direction != "a":
+                notes.append(f"BUMP x{blocked_count}")
+            notes_str = f" [{' '.join(notes)}]" if notes else ""
+
             step_idx += 1
+            print(
+                f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
+                f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
+                f"Act: {direction:5s} | Rew: {step_rew:+.2f} | "
+                f"Return: {cumulative_reward:+.2f} | Phi: {phi_now:5.1f} | "
+                f"Tiles: {len(seen_tiles):3d} | Party: {after_state.party_count}/6{notes_str}",
+                flush=True,
+            )
+
             if step_idx == 1 or step_idx % 25 == 0:
-                print(
-                    f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
-                    f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
-                    f"Party: {after_state.party_count}/6 | Balls: {after_state.num_balls} | "
-                    f"Action: {direction}",
-                    flush=True,
-                )
                 try:
                     from PIL import Image
                     scr = emu._pb.screen.ndarray[:, :, :3]
