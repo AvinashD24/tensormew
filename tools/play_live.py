@@ -120,7 +120,11 @@ def main(argv=None) -> int:
 
     emu = None
     try:
-        data = StateRegistry().load_bytes(args.state)
+        if args.state.endswith(".state") and os.path.isfile(args.state):
+            with open(args.state, "rb") as fh:  # resume from a recorded milestone file
+                data = fh.read()
+        else:
+            data = StateRegistry().load_bytes(args.state)
         emu = Emulator(headless=args.headless, speed=args.speed, rtc_lock=True)
         emu.load_state(data)
 

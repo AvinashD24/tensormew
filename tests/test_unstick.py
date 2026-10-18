@@ -70,6 +70,19 @@ class UnstickTests(unittest.TestCase):
         res = u.act(_state(), "right", FakeEmu(), FakeMacros(), FakeStepper([]))
         self.assertFalse(res.moved)
 
+    def test_detour_tries_a_side_the_tile_table_calls_blocked(self):
+        # Route 30 beside Mikey: the left tile is a ledge row (0xA3) the table rejects for "left",
+        # but the player can walk along it, so the sidestep must still be attempted.
+        state = SimpleNamespace(map_group=26, map_number=1, x=5, y=24,
+                                tiles={"left": 0xA3, "right": 0x07, "up": 0x00, "down": 0x00})
+        u = Unsticker()
+        u.count = 14
+        stepper = FakeStepper(["left", "up"])
+        res = u.act(state, "up", FakeEmu(), FakeMacros(), stepper)
+        self.assertEqual(res.kind, "detour")
+        self.assertTrue(res.moved)
+        self.assertIn("left", stepper.calls)
+
     def test_retreat_backs_off(self):
         u = Unsticker()
         u.count = 38

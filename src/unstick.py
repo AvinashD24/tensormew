@@ -85,8 +85,11 @@ class Unsticker:
                 dx, dy = _DELTA[d]
                 return visit_counts.get((state.map_group, state.map_number, state.x + dx, state.y + dy), 0)
 
-            order = sorted((p for p in perps if self._walkable(state, p)), key=visits)
-            if self.detours % 2 and len(order) == 2:
+            # Try both sides, tile-table-walkable ones first. The table is not trusted to rule a side out:
+            # the Route 30 ledge row beside Mikey reads as blocked but can be walked along, and a step
+            # into a real wall simply fails without moving.
+            order = sorted(perps, key=lambda p: (not self._walkable(state, p), visits(p)))
+            if self.detours % 2 and len(order) == 2 and self._walkable(state, order[0]) == self._walkable(state, order[1]):
                 order.reverse()
             self.detours += 1
             for side in order:
