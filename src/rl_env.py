@@ -48,8 +48,6 @@ BEHIND_MAP_PENALTY = 2.0
 # Key Transit Maps along the path to the First Gym (Falkner in Violet City)
 GYM_PATH_WAYPOINTS: dict[tuple[int, int], float] = {
     (24, 3): 3.0,   # Route 29
-    (24, 7): 4.0,   # Route 29 Gate / West
-    (24, 6): 4.0,   # Route 29 Gate / Route 46
     (26, 3): 5.0,   # Cherrygrove City
     (26, 5): 3.0,   # Cherrygrove Poké Center
     (26, 1): 5.0,   # Route 30
@@ -77,6 +75,17 @@ KEY_EVENT_REWARDS: dict[str, float] = {
 
 
 OBJECTIVE_TILE_BOOST = 2.0
+
+# Level reward shaped like the pokemonred write-up: full credit for early levels, then a quarter.
+# Continuous at LEVEL_CAP_SUM (the write-up's version jumps by 15 there, which would dwarf a gym badge).
+LEVEL_REWARD_SCALE = 5.0
+LEVEL_CAP_SUM = 15
+
+
+def level_reward_value(level_sum: float) -> float:
+    if level_sum < LEVEL_CAP_SUM:
+        return float(level_sum)
+    return LEVEL_CAP_SUM + (level_sum - LEVEL_CAP_SUM) / 4.0
 
 _STAGE_OBJECTIVE_MAPS: dict[str, frozenset] = {
     # Fetch the Mystery Egg: Route 29 -> Cherrygrove -> Route 30 -> Mr. Pokemon's house.
@@ -146,6 +155,9 @@ def story_stage(state) -> float:
         return 0.85
     if map_id == (10, 5):
         return 0.75
+    return 0.0
+
+
 def _route29_potential(x: float, y: float, base: float = 0.0) -> float:
     """Accurate topological potential for Route 29.
 
@@ -461,8 +473,7 @@ def progress_reward(
     before_levels = sum(getattr(before, "party_levels", ()) or [0])
     after_levels = sum(getattr(after, "party_levels", ()) or [0])
     if after_levels > before_levels:
-        level_diff = after_levels - before_levels
-        reward += 5.0 * level_diff
+        reward += LEVEL_REWARD_SCALE * (level_reward_value(after_levels) - level_reward_value(before_levels))
         if info is not None:
             info.level_up = True
 
@@ -496,10 +507,14 @@ def progress_reward(
         elif max_a > 0 and cur_a > cur_b:
             heal_frac = (cur_a - cur_b) / max_a
             if is_pc:
-                # Dedicated substantial reward for completing Pokémon Center healing
-                reward += 15.0 + heal_frac * 10.0
-                if info is not None:
-                    info.healed_party = True
+                # Paid once per Pokémon Center per episode, so taking damage to heal again earns nothing.
+                heal_key = (map_id[0], map_id[1] + 2000)
+                if seen_waypoints is None or heal_key not in seen_waypoints:
+                    if seen_waypoints is not None:
+                        seen_waypoints.add(heal_key)
+                    reward += 15.0 + heal_frac * 10.0
+                    if info is not None:
+                        info.healed_party = True
             else:
                 reward += heal_frac * 3.0
         elif is_pc and cur_b < max_b:

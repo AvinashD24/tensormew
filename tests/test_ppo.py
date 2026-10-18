@@ -306,6 +306,30 @@ class ExtendedRewardTests(unittest.TestCase):
         self.assertAlmostEqual(r_battle, -0.01 + 3.0)
 
 
+class RewardShapingTests(unittest.TestCase):
+    def test_level_reward_is_capped_above_fifteen(self):
+        from src.rl_env import level_reward_value
+
+        self.assertEqual(level_reward_value(10), 10.0)
+        self.assertEqual(level_reward_value(15), 15.0)
+        self.assertAlmostEqual(level_reward_value(19), 16.0)
+
+    def test_story_stage_never_none(self):
+        from src.rl_env import story_stage
+
+        self.assertEqual(story_stage(_S(26, 3, 0, 0)), 0.0)
+
+    def test_heal_paid_once_per_pokecenter(self):
+        seen_tiles, seen_maps, seen_waypoints = set(), {(26, 5)}, set()
+        hurt, healed = _S(26, 5, 3, 3), _S(26, 5, 3, 3)
+        hurt.party_hp = ((5, 20),)
+        healed.party_hp = ((20, 20),)
+        first, _, _ = progress_reward(hurt, healed, False, seen_tiles, seen_maps, seen_waypoints=seen_waypoints)
+        again, _, _ = progress_reward(hurt, healed, False, seen_tiles, seen_maps, seen_waypoints=seen_waypoints)
+        self.assertGreater(first, 15.0)
+        self.assertLess(again, 1.0)
+
+
 class MlpPolicyTests(unittest.TestCase):
     def test_mlp_policy_act_and_learn(self):
         from src.ppo import MlpPolicy, load_policy
