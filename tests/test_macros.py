@@ -145,3 +145,31 @@ class MacroTests(unittest.TestCase):
         self.assertIn("right", buttons)
         self.assertIn("a", buttons)
 
+    def test_switch_fainted_pokemon_closed_loop_memory(self):
+        class FakeMachineWithMemory(FakeMachine):
+            def __init__(self, start_cursor=5):
+                super().__init__()
+                self.cursor = start_cursor
+
+            def press(self, button, frames=8):
+                super().press(button, frames)
+                if button == "up" and self.cursor > 1:
+                    self.cursor -= 1
+                elif button == "down" and self.cursor < 6:
+                    self.cursor += 1
+
+            def read(self, bank: int, addr: int, n: int = 1) -> bytes:
+                if addr == 0xcfa9:
+                    return bytes([self.cursor])
+                return bytes([0] * n)
+
+        machine = FakeMachineWithMemory(start_cursor=5)
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=2)]))
+        res = macros.switch_fainted_pokemon(4)
+        self.assertTrue(res.ok)
+        self.assertEqual(machine.cursor, 4)
+        buttons = [b for b, _ in machine.presses]
+        self.assertIn("up", buttons)
+        self.assertIn("a", buttons)
+
+

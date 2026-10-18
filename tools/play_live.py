@@ -352,6 +352,7 @@ def main(argv=None) -> int:
                 has_ev = getattr(state, "has_event", None)
                 has_egg = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
                 gave_egg = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+                beat_falkner = callable(has_ev) and has_ev("EVENT_BEAT_FALKNER")
 
                 total_p = dir_probs.sum()
                 if is_pc and needs_heal and state.x == 3 and state.y == 3:
@@ -376,6 +377,21 @@ def main(argv=None) -> int:
                 elif state.map_id == (24, 5) and gave_egg and state.y == 11 and state.x in (4, 5):
                     # Standing on exit carpet in Elm's Lab after delivering egg -> step out!
                     action_idx = 1
+                elif state.map_id == (26, 2) and state.x == 4 and state.y in (6, 7):
+                    # Route 31 west entrance doorway into Violet Gate -> step left!
+                    action_idx = 2
+                elif state.map_id == (26, 11) and state.x == 0 and state.y in (4, 5):
+                    # Route 31 Violet Gate west exit doorway into Violet City -> step left!
+                    action_idx = 2
+                elif state.map_id == (10, 5) and not beat_falkner and state.x == 18 and state.y == 18:
+                    # Outside Violet Gym in Violet City facing entrance -> step up!
+                    action_idx = 0
+                elif state.map_id == (10, 7) and not beat_falkner and state.x in (4, 5) and state.y in (2, 3):
+                    if state.facing == "up":
+                        # Standing in front of Leader Falkner facing up -> challenge Falkner!
+                        action_idx = 4
+                    else:
+                        action_idx = 0
                 elif state.map_id in ((26, 4), (26, 6), (26, 7), (26, 8), (26, 9), (24, 6), (24, 7), (24, 8), (24, 9), (10, 6), (10, 8), (10, 9), (10, 11)) and state.y == 7 and state.x in (2, 3, 4):
                     # Incidental building exit mat -> step out!
                     action_idx = 1
