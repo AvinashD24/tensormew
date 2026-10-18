@@ -209,7 +209,9 @@ class Macros:
 
             # In party menu: move cursor directly to target slot with closed-loop feedback
             if 1 <= cur_y <= 6:
-                while cur_y > slot:
+                for _ in range(6):
+                    if cur_y <= slot:
+                        break
                     self.machine.press("up", frames=8)
                     self.machine.tick(22, render=False)
                     frames += 30
@@ -218,9 +220,12 @@ class Macros:
                         self.machine.press("b", frames=6)
                         self.machine.tick(16, render=False)
                         frames += 22
-                    cur_y = self.machine.read(0, 0xcfa9, 1)[0]
+                        break
+                    cur_y = new_y
 
-                while cur_y < slot:
+                for _ in range(6):
+                    if cur_y >= slot:
+                        break
                     self.machine.press("down", frames=8)
                     self.machine.tick(22, render=False)
                     frames += 30
@@ -229,7 +234,8 @@ class Macros:
                         self.machine.press("b", frames=6)
                         self.machine.tick(16, render=False)
                         frames += 22
-                    cur_y = self.machine.read(0, 0xcfa9, 1)[0]
+                        break
+                    cur_y = new_y
         else:
             # Fallback for mock environments
             self.machine.press("b", frames=6)
