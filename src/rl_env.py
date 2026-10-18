@@ -193,19 +193,21 @@ def _pokecenter_potential(x: float, y: float, base: float, is_low_hp: bool) -> f
     If fully healed: pulls player towards exit door at (3.5, 7.0) to return to overworld.
     """
     if is_low_hp:
-        # Distance to counter at (3, 3)
-        dist = abs(x - 3.0) + abs(y - 3.0)
-        return base + max(0.0, 6.0 - 0.7 * dist)
+        # Distance to counter at (3, 3) facing UP
+        dist_x = abs(x - 3.0)
+        dist_y = abs(y - 3.0)
+        dist = dist_x * 1.5 + dist_y
+        return base + max(0.0, 8.0 - 0.7 * dist)
     else:
-        # Distance to exit door at (3.5, 7.0)
-        dist = abs(x - 3.5) + abs(y - 7.0)
-        return base + max(0.0, 6.0 - 0.7 * dist)
+        # Distance to exit doorway warp at (3.5, 8.0) - stepping down at y=7 is rewarded
+        dist = abs(x - 3.5) + abs(y - 8.0)
+        return base + max(0.0, 7.0 - 0.7 * dist)
 
 
 def _building_exit_potential(x: float, y: float, base: float) -> float:
-    """Guides agent towards the exit door (typically (2.5, 7.0) or (3.5, 7.0)) of incidental indoor buildings."""
-    dist = abs(x - 2.5) + abs(y - 7.0)
-    return base + max(0.0, 5.0 - 0.7 * dist)
+    """Guides agent towards the exit door warp (y=8.0) of incidental indoor buildings."""
+    dist = abs(x - 2.5) + abs(y - 8.0)
+    return base + max(0.0, 6.0 - 0.7 * dist)
 
 
 def navigation_potential(state) -> float:
@@ -236,6 +238,9 @@ def navigation_potential(state) -> float:
         return _pokecenter_potential(x, y, base_pc, low_hp)
 
     # Incidental indoor buildings: guide agent straight back out to overworld
+    if map_id in ((20, 1), (20, 2)):  # Pokecenter 2F / Cable Club -> exit stairs at (0, 7)
+        dist = abs(x - 0.5) + abs(y - 7.5)
+        return 40.0 + max(0.0, 6.0 - 0.7 * dist)
     if map_id in ((26, 4), (26, 6), (26, 7), (26, 8), (26, 9)):  # Cherrygrove Mart & houses
         return _building_exit_potential(x, y, base=40.0)
     if map_id in ((24, 6), (24, 7), (24, 8), (24, 9)):  # New Bark houses
@@ -272,8 +277,8 @@ def navigation_potential(state) -> float:
 
     # Stage 2: Return Egg to Elm in New Bark Town
     elif not gave_egg:
-        if map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> exit doors at (2.5, 7.0)
-            dist_exit = abs(x - 2.5) + abs(y - 7.0)
+        if map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> exit doorway at (2.5, 8.0)
+            dist_exit = abs(x - 2.5) + abs(y - 8.0)
             return 90.0 + max(0.0, 5.0 - 0.7 * dist_exit)
         elif map_id == (26, 1):  # Route 30 -> head south through east grass path to Cherrygrove
             if y <= 40.0:
@@ -295,8 +300,8 @@ def navigation_potential(state) -> float:
 
     # Stage 4: Post-Falkner -> Collect Togepi Pokémon Egg from Elm's Aide in Violet Poké Center
     elif beat_falkner and not has_aide_egg:
-        if map_id == (10, 7):  # Inside Violet Gym -> exit doors at (4.5, 15.0)
-            dist_exit = abs(x - 4.5) + abs(y - 15.0)
+        if map_id == (10, 7):  # Inside Violet Gym -> exit doorway at (4.5, 16.0)
+            dist_exit = abs(x - 4.5) + abs(y - 16.0)
             return 255.0 + max(0.0, 5.0 - 0.5 * dist_exit)
         elif map_id == (10, 5):  # Violet City -> head to Violet Poké Center at (31, 25)
             dist_pc = abs(x - 31.0) + abs(y - 25.0)
@@ -304,7 +309,10 @@ def navigation_potential(state) -> float:
 
     # Stage 3: Head to Violet City Gym & Falkner
     else:
-        if map_id in ((24, 4), (24, 5)):  # In New Bark -> head west
+        if map_id == (24, 5):  # Inside Elm's Lab -> exit doorway at (4.5, 12.0)
+            dist_exit = abs(x - 4.5) + abs(y - 12.0)
+            return 135.0 + max(0.0, 5.0 - 0.5 * dist_exit)
+        elif map_id == (24, 4):  # In New Bark Town -> head west into Route 29
             return 135.0 + max(0.0, 10.0 - x * 0.5)
         elif map_id == (24, 3):  # Route 29 -> head west to Cherrygrove
             return _route29_potential(x, y, base=135.0)
