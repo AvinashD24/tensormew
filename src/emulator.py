@@ -91,10 +91,15 @@ class Emulator:
     def pyboy(self):
         return self._pb
 
+    @property
+    def headless(self) -> bool:
+        return self._headless
+
     def tick(self, n: int = 1, render: bool = True) -> bool:
-        if not self._headless:
+        n = max(1, n)
+        if not self._headless and render:
             ok = True
-            for _ in range(max(1, n)):
+            for _ in range(n):
                 ok = self._pb.tick(1, True)
                 self._frame += 1
             return bool(ok)

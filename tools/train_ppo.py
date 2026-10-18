@@ -111,6 +111,7 @@ def main(argv=None) -> int:
                 title=f"TensorMew: PPO Training ({policy.__class__.__name__})",
                 enabled=True,
                 headless=not args.window and not args.plot,
+                refresh_fps=4.0 if args.window else 8.0,
                 save_path="logs/training_reward_entropy.png",
                 jsonl_path="logs/training_metrics.jsonl",
             )

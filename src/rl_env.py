@@ -363,4 +363,6 @@ class CrystalEnv:
             info.frontier = True
         self.steps += 1
         done = self.steps >= self.max_steps
+        if not self.machine.headless:
+            self.machine.tick(1, render=True)
         return observe(after, self.visited), reward, done, info

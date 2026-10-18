@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import math
+import os
+import sys
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -14,6 +16,22 @@ import numpy as np
 from src.rl_env import ACTIONS, N_ACTIONS
 
 ACTION_LABELS = list(ACTIONS)
+
+
+def ensure_interactive_matplotlib_backend() -> None:
+    """Pick a GUI backend on Windows before pyplot is imported."""
+    if os.environ.get("MPLBACKEND"):
+        return
+    import matplotlib
+
+    if matplotlib.get_backend().lower() != "agg":
+        return
+    for backend in ("TkAgg", "QtAgg", "WXAgg"):
+        try:
+            matplotlib.use(backend, force=True)
+            return
+        except Exception:
+            continue
 
 
 @dataclass
@@ -106,6 +124,7 @@ class LiveMetricsPlotter:
 
     def _init_gui(self) -> None:
         try:
+            ensure_interactive_matplotlib_backend()
             import matplotlib.pyplot as plt
 
             plt.ion()
@@ -255,7 +274,13 @@ class LiveMetricsPlotter:
 
             plt.draw()
             plt.pause(0.001)
-        except Exception:
+        except Exception as exc:
+            print(
+                f"visual_metrics: live graph window unavailable ({exc}); "
+                f"metrics still append to {self.jsonl_path} and PNG {self.save_path}",
+                file=sys.stderr,
+                flush=True,
+            )
             self.headless = True
             self._initialized_gui = False
 
