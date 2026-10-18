@@ -6,10 +6,14 @@ import argparse
 import collections
 import os
 import sys
+from dotenv import load_dotenv
 import numpy as np
+
+load_dotenv()
 
 from src.battle import tactical_battle_step
 from src.emulator import Emulator
+from src.llm_supervisor import Supervisor
 from src.macros import Macros
 from src.mover import Mover, walkable
 from src.ppo import load_policy
@@ -17,6 +21,7 @@ from src.ram_parser import RamParser, dialogue_open
 from src.rl_env import ACTIONS, observe
 from src.states import StateRegistry
 from src.step import TileStepper
+from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
 
 _DIRS = ("up", "down", "left", "right")
@@ -81,6 +86,17 @@ def main(argv=None) -> int:
         macros = Macros(emu, reader)
         mover = Mover(emu, reader)
         stepper = TileStepper(emu, reader)
+
+        supervisor = None
+        if os.environ.get("ANTHROPIC_API_KEY"):
+            try:
+                registry = execution_registry(emu, reader, mover=mover, macros=macros)
+                supervisor = Supervisor(registry=registry)
+                print(
+                    f"LLM Supervisor ACTIVE ({supervisor.model}) — will provide strategic steering on bottlenecks."
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize LLM Supervisor: {e}")
 
         policy = None
         is_deep_policy = False
@@ -159,6 +175,22 @@ def main(argv=None) -> int:
                     step_idx += 1
                     continue
                 elif kind_str == "STUCK" or blocked_count >= 4:
+                    if supervisor is not None:
+                        trigger_arg = trigger or "STUCK: agent blocked or oscillating near dead-end"
+                        print(f"[Step {step_idx}] Asking LLM Director ({supervisor.model}) to resolve bottleneck at {state.pos}...", flush=True)
+                        try:
+                            decision = supervisor.decide(state.to_text(), trigger_arg)
+                            if decision:
+                                print(f"[Step {step_idx}] [LLM Director] Calling {decision.name}({decision.arguments}) | Reason: {decision.reason} (${decision.est_usd:.4f})", flush=True)
+                                res = supervisor.run_tool(decision.name, decision.arguments)
+                                print(f"[Step {step_idx}] [LLM Director] Execution result: ok={getattr(res, 'ok', True)}", flush=True)
+                                blocked_count = 0
+                                recent_positions.clear()
+                                step_idx += 1
+                                continue
+                        except Exception as exc:
+                            print(f"[Step {step_idx}] LLM Director error ({exc}), falling back to reflexive escape...", flush=True)
+
                     tiles = getattr(state, "tiles", {})
                     # Find all walkable directions and sort by fewest visits
                     candidates = []

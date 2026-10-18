@@ -102,19 +102,26 @@ def navigation_potential(state) -> float:
         if map_id == (24, 4):  # New Bark Town -> exit west into Route 29 (x -> 0)
             return max(0.0, 10.0 - x * 0.5)
         elif map_id == (24, 3):  # Route 29 -> exit west towards Cherrygrove (x -> 0)
-            return 10.0 + max(0.0, (60.0 - x) * 0.5)
-        elif map_id == (24, 7):  # Cherrygrove City -> exit north towards Route 30 (y -> 0)
+            # Route 29 has an enclosed dead-end cul-de-sac at x <= 20, y >= 13.
+            # The true highway branches North at x=24 up to y=7, then runs west to x=8, then drops to (0, 11).
+            if x <= 20 and y >= 13:
+                return 10.0 + (x * 0.5)  # Penalize deeper intrusion; reward moving east to escape
+            elif x <= 28 and y > 7:
+                return 15.0 + (60.0 - x) * 0.3 + (15.0 - y) * 0.8  # Pull north towards y=7 highway
+            else:
+                return 20.0 + max(0.0, (60.0 - x) * 0.5)
+        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove City -> exit north towards Route 30 (y -> 0)
             return 45.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id == (24, 6):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
+        elif map_id in ((26, 2), (24, 6)):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
             return 60.0 + max(0.0, (40.0 - y) * 0.5)
         elif map_id in ((26, 10), (24, 10)):  # Mr. Pokémon's House
             return 85.0
 
     # Stage 2: Return Egg to Elm in New Bark Town
     elif not gave_egg:
-        if map_id == (24, 6):  # Route 30 -> head south to Cherrygrove (y -> 40)
+        if map_id in ((26, 2), (24, 6)):  # Route 30 -> head south to Cherrygrove (y -> 40)
             return 70.0 + y * 0.3
-        elif map_id == (24, 7):  # Cherrygrove -> head east to Route 29 (x -> 20)
+        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 (x -> 20)
             return 85.0 + x * 0.3
         elif map_id == (24, 3):  # Route 29 -> head east to New Bark (x -> 60)
             return 95.0 + x * 0.3
@@ -128,12 +135,17 @@ def navigation_potential(state) -> float:
         if map_id in ((24, 4), (24, 5)):  # In New Bark -> head west
             return 130.0 + max(0.0, 10.0 - x * 0.5)
         elif map_id == (24, 3):  # Route 29 -> head west to Cherrygrove
-            return 140.0 + max(0.0, (60.0 - x) * 0.5)
-        elif map_id == (24, 7):  # Cherrygrove -> head north to Route 30
+            if x <= 20 and y >= 13:
+                return 135.0 + (x * 0.5)
+            elif x <= 28 and y > 7:
+                return 140.0 + (60.0 - x) * 0.3 + (15.0 - y) * 0.8
+            else:
+                return 145.0 + max(0.0, (60.0 - x) * 0.5)
+        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head north to Route 30
             return 175.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id == (24, 6):  # Route 30 -> head north-west to Route 31
+        elif map_id in ((26, 2), (24, 6)):  # Route 30 -> head north-west to Route 31
             return 190.0 + max(0.0, (40.0 - y) * 0.5)
-        elif map_id in ((26, 2), (24, 2)):  # Route 31 -> head west to Violet City (x -> 0)
+        elif map_id in ((26, 1), (24, 2)):  # Route 31 -> head west to Violet City (x -> 0)
             return 215.0 + max(0.0, (40.0 - x) * 0.5)
         elif map_id == (10, 5):  # Violet City -> Violet Gym (10, 7)
             return 240.0
