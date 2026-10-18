@@ -310,6 +310,27 @@ class BattleTests(unittest.TestCase):
         self.assertEqual(macros.switch_pokemon.call_count, 1)
         self.assertEqual(macros.choose_move.call_count, 4)
 
+    def test_wild_battles_are_fled_en_route_to_falkner_but_fought_while_grinding(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        def wild_state():
+            return SimpleNamespace(
+                battle_mode=1, num_items=0, num_balls=0, party_count=1, party_species=(155,),
+                party_hp=((30, 30),), party_levels=(9,), party_moves=((33, 0, 0, 0),),
+                enemy_species=16, enemy_hp=10, enemy_max_hp=10,
+                has_event=lambda name: name in ("EVENT_GAVE_MYSTERY_EGG_TO_ELM", "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"),
+            )
+
+        fleeing = MagicMock()
+        tactical_battle_step(wild_state(), fleeing)
+        fleeing.run_away.assert_called_once()
+
+        farming = MagicMock()
+        tactical_battle_step(wild_state(), farming, grind=True)
+        farming.run_away.assert_not_called()
+        farming.choose_move.assert_called_once()
+
     def test_tactical_battle_never_runs_away_in_trainer_battle_even_if_low_and_no_backups(self):
         from unittest.mock import MagicMock
         from src.battle import tactical_battle_step

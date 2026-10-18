@@ -246,8 +246,14 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), g
                 guard.fainted.add(guard.last_switch)
         slot = pick_replacement_slot(state, guard)
         if slot is None:
-            guard.last_switch = None
-            return macros.handle_whiteout()
+            alive_slots = [i + 1 for i, hp in enumerate(party_hp) if hp[0] > 0 and i != active_idx]
+            if alive_slots:
+                guard.fainted.clear()
+                guard.attempts.clear()
+                slot = alive_slots[0]
+            else:
+                guard.last_switch = None
+                return macros.handle_whiteout()
         guard.last_switch = slot
         return macros.switch_fainted_pokemon(slot)
 
@@ -263,6 +269,12 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), g
         if not is_low_hp:
             guard.last_hp, guard.fails = None, 0
         if is_low_hp:
+            # Finish off weak enemies in critical knockout range (<= 5 HP) instead of switching out
+            e_hp = getattr(state, "enemy_hp", 0)
+            if e_hp > 0 and e_hp <= 5:
+                slot = pick_best_move(state, enemy_types)
+                return macros.choose_move(slot)
+
             # First priority: heal active Pokémon if Pack has items (e.g. Potions), unless the
             # last tries did not raise HP (item rejected): then switch or fight instead.
             frame = getattr(getattr(macros, "machine", None), "frame", None)
@@ -284,6 +296,7 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), g
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
     gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+    beat_falkner = callable(has_event) and has_event("EVENT_BEAT_FALKNER")
 
     if mode == 1 and not is_trainer:
         # Flee if active Pokémon is at risk of fainting
@@ -292,6 +305,11 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), g
 
         # Urgent Quest Delivery: When returning Mystery Egg to Elm, avoid wild battle distractions
         if has_egg and not gave_egg:
+            return macros.run_away()
+
+        # En route to Violet Gym: avoid wild battle distractions and preserve HP for Falkner
+        # (unless gym prep is deliberately farming levels on Route 30: `grind`)
+        if gave_egg and not beat_falkner and not grind:
             return macros.run_away()
 
         enemy_spec = getattr(state, "enemy_species", 0)

@@ -259,8 +259,14 @@ def main(argv=None) -> int:
                     reason = getattr(res, "message", getattr(res, "reason", "attacked"))
                 elif p_cur == 0 and not getattr(res, "ok", True):
                     failed = reason
-                    res = macros.handle_whiteout()
-                    reason = f"handling whiteout / fainted ({failed})"
+                    party_hp = tuple(getattr(state, "party_hp", ()) or ())
+                    has_alive = any(i != act_idx and hp[0] > 0 for i, hp in enumerate(party_hp))
+                    if has_alive:
+                        res = macros.switch_fainted_pokemon()
+                        reason = getattr(res, "message", getattr(res, "reason", "switched fainted Pokémon"))
+                    else:
+                        res = macros.handle_whiteout()
+                        reason = f"handling whiteout / fainted ({failed})"
                 mon_name = get_species_name(state.party_species[act_idx]) if state.party_species and act_idx < len(state.party_species) else "Mon"
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "

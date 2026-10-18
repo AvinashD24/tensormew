@@ -181,9 +181,12 @@ class Macros:
         # wMenuCursorY is the live cursor row. wPartyMenuCursor (0xD0D8) only holds the last selection,
         # so it stays non-zero while the party menu is closed and must not be used to detect an open menu.
         try:
-            return self.machine.read(0, 0xCFA9, 1)[0]
+            val = self.machine.read(0, 0xCFA9, 1)[0]
+            if 1 <= val <= 6:
+                return val
         except Exception:
-            return 0
+            pass
+        return 0
 
     def _move_party_cursor(self, slot: int) -> int:
         """Walk the party-menu cursor to `slot` (1-indexed) using up/down, checking the cursor each press."""
@@ -204,11 +207,8 @@ class Macros:
     def switch_fainted_pokemon(self, slot: int = 2) -> MacroResult:
         """Bring in a Pokémon that can fight after the active one fainted.
 
-        Tries `slot` first, then the other party slots that show HP, then every remaining slot, one
-        after another with the arrow keys and A. After each try the battle state is read back: the
-        switch only counts once the battle Pokémon has HP. A rejected pick ("no will to fight") is
-        dismissed and the next slot is tried, so the party menu can no longer be left stuck on one
-        Pokémon.
+        Tries `slot` first, then other conscious party slots using DOWN arrow keys and A.
+        Dismisses any rejection modals with B and cycles down through the party.
         """
         state = self._state()
         if state.battle_mode == 0:
@@ -279,13 +279,14 @@ class Macros:
                 continue
 
             self.machine.press("a", frames=8)   # select the Pokémon
-            self.machine.tick(32, render=False)
+            self.machine.tick(24, render=False)
             self.machine.press("a", frames=8)   # SWITCH (top option); harmless if no submenu opened
-            self.machine.tick(56, render=False)
-            frames += 96
+            self.machine.tick(120, render=False)  # Allow send-out animation and cry to finish
+            frames += 152
+
             after = self._state()
             if after.battle_mode == 0 or getattr(after, "battle_mon_hp", 0) > 0:
-                # Clear the '<PLAYER> sent out <MON>!' text
+                # Clear any remaining battle dialogue
                 for _ in range(4):
                     self.machine.press("b", frames=6)
                     self.machine.tick(20, render=False)
