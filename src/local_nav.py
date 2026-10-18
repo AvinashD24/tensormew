@@ -45,6 +45,7 @@ class LocalNav:
         self.tick = 0
         self.last_action = -1
         self.last_moved = True
+        self._frontier_cache = None
 
     # --- recording ---------------------------------------------------------------
     def update(self, state) -> None:
@@ -83,6 +84,14 @@ class LocalNav:
         map_id = _map(state)
         known = self.edges.get(map_id, {})
         start = (state.x, state.y)
+        key = (map_id, start, len(known), self.tick)
+        if self._frontier_cache is not None and self._frontier_cache[0] == key:
+            return self._frontier_cache[1]
+        result = self._frontier(map_id, known, start)
+        self._frontier_cache = (key, result)
+        return result
+
+    def _frontier(self, map_id, known, start) -> tuple[str | None, int]:
         if start not in known:
             return None, 0
         queue = deque([(start, None, 0)])
@@ -132,6 +141,14 @@ class LocalNav:
                     value = -1.0
                 out.append(value)
         return out
+
+    def potential(self, state) -> float:
+        """Shaping potential in [-1, 0]: minus the known walking distance to the nearest
+        unvisited open tile, over FRONTIER_DIST_SCALE. -1 when nothing known is left to try."""
+        direction, dist = self.frontier(state)
+        if direction is None:
+            return -1.0
+        return -min(dist, FRONTIER_DIST_SCALE) / FRONTIER_DIST_SCALE
 
     def features(self, state, *, in_menu: bool = False) -> np.ndarray:
         """NAV_DIM floats. ``in_menu`` (battle or dialogue) clears the movement mask."""

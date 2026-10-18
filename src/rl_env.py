@@ -21,6 +21,13 @@ MASK_START = BASE_OBS_DIM
 OBS_DIM = BASE_OBS_DIM + NAV_DIM
 _NEIGHBOR_DELTAS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 UNVISITED_NEIGHBOR_BONUS = 0.2
+# Frontier-distance shaping (potential-based: gamma * phi(s') - phi(s)). Scale is per tile of
+# progress toward the nearest unvisited open tile when it is 20 tiles away.
+FRONTIER_SHAPING_WEIGHT = 4.0
+SHAPING_GAMMA = 0.99
+# Puffer-style one-time exploration payments for things that are not just new coordinates.
+NEW_INTERACTION_REWARD = 0.5  # first A press that opens a script from a given tile and facing
+NEW_WARP_REWARD = 1.0         # first time a map-to-map transition is taken
 
 # Key Transit Maps along the path to the First Gym (Falkner in Violet City)
 GYM_PATH_WAYPOINTS: dict[tuple[int, int], float] = {
@@ -187,14 +194,18 @@ def progress_reward(
     seen_events: set[int] | None = None,
     seen_waypoints: set[tuple[int, int]] | None = None,
     info: StepInfo | None = None,
+    shaping: float | None = None,
 ) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map."""
     reward = -0.01
     new_tile = False
     new_map = False
 
-    # Goal-Directed Navigation Potential Shaping (Ng et al., 1999)
-    if moved:
+    # Potential-based shaping (Ng et al., 1999). The env passes its frontier-distance delta;
+    # without it, fall back to the hand-coded per-map potential.
+    if shaping is not None:
+        reward += shaping
+    elif moved:
         phi_before = navigation_potential(before)
         phi_after = navigation_potential(after)
         delta_phi = phi_after - phi_before
@@ -386,6 +397,7 @@ class CrystalEnv:
     rng: np.random.Generator = field(default_factory=lambda: np.random.default_rng(0))
     frontier_prob: float = 0.3
     max_steps: int = 64
+    shaping: str = "frontier"  # "frontier" (learned-map distance) or "legacy" (hand-coded per-map)
 
     def __post_init__(self):
         self.seen_tiles: set = set()
@@ -400,6 +412,9 @@ class CrystalEnv:
         self.steps = 0
         self.consecutive_bumps = 0
         self.nav = LocalNav()
+        self.seen_interactions: set[tuple] = set()
+        self.seen_warps: set[tuple] = set()
+        self._phi = 0.0
 
     def reset(self, start: bytes | None = None) -> np.ndarray:
         if start is not None:
@@ -412,6 +427,8 @@ class CrystalEnv:
         self.steps = 0
         self.consecutive_bumps = 0
         self.nav.reset()
+        self.seen_interactions = set()
+        self.seen_warps = set()
         # Discovery bonuses start over each episode. The frontier list does not.
         self.seen_tiles = set()
         self.seen_maps = set()
@@ -437,7 +454,26 @@ class CrystalEnv:
                 for bit in range(8):
                     if b & (1 << bit):
                         self.seen_events.add(i * 8 + bit)
+        self.nav.update(state)
+        self._phi = self.nav.potential(state)
         return observe(state, self.visited, self.nav)
+
+    def _interaction_reward(self, before, after, action: int, busy: bool) -> float:
+        """One-time payments, as in pokemonred_puffer's NPC/sign/warp terms."""
+        bonus = 0.0
+        if action == 4 and not busy and dialogue_open(after):
+            key = (before.map_group, before.map_number, before.x, before.y, before.facing)
+            if key not in self.seen_interactions:
+                self.seen_interactions.add(key)
+                bonus += NEW_INTERACTION_REWARD
+        before_map = (before.map_group, before.map_number)
+        after_map = (after.map_group, after.map_number)
+        if before_map != after_map:
+            edge = (before_map, after_map)
+            if edge not in self.seen_warps:
+                self.seen_warps.add(edge)
+                bonus += NEW_WARP_REWARD
+        return bonus
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, StepInfo]:
         before = self.reader.parse(self.machine.frame)
@@ -468,6 +504,17 @@ class CrystalEnv:
             dx, dy = _NEIGHBOR_DELTAS[action]
             neighbor = (before.map_group, before.map_number, before.x + dx, before.y + dy)
             unvisited_neighbor = neighbor not in self.seen_tiles
+        busy = bool(before.battle_mode) or dialogue_open(before)
+        shaping = None
+        if self.shaping == "frontier":
+            self.nav.update(after)
+            phi_after = self.nav.potential(after)
+            same_map = (before.map_group, before.map_number) == (after.map_group, after.map_number)
+            # No shaping across a warp (the map bonus covers it) or inside battle and dialogue.
+            shaping = 0.0
+            if same_map and not busy:
+                shaping = FRONTIER_SHAPING_WEIGHT * (SHAPING_GAMMA * phi_after - self._phi)
+            self._phi = phi_after
         reward, info.discovered_tile, info.discovered_map = progress_reward(
             before,
             after,
@@ -479,7 +526,9 @@ class CrystalEnv:
             seen_events=self.seen_events,
             seen_waypoints=self.seen_waypoints,
             info=info,
+            shaping=shaping,
         )
+        reward += self._interaction_reward(before, after, action, busy)
         tile = (after.map_group, after.map_number, after.x, after.y)
         self.visited.add(tile)
         map_id = (after.map_group, after.map_number)
