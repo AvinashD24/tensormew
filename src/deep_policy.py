@@ -192,6 +192,32 @@ if TORCH_AVAILABLE:
             logp = dist.log_prob(action)
             return int(action.item()), float(logp.item()), float(value.item())
 
+        @torch.no_grad()
+        def probs(
+            self,
+            screen_np: np.ndarray,
+            ram_np: np.ndarray,
+            device: str = "cpu",
+        ) -> np.ndarray:
+            """Compute action probability distribution from raw screen and RAM vector."""
+            self.eval()
+            if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
+                rgb = screen_np[:, :, :3]
+            else:
+                rgb = np.repeat(screen_np[:, :, None], 3, axis=2)
+            screen_t = (
+                torch.from_numpy(rgb.transpose(2, 0, 1))
+                .unsqueeze(0)
+                .float()
+                .to(device)
+                .div_(255.0)
+            )
+            ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
+            logits, _ = self.forward(screen_t, ram_t)
+            p = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
+            return p
+
+
         def evaluate_actions(
             self, screen: torch.Tensor, ram_obs: torch.Tensor, actions: torch.Tensor
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:

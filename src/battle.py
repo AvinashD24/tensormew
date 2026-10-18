@@ -101,24 +101,52 @@ def pick_best_move(state, enemy_types: tuple[int, ...] = (2, 0)) -> int:
 
 def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     """Execute optimal combat/capture action:
-    - In wild battles (battle_mode == 1) with available balls and open party:
-      - If species is not already caught in party:
-        - Weaken first if enemy HP > 40%.
-        - Catch with Pokéball when HP <= 40%.
-    - In trainer battles, or when already caught/no balls:
-      - Attack using the best move to KO and gain EXP.
+    - 1. Self-Preservation: In wild battles, if active Pokémon HP is low (<= 30%),
+         flee immediately to prevent getting knocked out / white-out!
+    - 2. Goal-Oriented Progress (Anti-Grinding): In wild battles, if species is already
+         caught and party has sufficient level (>= 7), flee immediately to stop blind
+         grinding and resume advancing toward the Gym!
+    - 3. Strategic Capture: In wild battles with open party and balls:
+         - Weaken first if enemy HP > 40%.
+         - Catch with Pokéball when HP <= 40%.
+    - 4. Decisive Combat: In trainer battles or when fighting for needed early EXP:
+         - Attack using the highest-scoring move against defending types.
     """
-    if getattr(state, "battle_mode", 0) == 1 and getattr(state, "num_balls", 0) > 0 and getattr(state, "party_count", 0) < 6:
+    mode = getattr(state, "battle_mode", 0)
+
+    # 1. Health check: active Pokémon HP
+    party_hp = getattr(state, "party_hp", ())
+    cur_hp = party_hp[0][0] if party_hp else 1
+    max_hp = party_hp[0][1] if party_hp else 1
+    is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
+
+    # Wild battle branching
+    if mode == 1:
+        # Flee if active Pokémon is at risk of fainting
+        if is_low_hp:
+            return macros.run_away()
+
         enemy_spec = getattr(state, "enemy_species", 0)
         party_spec = getattr(state, "party_species", ())
         already_caught = enemy_spec > 0 and enemy_spec in party_spec
-        if not already_caught:
-            cur_hp = getattr(state, "enemy_hp", 0)
-            max_hp = getattr(state, "enemy_max_hp", 0)
-            if max_hp > 0 and (cur_hp / max_hp) > 0.40:
+
+        # Anti-grinding: if already caught and level >= 7, flee to progress towards gym
+        party_levels = getattr(state, "party_levels", ())
+        lead_level = party_levels[0] if party_levels else 5
+        if already_caught and lead_level >= 7:
+            return macros.run_away()
+
+        # Capture path for uncaptured wild Pokémon
+        if not already_caught and getattr(state, "num_balls", 0) > 0 and getattr(state, "party_count", 0) < 6:
+            e_cur = getattr(state, "enemy_hp", 0)
+            e_max = getattr(state, "enemy_max_hp", 0)
+            if e_max > 0 and (e_cur / e_max) > 0.40:
                 slot = pick_best_move(state, enemy_types)
                 return macros.choose_move(slot)
             return macros.use_pokeball()
+
+    # Trainer battles, or wild battles where fighting is beneficial
     slot = pick_best_move(state, enemy_types)
     return macros.choose_move(slot)
+
 

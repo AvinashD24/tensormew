@@ -160,4 +160,23 @@ class Macros:
         frames += 168
         return MacroResult(True, "used Pokéball", frames=frames)
 
+    def run_away(self) -> MacroResult:
+        state = self._state()
+        if state.battle_mode == 0:
+            return MacroResult(False, "run_away refused: not in battle")
+        frames = self._reset_to_battle_fight()
+        # From FIGHT (top-left), move down to PACK, then right to RUN (bottom-right)
+        self.machine.press("down", frames=8)
+        self.machine.tick(16, render=False)
+        frames += 24
+        self.machine.press("right", frames=8)
+        self.machine.tick(16, render=False)
+        frames += 24
+        # Select RUN
+        self.machine.press("a", frames=8)
+        self.machine.tick(48, render=False)
+        frames += 56
+        return MacroResult(True, "ran away from battle", frames=frames)
+
+
 

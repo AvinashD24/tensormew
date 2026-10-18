@@ -188,14 +188,45 @@ def progress_reward(
         if info is not None:
             info.level_up = True
 
-    # Combat: Battle Won
+    # Combat: Battle Won (with diminishing returns on early wild battles)
     if getattr(before, "battle_mode", 0) != 0 and getattr(after, "battle_mode", 0) == 0:
         if not getattr(after, "fainted", False):
-            reward += 3.0
+            lead_lvl = max(getattr(before, "party_levels", (0,)) or [0])
+            if getattr(before, "battle_mode", 0) == 2:
+                # Trainer battles are key milestones towards the gym
+                reward += 5.0
+            elif lead_lvl < 7:
+                # Early wild battle victory provides initial EXP
+                reward += 3.0
+            else:
+                # Diminishing returns: blind wild grinding yields no incentive over progressing
+                reward += 0.2
 
-    # Combat: Fainted (White-out penalty)
+    # HP Dynamics: Damage Taken, Healing, and Critical Low-HP Danger
+    hp_b = getattr(before, "party_hp", ())
+    hp_a = getattr(after, "party_hp", ())
+    if hp_b and hp_a:
+        cur_b = sum(p[0] for p in hp_b)
+        max_b = sum(p[1] for p in hp_b)
+        cur_a = sum(p[0] for p in hp_a)
+        max_a = sum(p[1] for p in hp_a)
+        if max_b > 0 and cur_a < cur_b:
+            # Damage penalty proportional to HP fraction lost
+            dmg_frac = (cur_b - cur_a) / max_b
+            reward -= dmg_frac * 2.0
+        elif max_a > 0 and cur_a > cur_b:
+            # Healing reward (Pokémon Center, Mom, potions)
+            heal_frac = (cur_a - cur_b) / max_a
+            reward += heal_frac * 3.0
+
+        # Critical danger penalty when active Pokémon is below 25% HP
+        lead_cur, lead_max = hp_a[0]
+        if lead_max > 0 and (lead_cur / lead_max) <= 0.25:
+            reward -= 0.05
+
+    # Combat: Fainted (White-out penalty: catastrophic reset of progress)
     if getattr(after, "fainted", False) and not getattr(before, "fainted", False):
-        reward -= 5.0
+        reward -= 25.0
 
     return reward, new_tile, new_map
 

@@ -122,3 +122,50 @@ class BattleTests(unittest.TestCase):
         macros.choose_move.assert_called_once_with(1)
         macros.use_pokeball.assert_not_called()
 
+    def test_tactical_battle_flees_when_player_low_hp(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Active Pokémon HP is 5/20 (25% <= 30%) in wild battle -> flee to prevent wipeout!
+        state = SimpleNamespace(
+            battle_mode=1,
+            num_balls=5,
+            party_count=1,
+            party_species=(155,),
+            party_hp=((5, 20),),
+            party_levels=(5,),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=16,
+            enemy_hp=5,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        macros.run_away.assert_called_once()
+        macros.choose_move.assert_not_called()
+        macros.use_pokeball.assert_not_called()
+
+    def test_tactical_battle_flees_when_already_caught_and_level_sufficient(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Active Pokémon is level 8 (>= 7) and Pidgey is already caught -> flee to stop grinding!
+        state = SimpleNamespace(
+            battle_mode=1,
+            num_balls=5,
+            party_count=2,
+            party_species=(155, 16),
+            party_hp=((20, 20), (18, 18)),
+            party_levels=(8, 4),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=16,
+            enemy_hp=10,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        macros.run_away.assert_called_once()
+        macros.choose_move.assert_not_called()
+        macros.use_pokeball.assert_not_called()
+
+

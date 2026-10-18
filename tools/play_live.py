@@ -40,7 +40,7 @@ def equip_balls(emu: Emulator, count: int = 10) -> None:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Live continuous PyBoy game player")
     parser.add_argument("--state", default="route29_entry", help="save state name")
-    parser.add_argument("--policy", default="logs/ppo_policy.npz", help="path to policy")
+    parser.add_argument("--policy", default="logs/deep_policy.pt", help="path to policy (.pt or .npz)")
     parser.add_argument(
         "--speed",
         type=int,
@@ -73,9 +73,18 @@ def main(argv=None) -> int:
         stepper = TileStepper(emu, reader)
         supervisor = Supervisor(client=None, registry=execution_registry(emu, reader, mover=mover, macros=macros))
 
-        policy = load_policy(args.policy) if args.policy and os.path.exists(args.policy) else None
-        if policy is not None:
-            print(f"Loaded policy from {args.policy} ({policy.__class__.__name__})")
+        policy = None
+        is_deep_policy = False
+        if args.policy and os.path.exists(args.policy):
+            if args.policy.endswith(".pt"):
+                from src.deep_policy import SpatialVisionPolicy
+                policy = SpatialVisionPolicy.load(args.policy, device="cpu")
+                is_deep_policy = True
+                print(f"Loaded 11.6M Spatial Vision Policy from {args.policy}")
+            else:
+                policy = load_policy(args.policy)
+                if policy is not None:
+                    print(f"Loaded policy from {args.policy} ({policy.__class__.__name__})")
 
         visited: set[tuple[int, int, int, int]] = set()
         seen_tiles: set[tuple[int, int, int, int]] = set()
@@ -128,8 +137,12 @@ def main(argv=None) -> int:
             # 4. Overworld Movement via Policy
             obs = observe(state, visited)
             probs = None
-            if policy is not None and hasattr(policy, "probs"):
-                probs = policy.probs(obs).copy()
+            if policy is not None:
+                if is_deep_policy:
+                    screen = emu._pb.screen.ndarray[:, :, :3].copy()
+                    probs = policy.probs(screen, obs).copy()
+                elif hasattr(policy, "probs"):
+                    probs = policy.probs(obs).copy()
 
             # Obstacle avoidance: if bumping into obstacle, mask blocked directions
             if blocked_count >= 2 and probs is not None:
@@ -143,9 +156,9 @@ def main(argv=None) -> int:
                     probs /= total_p
                     action_idx = int(np.random.choice(len(probs), p=probs))
                 else:
-                    action_idx = int(policy.act(obs)[0])
-            elif policy is not None:
-                action_idx = int(policy.act(obs)[0])
+                    action_idx = int(np.random.choice(4))
+            elif probs is not None:
+                action_idx = int(np.random.choice(len(probs), p=probs))
             else:
                 action_idx = int(np.random.choice(4))
 
