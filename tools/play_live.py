@@ -68,15 +68,23 @@ def main(argv=None) -> int:
         default=0.5,
         help="action sampling temperature (default 0.5)",
     )
+    parser.add_argument(
+        "--headless",
+        action="store_true",
+        help="run headless without opening an SDL window for maximum throughput (~5,000 FPS)",
+    )
     args = parser.parse_args(argv)
 
-    print(f"Starting live play from '{args.state}' at {args.speed}x speed.")
-    print("Game will run continuously until you close the PyBoy window.\n")
+    print(f"Starting live play from '{args.state}' at {args.speed}x speed (headless={args.headless}).")
+    if not args.headless:
+        print("Game will run continuously until you close the PyBoy window.\n")
+    else:
+        print("Running in headless high-throughput mode. Press Ctrl+C to exit.\n")
 
     emu = None
     try:
         data = StateRegistry().load_bytes(args.state)
-        emu = Emulator(headless=False, speed=args.speed, rtc_lock=True)
+        emu = Emulator(headless=args.headless, speed=args.speed, rtc_lock=True)
         emu.load_state(data)
 
         if args.balls > 0:
@@ -125,10 +133,11 @@ def main(argv=None) -> int:
         recurrent_hx = None
         consecutive_a_count = 0
         recent_positions: collections.deque[tuple[int, int]] = collections.deque(maxlen=8)
+        render_screen = not args.headless
 
         while True:
             # Check if PyBoy window was closed
-            if not emu.tick(1, render=True):
+            if not emu.tick(1, render=render_screen):
                 print("\nPyBoy window closed by user. Exiting cleanly.")
                 break
 
@@ -150,7 +159,7 @@ def main(argv=None) -> int:
                     flush=True,
                 )
                 for _ in range(10):
-                    emu.tick(20, render=True)
+                    emu.tick(20, render=render_screen)
                     emu.press("b", frames=6)
                 step_idx += 1
                 continue
@@ -213,7 +222,7 @@ def main(argv=None) -> int:
                             tile_visit_counts[target] = tile_visit_counts.get(target, 0) + 50
                     else:
                         emu.press("b", frames=8)
-                        emu.tick(16, render=True)
+                        emu.tick(16, render=render_screen)
                     blocked_count = 0
                     step_idx += 1
                     continue
@@ -301,7 +310,7 @@ def main(argv=None) -> int:
             before_pos = (state.x, state.y)
             if direction == "a":
                 emu.press("a", frames=8)
-                emu.tick(12, render=True)
+                emu.tick(12, render=render_screen)
                 moved = False
                 consecutive_a_count += 1
             else:

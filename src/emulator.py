@@ -64,8 +64,8 @@ class Emulator:
 
         if os.environ.get("PYBOY_VISUAL") == "1":
             headless = False
-        self._headless = headless
-        self._pb = PyBoy(str(rom), window="null" if headless else "SDL2", symbols=str(sym))
+        sound = os.environ.get("PYBOY_SOUND", "0") == "1"
+        self._pb = PyBoy(str(rom), window="null" if headless else "SDL2", symbols=str(sym), sound=sound)
         if speed is None:
             # 0 is uncapped. A window defaults to 10x so the walk is visible but not realtime.
             speed = 0 if headless else int(os.environ.get("PYBOY_SPEED", "10"))
