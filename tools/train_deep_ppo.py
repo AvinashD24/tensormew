@@ -29,6 +29,7 @@ from src.ram_parser import RamParser, dialogue_open
 from src.rl_env import ACTIONS, StepInfo, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
+from src.terminal_monitor import TerminalMonitor
 
 CURRICULUM_STATES = [
     "route29_entry",
@@ -185,8 +186,14 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
                     seen_waypoints=seen_waypoints,
                     info=info,
                 )
+                has_event = getattr(after, "has_event", None)
+                gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+                quest_complete = gave_egg and after.map_id == (24, 5)
+                if quest_complete:
+                    step_rew += 50.0
+
                 steps += 1
-                done = steps >= max_steps
+                done = steps >= max_steps or quest_complete
                 if done:
                     reset_environment()
 
@@ -300,19 +307,20 @@ def compute_gae(
 
 def train(
     updates: int = 50,
-    rollout_steps: int = 64,
+    rollout_steps: int = 128,
     num_envs: int = 12,
     batch_size: int = 128,
     lr: float = 3e-4,
     clip_ratio: float = 0.2,
     entropy_coef: float = 0.02,
-    start_state: str = "route29_entry",
+    start_state: str = "new_bark_outside",
     save_path: str = "logs/deep_policy.pt",
     resume: bool = True,
     use_gru: bool = True,
-    curriculum: bool = True,
+    curriculum: bool = False,
     states: list[str] | None = None,
     push_weights: bool = True,
+    max_steps: int | None = None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru})...")
@@ -336,12 +344,14 @@ def train(
     else:
         states_to_use = [start_state]
 
-    print(f"Spawning {num_envs} vectorized PyBoy workers across curriculum states: {states_to_use}...")
-    vec_env = VectorEnv(num_envs=num_envs, start_states=states_to_use, max_steps=rollout_steps)
+    ep_max_steps = max_steps if max_steps is not None else max(1024, rollout_steps * 8)
+    print(f"Spawning {num_envs} vectorized PyBoy workers across states: {states_to_use} (max_steps={ep_max_steps})...")
+    vec_env = VectorEnv(num_envs=num_envs, start_states=states_to_use, max_steps=ep_max_steps)
     screens_cur, rams_cur = vec_env.reset()
 
     best_reward = -float("inf")
     hx = torch.zeros(1, num_envs, 512, device=device) if policy.use_gru else None
+    monitor = TerminalMonitor(total_updates=updates, jsonl_path="logs/training_metrics.jsonl")
 
     try:
         for update in range(updates):
@@ -404,6 +414,12 @@ def train(
 
             # 3. PPO Epochs
             policy.train()
+            ep_pol_losses: list[float] = []
+            ep_val_losses: list[float] = []
+            ep_entropies: list[float] = []
+            ep_kls: list[float] = []
+            ep_clip_fracs: list[float] = []
+
             if policy.use_gru:
                 # Recurrent Sequence Updates across (B, T)
                 screens_seq = torch.stack(buf_screens, dim=1).to(device)   # (B, T, 3, 144, 160)
@@ -426,6 +442,15 @@ def train(
                     value_loss = 0.5 * F.mse_loss(val_pred, returns_seq)
                     entropy_loss = -entropy.mean()
                     loss = policy_loss + value_loss + entropy_coef * entropy_loss
+
+                    with torch.no_grad():
+                        approx_kl = ((ratio - 1.0) - torch.log(ratio + 1e-8)).mean()
+                        clip_frac = (torch.abs(ratio - 1.0) > clip_ratio).float().mean()
+                        ep_pol_losses.append(policy_loss.item())
+                        ep_val_losses.append(value_loss.item())
+                        ep_entropies.append(entropy.mean().item())
+                        ep_kls.append(approx_kl.item())
+                        ep_clip_fracs.append(clip_frac.item())
 
                     optimizer.zero_grad()
                     loss.backward()
@@ -468,6 +493,15 @@ def train(
 
                         loss = policy_loss + value_loss + entropy_coef * entropy_loss
 
+                        with torch.no_grad():
+                            approx_kl = ((ratio - 1.0) - torch.log(ratio + 1e-8)).mean()
+                            clip_frac = (torch.abs(ratio - 1.0) > clip_ratio).float().mean()
+                            ep_pol_losses.append(policy_loss.item())
+                            ep_val_losses.append(value_loss.item())
+                            ep_entropies.append(entropy.mean().item())
+                            ep_kls.append(approx_kl.item())
+                            ep_clip_fracs.append(clip_frac.item())
+
                         optimizer.zero_grad()
                         loss.backward()
                         torch.nn.utils.clip_grad_norm_(policy.parameters(), max_norm=0.5)
@@ -476,13 +510,27 @@ def train(
             dt = time.time() - t0
             max_maps = max(map_counts)
             max_badges = max(badges)
+            cur_lr = optimizer.param_groups[0]["lr"]
 
-            print(
-                f"update={update:3d} | samples={total_samples} | "
-                f"mean_rew={mean_rew:6.2f} | maps_disc={max_maps} | "
-                f"badges={max_badges} | time={dt:4.1f}s | "
-                f"loss={loss.item():.4f}",
-                flush=True,
+            mean_entropy = float(np.mean(ep_entropies)) if ep_entropies else 0.0
+            mean_val_loss = float(np.mean(ep_val_losses)) if ep_val_losses else 0.0
+            mean_pol_loss = float(np.mean(ep_pol_losses)) if ep_pol_losses else 0.0
+            mean_kl = float(np.mean(ep_kls)) if ep_kls else 0.0
+            mean_clip = float(np.mean(ep_clip_fracs)) if ep_clip_fracs else 0.0
+
+            monitor.log_update(
+                update=update,
+                mean_reward=mean_rew,
+                entropy=mean_entropy,
+                value_loss=mean_val_loss,
+                policy_loss=mean_pol_loss,
+                approx_kl=mean_kl,
+                clip_frac=mean_clip,
+                lr=cur_lr,
+                maps_discovered=max_maps,
+                badges=max_badges,
+                duration_sec=dt,
+                samples=total_samples,
             )
 
             if mean_rew > best_reward or (update + 1) % 10 == 0:
@@ -503,13 +551,14 @@ def train(
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training on CUDA")
     parser.add_argument("--updates", type=int, default=50)
-    parser.add_argument("--rollout", type=int, default=64)
+    parser.add_argument("--rollout", type=int, default=128)
+    parser.add_argument("--max-steps", type=int, default=1024)
     parser.add_argument("--envs", type=int, default=12)
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--state", default="route29_entry")
+    parser.add_argument("--state", default="new_bark_outside")
     parser.add_argument("--states", default="", help="comma-separated list of curriculum states")
-    parser.add_argument("--curriculum", action="store_true", default=True, help="use multi-state curriculum resets")
+    parser.add_argument("--curriculum", action="store_true", default=False, help="use multi-state curriculum resets")
     parser.add_argument("--no-curriculum", action="store_false", dest="curriculum")
     parser.add_argument("--recurrent", action="store_true", default=True, help="use recurrent GRU temporal memory (13.2M model)")
     parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")
@@ -534,6 +583,7 @@ def main(argv=None):
         curriculum=args.curriculum,
         states=states_list,
         push_weights=args.push_weights,
+        max_steps=args.max_steps,
     )
 
 

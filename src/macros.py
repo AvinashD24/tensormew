@@ -29,7 +29,23 @@ class Macros:
                 used += 12
                 if not dialogue_open(self._state()):
                     return MacroResult(True, f"text clear after {presses} presses", frames=used)
-                continue
+            # Gen 2 Naming Screen (e.g. Rival naming in Elm's Lab): pressing A just enters
+            # letters into the name. START jumps cursor to 'END', and A confirms the default name.
+            has_mem = hasattr(self.machine, "symbol") and hasattr(self.machine, "read")
+            if has_mem:
+                try:
+                    b_name, a_name = self.machine.symbol("wNamingScreenType")
+                    if self.machine.read(b_name, a_name, 1)[0] != 0:
+                        self.machine.press("start", frames=6)
+                        self.machine.tick(16, render=False)
+                        self.machine.press("a", frames=6)
+                        self.machine.tick(24, render=False)
+                        used += 52
+                        presses += 1
+                        continue
+                except Exception:
+                    pass
+
             self.machine.press("a", frames=4)
             self.machine.tick(24, render=False)
             used += 28

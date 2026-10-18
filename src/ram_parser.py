@@ -84,6 +84,8 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wBattleMonHP", size=2, required=False),
     Sym("wBattleMonMaxHP", size=2, required=False),
     Sym("wCurBattleMon", required=False),
+    Sym("wCherrygroveCitySceneID", required=False),
+    Sym("wElmsLabSceneID", required=False),
 )
 
 
@@ -129,9 +131,25 @@ class GameState:
     cur_battle_mon: int = 0
     battle_mon_hp: int = 0
     battle_mon_max_hp: int = 0
+    cherrygrove_scene: int = 0
+    elms_lab_scene: int = 0
 
+    @property
+    def beat_rival(self) -> bool:
+        """Return True if the Cherrygrove City Rival battle has been triggered and defeated."""
+        if self.has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM"):
+            return True
+        if not self.has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"):
+            return False
+        # When Mr. Pokémon hands the egg, wCherrygroveCitySceneID is set to 1 (SCENE_CHERRYGROVECITY_MEET_RIVAL).
+        # Once defeated, Cherrygrove scene is reset to 0 (SCENE_CHERRYGROVECITY_NOOP).
+        return self.cherrygrove_scene == 0
 
     def has_event(self, flag: str | int) -> bool:
+        if flag == "EVENT_RIVAL_CHERRYGROVE_CITY":
+            # In Crystal disassembly, flag 1726 is an object-hide flag for the rival sprite that starts set (1).
+            # The actual story milestone occurs after receiving the mystery egg when the rival is defeated.
+            return self.beat_rival
         if not self.event_flags:
             return False
         from src.story_flags import EVENT_FLAGS, is_flag_set
@@ -239,6 +257,8 @@ class GameState:
             "cur_battle_mon": self.cur_battle_mon,
             "battle_mon_hp": self.battle_mon_hp,
             "battle_mon_max_hp": self.battle_mon_max_hp,
+            "cherrygrove_scene": self.cherrygrove_scene,
+            "elms_lab_scene": self.elms_lab_scene,
         }
 
 
@@ -286,6 +306,8 @@ class GameState:
             cur_battle_mon=int(d.get("cur_battle_mon", 0)),
             battle_mon_hp=int(d.get("battle_mon_hp", 0)),
             battle_mon_max_hp=int(d.get("battle_mon_max_hp", 0)),
+            cherrygrove_scene=int(d.get("cherrygrove_scene", 0)),
+            elms_lab_scene=int(d.get("elms_lab_scene", 0)),
         )
 
 
@@ -415,5 +437,7 @@ class RamParser:
             cur_battle_mon=int(raw.get("wCurBattleMon", 0)),
             battle_mon_hp=int(raw.get("wBattleMonHP", 0)),
             battle_mon_max_hp=int(raw.get("wBattleMonMaxHP", 0)),
+            cherrygrove_scene=int(raw.get("wCherrygroveCitySceneID", 0)),
+            elms_lab_scene=int(raw.get("wElmsLabSceneID", 0)),
         )
 

@@ -353,6 +353,7 @@ def main(argv=None) -> int:
                 has_ev = getattr(state, "has_event", None)
                 has_egg = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
                 gave_egg = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+                beat_rival = getattr(state, "beat_rival", False) or (callable(has_ev) and has_ev("EVENT_RIVAL_CHERRYGROVE_CITY"))
                 beat_falkner = callable(has_ev) and has_ev("EVENT_BEAT_FALKNER")
 
                 total_p = dir_probs.sum()
@@ -366,10 +367,19 @@ def main(argv=None) -> int:
                 elif state.map_id == (26, 10) and has_egg and not gave_egg and state.y == 7 and state.x in (2, 3):
                     # Standing on exit carpet in Mr. Pokémon's House with Mystery Egg -> step out!
                     action_idx = 1
-                elif state.map_id == (24, 4) and has_egg and not gave_egg and state.x == 6 and state.y == 4:
+                elif state.map_id == (26, 3) and has_egg and not beat_rival and state.x in (31, 32) and state.y in (6, 7):
+                    # Approaching Rival trigger at (33, 6..7) in Cherrygrove City -> step right!
+                    action_idx = 3
+                elif state.map_id == (26, 3) and has_egg and beat_rival and not gave_egg and state.x == 39 and state.y in (6, 7):
+                    # Defeated rival, standing at Cherrygrove east gate -> step right into Route 29!
+                    action_idx = 3
+                elif state.map_id == (24, 3) and has_egg and beat_rival and not gave_egg and state.x == 59 and state.y in (8, 9):
+                    # Route 29 east gate into New Bark Town -> step right!
+                    action_idx = 3
+                elif state.map_id == (24, 4) and has_egg and beat_rival and not gave_egg and state.x == 6 and state.y == 4:
                     # Outside Elm's Lab in New Bark Town with Mystery Egg -> enter lab!
                     action_idx = 0
-                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x in (4, 5) and state.y == 3:
+                elif state.map_id == (24, 5) and has_egg and beat_rival and not gave_egg and state.x in (4, 5) and state.y == 3:
                     if state.facing == "up":
                         # Standing at Professor Elm's desk facing up with Mystery Egg -> deliver it!
                         action_idx = 4

@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import time
 from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 
@@ -14,6 +15,7 @@ from src.ram_parser import RamParser
 from src.rl_env import CrystalEnv
 from src.states import StateRegistry
 from src.step import TileStepper
+from src.terminal_monitor import TerminalMonitor
 
 
 def _one_rollout(payload):
@@ -197,8 +199,10 @@ def main(argv=None) -> int:
             )
 
         pool = ProcessPoolExecutor(max_workers=args.envs) if args.envs > 1 else None
+        monitor = TerminalMonitor(total_updates=args.updates, jsonl_path="logs/training_metrics.jsonl")
         try:
             for update in range(args.updates):
+                t0 = time.time()
                 payloads = [
                     (start, args.rollout, args.seed + update * args.envs + i, weights(), args.shaping, ignore_maps)
                     for i in range(args.envs)
@@ -277,11 +281,19 @@ def main(argv=None) -> int:
                 if args.show_every and (update + 1) % args.show_every == 0:
                     print(f"showing episode after update {update}", flush=True)
                     _demo(start, args.rollout, args.seed + update, policy, args.speed, args.shaping, ignore_maps)
-                print(
-                    f"update={update} samples={len(batch['rew'])} mean_reward={mean_reward:.3f} "
-                    f"weight_change={stats.weight_change:.5f} kl={stats.approx_kl:.4f} "
-                    f"clip={stats.clip_frac:.2f} H={stats.mean_entropy:.3f} Hnorm={norm_entropy:.2f} new_maps={frontier}",
-                    flush=True,
+                dt = time.time() - t0
+                monitor.log_update(
+                    update=update,
+                    mean_reward=mean_reward,
+                    entropy=stats.mean_entropy,
+                    value_loss=stats.value_mse,
+                    policy_loss=0.0,
+                    approx_kl=stats.approx_kl,
+                    clip_frac=stats.clip_frac,
+                    lr=args.lr,
+                    maps_discovered=frontier,
+                    duration_sec=dt,
+                    samples=len(batch["rew"]),
                 )
         finally:
             if pool is not None:

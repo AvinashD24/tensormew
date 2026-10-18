@@ -28,13 +28,14 @@ def main(argv=None) -> int:
     parser.add_argument("--port", default=DEFAULT_POD_PORT)
     parser.add_argument("--key", default=DEFAULT_KEY)
     parser.add_argument("--updates", type=int, default=50)
-    parser.add_argument("--rollout", type=int, default=64)
+    parser.add_argument("--rollout", type=int, default=128)
+    parser.add_argument("--max-steps", type=int, default=1024)
     parser.add_argument("--envs", type=int, default=8, help="parallel emulators on pod (matched to dedicated cores)")
     parser.add_argument("--batch-size", type=int, default=128)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--state", default="route29_entry")
+    parser.add_argument("--state", default="new_bark_outside")
     parser.add_argument("--states", default="", help="comma-separated list of curriculum states")
-    parser.add_argument("--curriculum", action="store_true", default=True, help="use multi-state curriculum resets")
+    parser.add_argument("--curriculum", action="store_true", default=False, help="use multi-state curriculum resets")
     parser.add_argument("--no-curriculum", action="store_false", dest="curriculum")
     parser.add_argument("--recurrent", action="store_true", default=True, help="use recurrent GRU temporal memory (13.2M model)")
     parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")
@@ -69,6 +70,8 @@ def main(argv=None) -> int:
     extra_flags = []
     if not args.curriculum:
         extra_flags.append("--no-curriculum")
+    else:
+        extra_flags.append("--curriculum")
     if not args.recurrent:
         extra_flags.append("--no-recurrent")
     else:
@@ -93,7 +96,7 @@ def main(argv=None) -> int:
         "StrictHostKeyChecking=no",
         f"root@{args.host}",
         f"cd /workspace/tensormew && PYTHONUNBUFFERED=1 python3 -m tools.train_deep_ppo --updates {args.updates} "
-        f"--rollout {args.rollout} --envs {args.envs} --batch-size {args.batch_size} --lr {args.lr} "
+        f"--rollout {args.rollout} --max-steps {args.max_steps} --envs {args.envs} --batch-size {args.batch_size} --lr {args.lr} "
         f"--state {args.state} --save {args.save} --resume {flags_str}",
     ]
     if run_cmd(train_remote) != 0:
