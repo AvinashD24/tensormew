@@ -26,7 +26,7 @@ from src.emulator import Emulator
 from src.macros import Macros
 from src.mover import walkable
 from src.ram_parser import RamParser, dialogue_open
-from src.rl_env import ACTIONS, observe, progress_reward
+from src.rl_env import ACTIONS, StepInfo, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
 
@@ -101,6 +101,7 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
             tile_visit_counts.clear()
             caught_counts.clear()
             blocked_count = 0
+            consecutive_bumps = 0
             steps = 0
 
         while True:
@@ -128,7 +129,8 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
                     emu.tick(12, render=False)
                     moved = False
                 else:
-                    moved = stepper.step(action_name)
+                    step_res = stepper.step(action_name)
+                    moved = bool(step_res.moved)
                     if not moved:
                         blocked_count += 1
                         if blocked_count >= 4:
@@ -155,16 +157,31 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
                     else:
                         blocked_count = 0
 
+                if not moved and before.battle_mode == 0 and not dialogue_open(before):
+                    consecutive_bumps += 1
+                else:
+                    consecutive_bumps = 0
+
                 after = reader.parse(emu.frame)
+                unvisited_neighbor = False
+                if 0 <= act_idx < 4:
+                    d_name = ACTIONS[act_idx]
+                    dx, dy = _DELTA[d_name]
+                    neighbor = (before.map_group, before.map_number, before.x + dx, before.y + dy)
+                    unvisited_neighbor = neighbor not in seen_tiles
+
+                info = StepInfo(consecutive_bumps=consecutive_bumps)
                 step_rew, disc_tile, disc_map = progress_reward(
                     before,
                     after,
                     moved,
                     seen_tiles,
                     seen_maps,
+                    unvisited_neighbor=unvisited_neighbor,
                     caught_counts=caught_counts,
                     seen_events=seen_events,
                     seen_waypoints=seen_waypoints,
+                    info=info,
                 )
                 steps += 1
                 done = steps >= max_steps

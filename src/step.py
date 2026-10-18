@@ -18,6 +18,9 @@ class TileStep:
     warped: bool
     frames: int
 
+    def __bool__(self) -> bool:
+        return self.moved
+
 
 class TileStepper:
     def __init__(self, machine, reader):
