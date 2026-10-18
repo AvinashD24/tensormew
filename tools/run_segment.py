@@ -37,7 +37,7 @@ def main(argv=None) -> int:
 
     emu = None
     run_log = RunLog(args.db)
-    should_plot = bool(args.window and args.policy) if args.plot is None else bool(args.plot)
+    should_plot = bool(args.window) if args.plot is None else bool(args.plot)
     plotter = None
     try:
         data = StateRegistry().load_bytes(args.state)
