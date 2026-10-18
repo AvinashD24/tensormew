@@ -143,6 +143,40 @@ class TestFalknerNav(unittest.TestCase):
         st_healed.party_hp = ((20, 20), (15, 15))
         self.assertEqual(falkner_nav_direction(st_healed), "down")
 
+    def test_route31_tall_grass_training_when_underleveled(self):
+        # On Route 31 at (20, 10) with Cyndaquil Lv 8 (no Ember) -> routes towards grass patch
+        st = _make_state(MAP_ROUTE_31, 20, 10, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st.party_levels = (8,)
+        st.party_moves = ((33, 43, 108, 0),)
+        st.party_hp = ((25, 25),)
+        step = falkner_nav_direction(st)
+        self.assertIn(step, ("left", "down", "up", "right"))
+
+        # Inside grass at (9, 12) -> paces right to encounter wild Pokémon
+        st_grass = _make_state(MAP_ROUTE_31, 9, 12, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st_grass.party_levels = (8,)
+        st_grass.party_moves = ((33, 43, 108, 0),)
+        st_grass.party_hp = ((25, 25),)
+        self.assertEqual(falkner_nav_direction(st_grass), "right")
+
+    def test_violet_city_routes_to_kyle_house_with_bellsprout(self):
+        from src.falkner_nav import MAP_VIOLET_KYLES_HOUSE
+        # In Violet City at (21, 30) with Bellsprout (69) and healthy party -> step up to enter Kyle's house
+        st = _make_state(MAP_VIOLET_CITY, 21, 30, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st.party_species = (155, 69)
+        st.party_hp = ((25, 25), (15, 15))
+        self.assertEqual(falkner_nav_direction(st), "up")
+
+        # Inside Kyle's house at (2, 3) facing right -> talk to Kyle
+        st_kyle = _make_state(MAP_VIOLET_KYLES_HOUSE, 2, 3, facing="right", events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st_kyle.party_species = (155, 69)
+        self.assertEqual(falkner_nav_direction(st_kyle), "a")
+
+        # Inside Kyle's house after trade (Onix 95 received) at exit mat (3, 7) -> step down to exit
+        st_traded = _make_state(MAP_VIOLET_KYLES_HOUSE, 3, 7, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st_traded.party_species = (155, 95)
+        self.assertEqual(falkner_nav_direction(st_traded), "down")
+
     def test_violet_gym_s_curve_and_falkner_challenge(self):
         # Entrance at (4, 15) -> walk up
         self.assertEqual(violet_gym_step(4, 15, "up"), "up")

@@ -87,6 +87,7 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wCherrygroveCitySceneID", required=False),
     Sym("wElmsLabSceneID", required=False),
     Sym("wOtherTrainerClass", required=False),
+    Sym("wItems", size=41, required=False),
 )
 
 
@@ -135,6 +136,7 @@ class GameState:
     cherrygrove_scene: int = 0
     elms_lab_scene: int = 0
     other_trainer_class: int = 0
+    items: tuple[int, ...] = ()
 
     @property
     def is_trainer_battle(self) -> bool:
@@ -266,6 +268,7 @@ class GameState:
             "cherrygrove_scene": self.cherrygrove_scene,
             "elms_lab_scene": self.elms_lab_scene,
             "other_trainer_class": self.other_trainer_class,
+            "items": list(self.items),
         }
 
 
@@ -316,6 +319,7 @@ class GameState:
             cherrygrove_scene=int(d.get("cherrygrove_scene", 0)),
             elms_lab_scene=int(d.get("elms_lab_scene", 0)),
             other_trainer_class=int(d.get("other_trainer_class", 0)),
+            items=tuple(int(x) for x in (d.get("items") or [])),
         )
 
 
@@ -400,6 +404,15 @@ class RamParser:
         pokedex_raw = raw.get("wPokedexCaught", ())
         if not isinstance(pokedex_raw, tuple):
             pokedex_raw = (int(pokedex_raw),) if pokedex_raw else ()
+        items_raw = raw.get("wItems", ())
+        items: list[int] = []
+        if isinstance(items_raw, tuple) and len(items_raw) >= 2:
+            num = int(raw.get("wNumItems", 0))
+            for i in range(min(num, len(items_raw) // 2)):
+                item_id = items_raw[i * 2]
+                if item_id == 255:
+                    break
+                items.append(item_id)
         return GameState(
             map_group=int(raw["wMapGroup"]),
             map_number=int(raw["wMapNumber"]),
@@ -448,5 +461,6 @@ class RamParser:
             cherrygrove_scene=int(raw.get("wCherrygroveCitySceneID", 0)),
             elms_lab_scene=int(raw.get("wElmsLabSceneID", 0)),
             other_trainer_class=int(raw.get("wOtherTrainerClass", 0)),
+            items=tuple(items),
         )
 
