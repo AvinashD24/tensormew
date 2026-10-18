@@ -20,6 +20,7 @@ from src.emulator import Emulator
 from src.macros import Macros
 from src.return_nav import egg_return_direction
 from src.falkner_nav import falkner_nav_direction
+from src.gym_prep import needs_training, prep_direction
 from src.unstick import Unsticker
 from src.mover import Mover, walkable
 from src.ppo import load_policy
@@ -251,7 +252,7 @@ def main(argv=None) -> int:
                 else:
                     p_cur = state.party_hp[act_idx][0] if state.party_hp else 0
                     p_max = state.party_hp[act_idx][1] if state.party_hp else 1
-                res = tactical_battle_step(state, macros)
+                res = tactical_battle_step(state, macros, grind=needs_training(state))
                 reason = getattr(res, "message", getattr(res, "reason", "acted"))
                 if p_cur > 0 and (not getattr(res, "ok", True) or "refused" in reason):
                     res = macros.choose_move()
@@ -525,6 +526,9 @@ def main(argv=None) -> int:
                 elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y > 3 and walkable(tiles.get("up", 0xFF), "up"):
                     # Straight up column 5 to Elm
                     action_idx = 0
+                elif gave_egg and not beat_falkner and prep_direction(state) is not None:
+                    # Lead too weak for Falkner: farm wild battles on Route 30, heal at Cherrygrove when hurt
+                    action_idx = ACTIONS.index(prep_direction(state))
                 elif gave_egg and not beat_falkner and falkner_nav_direction(state) is not None:
                     # Post-egg Falkner quest: follow deterministic shortest path from Elm's Lab to Falkner's defeat
                     action_idx = ACTIONS.index(falkner_nav_direction(state))

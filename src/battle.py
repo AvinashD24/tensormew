@@ -180,7 +180,7 @@ def _item_guard(macros) -> _ItemGuard:
     return _GUARDS.setdefault(id(macros), _ItemGuard())
 
 
-def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
+def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), grind: bool = False):
     """Execute optimal combat/capture/item/switch action:
     - 0. Faint Recovery & Switch:
          - If all party Pokémon are fainted, clear whiteout dialogue to respawn.
@@ -283,7 +283,8 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
         # Anti-grinding: if already caught and level >= 7, flee to progress towards gym
         lead_level = party_levels[0] if party_levels else 5
-        if already_caught and lead_level >= 7:
+        # (not while `grind` is set: gym prep wants these fights for the experience)
+        if already_caught and lead_level >= 7 and not grind:
             return macros.run_away()
 
         # Capture path for uncaptured wild Pokémon
