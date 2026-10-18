@@ -232,8 +232,14 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
                 guard.fainted.add(guard.last_switch)
         slot = pick_replacement_slot(state, guard)
         if slot is None:
-            guard.last_switch = None
-            return macros.handle_whiteout()
+            alive_slots = [i + 1 for i, hp in enumerate(party_hp) if hp[0] > 0 and i != active_idx]
+            if alive_slots:
+                guard.fainted.clear()
+                guard.attempts.clear()
+                slot = alive_slots[0]
+            else:
+                guard.last_switch = None
+                return macros.handle_whiteout()
         guard.last_switch = slot
         return macros.switch_fainted_pokemon(slot)
 

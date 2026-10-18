@@ -67,7 +67,9 @@ class FalknerNav:
 
         # 3. Route 30 northbound to Route 31 at (6, 0), (7, 0)
         w30, h30, cells30, _ = rom.grid("Route30")
-        self.dist_r30 = _bfs_grid(cells30, w30, h30, [(4, 0), (5, 0), (6, 0), (7, 0)])
+        cells30_nav = dict(cells30)
+        cells30_nav[(5, 23)] = 0x07  # Youngster Joey stands at (5, 23); detour west through column 4
+        self.dist_r30 = _bfs_grid(cells30_nav, w30, h30, [(4, 0), (5, 0), (6, 0), (7, 0)])
 
         # 4. Route 31 westbound to Gatehouse door at (5, 6), (5, 7)
         w31, h31, cells31, _ = rom.grid("Route31")
