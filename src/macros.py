@@ -284,17 +284,18 @@ class Macros:
                     frames += 22
 
             self.machine.press("a", frames=8)   # select the Pokémon
-            self.machine.tick(32, render=False)
+            self.machine.tick(24, render=False)
             self.machine.press("a", frames=8)   # SWITCH (top option); harmless if no submenu opened
-            self.machine.tick(56, render=False)
-            frames += 96
+            self.machine.tick(120, render=False)  # Allow send-out animation and cry to finish
+            frames += 152
+
             after = self._state()
             if after.battle_mode == 0 or getattr(after, "battle_mon_hp", 0) > 0:
-                # Clear the '<PLAYER> sent out <MON>!' text
+                # Clear any remaining battle dialogue
                 for _ in range(4):
                     self.machine.press("b", frames=6)
-                    self.machine.tick(20, render=False)
-                    frames += 26
+                    self.machine.tick(16, render=False)
+                    frames += 22
                 return MacroResult(True, f"switched fainted Pokémon to party slot {cand}", frames=frames)
             # Rejected: close the message / submenu and move on to the next slot
             for _ in range(2):
