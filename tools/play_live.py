@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import collections
 import os
 import sys
 import numpy as np
@@ -88,7 +89,10 @@ def main(argv=None) -> int:
                 from src.deep_policy import SpatialVisionPolicy
                 policy = SpatialVisionPolicy.load(args.policy, device="cpu")
                 is_deep_policy = True
-                print(f"Loaded 11.6M Spatial Vision Policy from {args.policy}")
+                print(
+                    f"Loaded {policy.param_count:,} parameter SpatialVisionPolicy "
+                    f"(recurrent={getattr(policy, 'use_gru', False)}) from {args.policy}"
+                )
             else:
                 policy = load_policy(args.policy)
                 if policy is not None:
@@ -102,6 +106,9 @@ def main(argv=None) -> int:
         blocked_count = 0
         last_action = None
         step_idx = 0
+        recurrent_hx = None
+        consecutive_a_count = 0
+        recent_positions: collections.deque[tuple[int, int]] = collections.deque(maxlen=8)
 
         while True:
             # Check if PyBoy window was closed
@@ -118,9 +125,14 @@ def main(argv=None) -> int:
             # 1. Battle Handling
             if state.battle_mode != 0:
                 blocked_count = 0
+                recurrent_hx = None
                 res = tactical_battle_step(state, macros)
                 reason = getattr(res, "reason", "acted")
-                print(f"[Step {step_idx}] Battle (mode={state.battle_mode}, enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}")
+                print(
+                    f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
+                    f"enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}",
+                    flush=True,
+                )
                 for _ in range(10):
                     emu.tick(20, render=True)
                     emu.press("b", frames=6)
@@ -131,6 +143,7 @@ def main(argv=None) -> int:
             # 2. Dialogue Handling
             if dialogue_open(state):
                 blocked_count = 0
+                recurrent_hx = None
                 macros.mash_text(max_frames=120)
                 step_idx += 1
                 continue
@@ -138,9 +151,10 @@ def main(argv=None) -> int:
             # 3. Check Triggers (Cut, Stuck, etc.)
             trigger = evaluate(state, stuck_count=blocked_count)
             if trigger is not None or blocked_count >= 4:
+                recurrent_hx = None
                 kind_str = getattr(getattr(trigger, "kind", None), "value", str(getattr(trigger, "kind", "")))
                 if kind_str == "CUT_BLOCKED" and state.party_can_cut:
-                    print(f"[Step {step_idx}] Trigger {trigger.kind}: Using Cut on tree...")
+                    print(f"[Step {step_idx}] Trigger {trigger.kind}: Using Cut on tree...", flush=True)
                     macros.use_cut()
                     step_idx += 1
                     continue
@@ -156,8 +170,15 @@ def main(argv=None) -> int:
                     if candidates:
                         candidates.sort(key=lambda x: x[0])
                         escape_dir = candidates[0][1]
-                        print(f"[Step {step_idx}] Stuck at {state.pos}! Escaping via '{escape_dir}' into open frontier...")
-                        mover.run_path([escape_dir])
+                        print(
+                            f"[Step {step_idx}] Stuck at {state.pos}! Escaping via '{escape_dir}' into open frontier...",
+                            flush=True,
+                        )
+                        res = mover.run_path([escape_dir])
+                        if not res.ok:
+                            dx, dy = _DELTA[escape_dir]
+                            target = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                            tile_visit_counts[target] = tile_visit_counts.get(target, 0) + 50
                     else:
                         emu.press("b", frames=8)
                         emu.tick(16, render=True)
@@ -171,19 +192,24 @@ def main(argv=None) -> int:
             if policy is not None:
                 if is_deep_policy:
                     screen = emu._pb.screen.ndarray[:, :, :3].copy()
-                    probs = policy.probs(screen, obs).copy()
+                    if getattr(policy, "use_gru", False):
+                        probs, recurrent_hx = policy.probs_recurrent(screen, obs, hx=recurrent_hx)
+                        probs = probs.copy()
+                    else:
+                        probs = policy.probs(screen, obs).copy()
                 elif hasattr(policy, "probs"):
                     probs = policy.probs(obs).copy()
 
             if probs is not None:
                 tiles = getattr(state, "tiles", {})
                 OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
+                dir_probs = probs[:4].copy()
 
                 # A. Always mask blocked / non-walkable directions (trees, water, fences)
                 for act_idx, dir_name in enumerate(ACTIONS[:4]):
                     t = tiles.get(dir_name, 0xFF)
                     if not walkable(t, dir_name):
-                        probs[act_idx] = 0.0
+                        dir_probs[act_idx] = 0.0
 
                 # B. Novelty-biased exploration: penalize revisiting already-explored tiles
                 cur_tile = (state.map_group, state.map_number, state.x, state.y)
@@ -193,22 +219,41 @@ def main(argv=None) -> int:
                     target = (state.map_group, state.map_number, state.x + dx, state.y + dy)
                     visits = tile_visit_counts.get(target, 0)
                     if visits > 0:
-                        probs[act_idx] *= (1.0 / (1.0 + 0.4 * visits))
+                        dir_probs[act_idx] *= (1.0 / (1.0 + 0.4 * visits))
 
                 # C. Anti-backtracking: reduce immediate 180-degree turnarounds
                 if last_action and last_action in OPPOSITE:
                     opp_dir = OPPOSITE[last_action]
                     if opp_dir in ACTIONS[:4]:
                         opp_idx = ACTIONS.index(opp_dir)
-                        probs[opp_idx] *= 0.4
+                        dir_probs[opp_idx] *= 0.4
 
-                total_p = probs.sum()
+                # D. Goal-Directed Navigation Compass: prioritize forward progress towards Falkner/Gym
+                from src.rl_env import navigation_potential
+                cur_phi = navigation_potential(state)
+                for act_idx, dir_name in enumerate(ACTIONS[:4]):
+                    if dir_probs[act_idx] > 0:
+                        dx, dy = _DELTA[dir_name]
+                        try:
+                            target_state = type(state)(**{**state.__dict__, "x": state.x + dx, "y": state.y + dy})
+                            target_phi = navigation_potential(target_state)
+                            delta_phi = target_phi - cur_phi
+                            if delta_phi > 0:
+                                dir_probs[act_idx] *= (1.0 + 4.0 * delta_phi)
+                            elif delta_phi < 0:
+                                cur_visits = tile_visit_counts.get(cur_tile, 0)
+                                penalty_floor = 0.5 if cur_visits >= 3 else 0.05
+                                dir_probs[act_idx] *= max(penalty_floor, 1.0 + 2.0 * delta_phi)
+                        except Exception:
+                            pass
+
+                total_p = dir_probs.sum()
                 if total_p > 1e-6:
-                    probs /= total_p
+                    dir_probs /= total_p
                     if args.greedy:
-                        action_idx = int(np.argmax(probs))
+                        action_idx = int(np.argmax(dir_probs))
                     else:
-                        logits = np.log(probs + 1e-10) / max(0.01, args.temperature)
+                        logits = np.log(dir_probs + 1e-10) / max(0.01, args.temperature)
                         logits -= logits.max()
                         p_scaled = np.exp(logits)
                         p_scaled /= p_scaled.sum()
@@ -226,15 +271,28 @@ def main(argv=None) -> int:
                 emu.press("a", frames=8)
                 emu.tick(12, render=True)
                 moved = False
+                consecutive_a_count += 1
             else:
                 res = mover.run_path([direction])
                 moved = bool(res.ok)
+                consecutive_a_count = 0
 
             after_state = reader.parse(emu.frame)
             after_pos = (after_state.x, after_state.y)
 
-            if after_pos == before_pos and direction != "a":
+            recent_positions.append(after_pos)
+            is_oscillating = (len(recent_positions) == 8 and len(set(recent_positions)) <= 2)
+
+            # Check if player moved or if dialogue/battle engaged
+            if direction == "a":
+                if after_state.battle_mode != 0 or dialogue_open(after_state):
+                    blocked_count = 0
+                else:
+                    blocked_count += 1
+            elif after_pos == before_pos:
                 blocked_count += 1
+            elif is_oscillating:
+                blocked_count = 4  # Break 2-tile oscillation cycle by triggering escape reflex!
             else:
                 blocked_count = 0
 
@@ -244,7 +302,8 @@ def main(argv=None) -> int:
                     f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
                     f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
                     f"Party: {after_state.party_count}/6 | Balls: {after_state.num_balls} | "
-                    f"Action: {direction}"
+                    f"Action: {direction}",
+                    flush=True,
                 )
 
         return 0

@@ -54,3 +54,40 @@ class DeepPolicyTests(unittest.TestCase):
             l2, v2 = loaded(screen, ram)
             torch.testing.assert_close(l1, l2)
             torch.testing.assert_close(v1, v2)
+
+    def test_probs_recurrent_and_sequence_evaluation(self):
+        policy = SpatialVisionPolicy(obs_dim=17, num_actions=5, use_gru=True, gru_hidden_dim=512)
+        screen_np = np.zeros((144, 160, 3), dtype=np.uint8)
+        ram_np = np.zeros(17, dtype=np.float64)
+
+        # Step 1: initial frame with hx=None
+        probs1, hx1 = policy.probs_recurrent(screen_np, ram_np, hx=None)
+        self.assertEqual(probs1.shape, (5,))
+        self.assertAlmostEqual(float(probs1.sum()), 1.0, places=4)
+        self.assertIsNotNone(hx1)
+        self.assertEqual(hx1.shape, (1, 1, 512))
+
+        # Step 2: subsequent frame passing hx1
+        probs2, hx2 = policy.probs_recurrent(screen_np, ram_np, hx=hx1)
+        self.assertEqual(probs2.shape, (5,))
+        self.assertIsNotNone(hx2)
+
+        # Sequence evaluation (B=2 envs, T=4 timesteps)
+        screens_seq = torch.zeros(2, 4, 3, 144, 160)
+        ram_seq = torch.zeros(2, 4, 17)
+        actions_seq = torch.zeros(2, 4, dtype=torch.long)
+        log_probs, entropy, values = policy.evaluate_actions(screens_seq, ram_seq, actions_seq)
+        self.assertEqual(log_probs.shape, (2, 4))
+        self.assertEqual(entropy.shape, (2, 4))
+        self.assertEqual(values.shape, (2, 4))
+
+    def test_load_feedforward_checkpoint_into_recurrent(self):
+        ff_policy = SpatialVisionPolicy(obs_dim=17, num_actions=5, use_gru=False)
+        with tempfile.NamedTemporaryFile(suffix=".pt") as tmp:
+            ff_policy.save(tmp.name)
+            # Load feedforward checkpoint with override_use_gru=True
+            rec_loaded = SpatialVisionPolicy.load(tmp.name, device="cpu", override_use_gru=True)
+            self.assertTrue(rec_loaded.use_gru)
+            self.assertIsNotNone(rec_loaded.gru)
+            self.assertGreater(rec_loaded.param_count, 13_000_000)
+

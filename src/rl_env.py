@@ -21,6 +21,8 @@ UNVISITED_NEIGHBOR_BONUS = 0.2
 # Key Transit Maps along the path to the First Gym (Falkner in Violet City)
 GYM_PATH_WAYPOINTS: dict[tuple[int, int], float] = {
     (24, 3): 3.0,   # Route 29
+    (24, 7): 4.0,   # Route 29 Gate / West
+    (24, 6): 4.0,   # Route 29 Gate / Route 46
     (26, 3): 5.0,   # Cherrygrove City
     (26, 1): 5.0,   # Route 30
     (26, 10): 8.0,  # Mr. Pokémon's House (Egg quest)
@@ -81,6 +83,63 @@ def story_stage(state) -> float:
         return 0.85
     if map_id == (10, 5):
         return 0.75
+def navigation_potential(state) -> float:
+    """Potential-based reward shaping Phi(s) guiding the agent towards Falkner's Gym.
+
+    Creates an invariant directional gradient (Ng, Harada & Russell, 1999) that rewards
+    moving forward along the transit corridor and penalizes retreating backwards.
+    """
+    map_id = getattr(state, "map_id", (getattr(state, "map_group", 0), getattr(state, "map_number", 0)))
+    x = float(getattr(state, "x", 0))
+    y = float(getattr(state, "y", 0))
+
+    has_event = getattr(state, "has_event", None)
+    has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+    gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+
+    # Stage 1: Heading to Mr. Pokémon / Cherrygrove (prior to getting egg)
+    if not has_egg:
+        if map_id == (24, 4):  # New Bark Town -> exit west into Route 29 (x -> 0)
+            return max(0.0, 10.0 - x * 0.5)
+        elif map_id == (24, 3):  # Route 29 -> exit west towards Cherrygrove (x -> 0)
+            return 10.0 + max(0.0, (60.0 - x) * 0.5)
+        elif map_id == (24, 7):  # Cherrygrove City -> exit north towards Route 30 (y -> 0)
+            return 45.0 + max(0.0, (20.0 - y) * 0.5)
+        elif map_id == (24, 6):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
+            return 60.0 + max(0.0, (40.0 - y) * 0.5)
+        elif map_id in ((26, 10), (24, 10)):  # Mr. Pokémon's House
+            return 85.0
+
+    # Stage 2: Return Egg to Elm in New Bark Town
+    elif not gave_egg:
+        if map_id == (24, 6):  # Route 30 -> head south to Cherrygrove (y -> 40)
+            return 70.0 + y * 0.3
+        elif map_id == (24, 7):  # Cherrygrove -> head east to Route 29 (x -> 20)
+            return 85.0 + x * 0.3
+        elif map_id == (24, 3):  # Route 29 -> head east to New Bark (x -> 60)
+            return 95.0 + x * 0.3
+        elif map_id == (24, 4):  # New Bark Town -> Elm Lab
+            return 120.0
+        elif map_id == (24, 5):  # Inside Elm's Lab
+            return 130.0
+
+    # Stage 3: Head to Violet City Gym & Falkner
+    else:
+        if map_id in ((24, 4), (24, 5)):  # In New Bark -> head west
+            return 130.0 + max(0.0, 10.0 - x * 0.5)
+        elif map_id == (24, 3):  # Route 29 -> head west to Cherrygrove
+            return 140.0 + max(0.0, (60.0 - x) * 0.5)
+        elif map_id == (24, 7):  # Cherrygrove -> head north to Route 30
+            return 175.0 + max(0.0, (20.0 - y) * 0.5)
+        elif map_id == (24, 6):  # Route 30 -> head north-west to Route 31
+            return 190.0 + max(0.0, (40.0 - y) * 0.5)
+        elif map_id in ((26, 2), (24, 2)):  # Route 31 -> head west to Violet City (x -> 0)
+            return 215.0 + max(0.0, (40.0 - x) * 0.5)
+        elif map_id == (10, 5):  # Violet City -> Violet Gym (10, 7)
+            return 240.0
+        elif map_id == (10, 7):  # Violet Gym -> Falkner
+            return 260.0
+
     return 0.0
 
 
@@ -100,6 +159,13 @@ def progress_reward(
     reward = -0.01
     new_tile = False
     new_map = False
+
+    # Goal-Directed Navigation Potential Shaping (Ng et al., 1999)
+    if moved:
+        phi_before = navigation_potential(before)
+        phi_after = navigation_potential(after)
+        delta_phi = phi_after - phi_before
+        reward += delta_phi
 
     # Non-movement check: do not penalize wall-bump if in battle or dialogue
     if not moved:
@@ -122,11 +188,19 @@ def progress_reward(
         reward += 10.0
         new_map = True
 
-    # Waypoints towards Gym
+    # Waypoints towards Gym & Quest Delivery
     if seen_waypoints is not None:
         if map_id in GYM_PATH_WAYPOINTS and map_id not in seen_waypoints:
             seen_waypoints.add(map_id)
             reward += GYM_PATH_WAYPOINTS[map_id]
+
+        # Mystery Egg return delivery waypoint: after getting egg from Mr. Pokémon, reward returning to New Bark / Elm
+        has_event = getattr(after, "has_event", None)
+        if callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON") and not has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM"):
+            egg_key = (map_id[0], map_id[1] + 1000)
+            if map_id in ((24, 4), (24, 5)) and egg_key not in seen_waypoints:
+                seen_waypoints.add(egg_key)
+                reward += 15.0
 
     # Badges
     if getattr(after, "badges", 0) > getattr(before, "badges", 0):

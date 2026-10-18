@@ -4,11 +4,22 @@ from __future__ import annotations
 
 from src.action_results import MoveResult, PathResult
 from src.collision import (
+    COLL_BOOKSHELF,
     COLL_BUOY,
     COLL_COUNTER,
+    COLL_COUNTER_98,
     COLL_DOWN_WALL,
+    COLL_FF,
+    COLL_HEADBUTT_TREE,
+    COLL_HEADBUTT_TREE_1D,
+    COLL_INCENSE_BURNER,
     COLL_LEFT_WALL,
+    COLL_MART_SHELF,
+    COLL_PC,
+    COLL_RADIO,
     COLL_RIGHT_WALL,
+    COLL_TOWN_MAP,
+    COLL_TV,
     COLL_UP_WALL,
     COLL_WALL,
     COLL_WATER,
@@ -19,6 +30,7 @@ from src.collision import (
     COLL_WATERFALL_UP,
     COLL_WHIRLPOOL,
     COLL_WHIRLPOOL_2C,
+    COLL_WINDOW,
     allows_direction,
     is_cut_tree,
 )
@@ -41,6 +53,18 @@ _BLOCKED = frozenset(
         COLL_WATERFALL_RIGHT,
         COLL_WATERFALL_UP,
         COLL_COUNTER,
+        COLL_COUNTER_98,
+        COLL_HEADBUTT_TREE,
+        COLL_HEADBUTT_TREE_1D,
+        COLL_BOOKSHELF,
+        COLL_PC,
+        COLL_RADIO,
+        COLL_TOWN_MAP,
+        COLL_MART_SHELF,
+        COLL_TV,
+        COLL_WINDOW,
+        COLL_INCENSE_BURNER,
+        COLL_FF,
     }
 )
 
