@@ -95,7 +95,7 @@ class RewardTests(unittest.TestCase):
                 return type("Moved", (), {"moved": True})()
 
         reader = Reader()
-        env = CrystalEnv(Machine(), reader, Stepper(reader), None, rng=np.random.default_rng(0))
+        env = CrystalEnv(Machine(), reader, Stepper(reader), None, rng=np.random.default_rng(0), shaping=None)
         env.start = b"start"
         env.reset()
         _obs, reward, _done, info = env.step(3)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from src.collision import is_ledge
 from src.mover import walkable
 
 _DELTA = {
@@ -53,18 +52,14 @@ class Explorer:
             if (nx, ny) not in self.visited:
                 fresh.append(direction)
         if fresh:
-            regular_fresh = [d for d in fresh if not is_ledge(int(state.tiles.get(d, 0xFF)))]
-            pool = regular_fresh if regular_fresh else fresh
-            if self.last_dir in pool:
+            if self.last_dir in fresh:
                 return self.last_dir
-            return pool[0]
+            return fresh[0]
         untried = [direction for direction in open_dirs if direction not in self.tried[pos]]
         if untried:
-            regular_untried = [d for d in untried if not is_ledge(int(state.tiles.get(d, 0xFF)))]
-            pool = regular_untried if regular_untried else untried
-            if self.last_dir in pool:
+            if self.last_dir in untried:
                 return self.last_dir
-            return pool[0]
+            return untried[0]
         if len(self.trail) >= 2 and self.trail[-1] == pos:
             return _toward(pos, self.trail[-2])
         return None
