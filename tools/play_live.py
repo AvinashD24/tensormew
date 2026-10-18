@@ -221,7 +221,7 @@ def main(argv=None) -> int:
             if record_dir is not None and step_idx - last_rec_step >= args.record_every:
                 last_rec_step = step_idx
                 rec_frames.append(emu._pb.screen.image.convert("RGB").quantize(64))
-                if len(rec_frames) % 500 == 0:
+                if len(rec_frames) % 100 == 0:
                     _write_gif(rec_frames, record_dir / "run.gif")
             if time.time() - last_status_write > 3.0:
                 write_status(args.tag, state, story_snapshot(state, milestones), step_idx, cumulative_reward)
