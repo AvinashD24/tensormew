@@ -246,7 +246,7 @@ def navigation_potential(state) -> float:
             # Elm's Aide is at (4, 3); target is standing in front at (4, 4)
             dist_aide = abs(x - 4.0) + abs(y - 4.0)
             return 260.0 + max(0.0, 10.0 - 1.0 * dist_aide)
-        base_pc = 170.0 if gave_egg else (235.0 if map_id == (10, 10) else 45.0)
+        base_pc = 245.0 if map_id == (10, 10) else (170.0 if gave_egg else 45.0)
         return _pokecenter_potential(x, y, base_pc, low_hp)
 
     # Incidental indoor buildings: guide agent straight back out to overworld
@@ -337,20 +337,24 @@ def navigation_potential(state) -> float:
                 dist_pc = abs(x - 29.0) + abs(y - 3.0)
                 return 175.0 + max(0.0, 6.0 - 0.3 * dist_pc)
             return 175.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id == (26, 1):  # Route 30 -> head north-west to Route 31 (y -> 10) (trainers unblocked!)
-            return 190.0 + max(0.0, (40.0 - y) * 0.5)
-        elif map_id == (26, 2):  # Route 31 -> head west to Violet Gate (x -> 0)
-            return 210.0 + max(0.0, (40.0 - x) * 0.5)
-        elif map_id == (26, 11):  # Route 31 Violet Gate -> head west (x -> 0)
-            return 230.0 + max(0.0, (10.0 - x) * 0.5)
+        elif map_id == (26, 1):  # Route 30 -> head north along unblocked western path into Route 31
+            dist_x = abs(x - 8.5)
+            pen_x = max(0.0, dist_x - 2.5) * 0.4
+            return 190.0 + max(0.0, (54.0 - y) * 0.45) - pen_x
+        elif map_id == (26, 2):  # Route 31 -> head west to Violet Gate at (4, 6..7)
+            dist_gate = abs(x - 4.0) + abs(y - 6.5) * 0.4
+            return 215.0 + max(0.0, 20.0 - 0.45 * dist_gate)
+        elif map_id == (26, 11):  # Route 31 Violet Gate -> head west into Violet City (x -> 0)
+            return 235.0 + max(0.0, (9.0 - x) * 0.8)
         elif map_id == (10, 5):  # Violet City -> Violet Gym (10, 7) at (18, 17)
             if low_hp:
                 dist_pc = abs(x - 31.0) + abs(y - 25.0)
-                return 235.0 + max(0.0, 6.0 - 0.3 * dist_pc)
+                return 245.0 + max(0.0, 8.0 - 0.4 * dist_pc)
             dist_gym = abs(x - 18.0) + abs(y - 17.0)
-            return 235.0 + max(0.0, 15.0 - 0.4 * dist_gym)
-        elif map_id == (10, 7):  # Violet Gym -> Falkner (y -> 1)
-            return 255.0 + max(0.0, (15.0 - y) * 1.5)
+            return 245.0 + max(0.0, 22.0 - 0.5 * dist_gym)
+        elif map_id == (10, 7):  # Violet Gym -> Falkner (x in 4..5, y -> 2)
+            dist_falkner = abs(x - 4.5) + abs(y - 2.5)
+            return 270.0 + max(0.0, 20.0 - 1.2 * dist_falkner)
 
     return 0.0
 
