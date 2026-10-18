@@ -287,7 +287,7 @@ class GameState:
             [
                 f"map=({self.map_group},{self.map_number}) pos=({self.x},{self.y}) facing={self.facing}",
                 f"adjacent: {tiles} under={coll_name(self.player_tile)}",
-                f"mode={mode} script={self.script_running} script_mode={self.script_mode} text={self.textbox_flags}",
+                f"mode={mode} script={self.script_running} script_mode={self.script_mode} dialogue={'open' if dialogue_open(self) else 'closed'}",
                 f"party={self.party_count} hp=[{hp}]",
                 f"badges={self.badges} bag: items={self.num_items} key={self.num_key_items} balls={self.num_balls}",
                 f"time={when} {options_text(self.options)}{quest_suffix}",

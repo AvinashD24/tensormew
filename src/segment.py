@@ -314,7 +314,7 @@ def _step_direction(state, target_xy: tuple[int, int] | None, explorer: Explorer
     if target_xy is not None:
         tiles = getattr(state, "tiles", None) or {}
         for direction in _reducing_dirs(state.x, state.y, target_xy[0], target_xy[1]):
-            if walkable(int(tiles.get(direction, 0xFF))):
+            if walkable(int(tiles.get(direction, 0xFF)), direction):
                 return direction
         return None
     return explorer.choose(state)
@@ -328,7 +328,7 @@ def _walkable_direction(state) -> str | None:
     order.extend(direction for direction in _DIRS if direction not in order)
     tiles = getattr(state, "tiles", None) or {}
     for direction in order:
-        if walkable(int(tiles.get(direction, 0xFF))):
+        if walkable(int(tiles.get(direction, 0xFF)), direction):
             return direction
     return None
 

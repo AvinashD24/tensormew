@@ -87,6 +87,35 @@ def story_stage(state) -> float:
         return 0.85
     if map_id == (10, 5):
         return 0.75
+def _route29_potential(x: float, y: float, base: float = 0.0) -> float:
+    """Accurate topological potential for Route 29.
+
+    Topological structure:
+    1. Southern trap (x < 31, y >= 11): Enclosed on North by an impassable hop-down ledge
+       and on West by walls at x=14. The ONLY escape is East back towards x=31.
+    2. 1-space-wide choke point at x=31 (y in 10..16): The critical gap cutting vertically
+       through the ledge barrier into the northern route.
+    3. Transition corridor (31 <= x <= 37, 8 <= y <= 10): Moves East-North around trees.
+    4. Northern Highway (x <= 37, y <= 7): Clear horizontal route running West directly to
+       Cherrygrove City at (0, 6).
+    """
+    if x < 31 and y >= 10:
+        # Southern trap and Cut-tree dead-end: heavily penalize moving west; reward moving east
+        return base + 5.0 + (x - 14) * 0.3
+    elif 31 <= x <= 32 and 10 <= y <= 16:
+        # Choke point gap: strongly reward moving UP through the 1-tile gap
+        return base + 16.0 + (16 - y) * 1.5
+    elif x <= 37 and y <= 7:
+        # Northern highway heading west to Cherrygrove City (x -> 0)
+        return base + 31.0 + (37 - x) * 0.35
+    elif 31 <= x <= 37 and 8 <= y <= 10:
+        # Connector into northern highway: moves East-North around trees
+        return base + 25.0 + (x - 31) * 0.4 + (10 - y) * 1.0
+    else:
+        # Eastern approach from New Bark Town (x in 33..59)
+        return base + 10.0 + max(0.0, (59 - x) * 0.2)
+
+
 def navigation_potential(state) -> float:
     """Potential-based reward shaping Phi(s) guiding the agent towards Falkner's Gym.
 
@@ -105,15 +134,8 @@ def navigation_potential(state) -> float:
     if not has_egg:
         if map_id == (24, 4):  # New Bark Town -> exit west into Route 29 (x -> 0)
             return max(0.0, 10.0 - x * 0.5)
-        elif map_id == (24, 3):  # Route 29 -> exit west towards Cherrygrove (x -> 0)
-            # Route 29 has an enclosed dead-end cul-de-sac at x <= 20, y >= 13.
-            # The true highway branches North at x=24 up to y=7, then runs west to x=8, then drops to (0, 11).
-            if x <= 20 and y >= 13:
-                return 10.0 + (x * 0.5)  # Penalize deeper intrusion; reward moving east to escape
-            elif x <= 28 and y > 7:
-                return 15.0 + (60.0 - x) * 0.3 + (15.0 - y) * 0.8  # Pull north towards y=7 highway
-            else:
-                return 20.0 + max(0.0, (60.0 - x) * 0.5)
+        elif map_id == (24, 3):  # Route 29 -> exit west towards Cherrygrove
+            return _route29_potential(x, y, base=0.0)
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove City -> exit north towards Route 30 (y -> 0)
             return 45.0 + max(0.0, (20.0 - y) * 0.5)
         elif map_id in ((26, 2), (24, 6)):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
@@ -139,12 +161,7 @@ def navigation_potential(state) -> float:
         if map_id in ((24, 4), (24, 5)):  # In New Bark -> head west
             return 130.0 + max(0.0, 10.0 - x * 0.5)
         elif map_id == (24, 3):  # Route 29 -> head west to Cherrygrove
-            if x <= 20 and y >= 13:
-                return 135.0 + (x * 0.5)
-            elif x <= 28 and y > 7:
-                return 140.0 + (60.0 - x) * 0.3 + (15.0 - y) * 0.8
-            else:
-                return 145.0 + max(0.0, (60.0 - x) * 0.5)
+            return _route29_potential(x, y, base=130.0)
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head north to Route 30
             return 175.0 + max(0.0, (20.0 - y) * 0.5)
         elif map_id in ((26, 2), (24, 6)):  # Route 30 -> head north-west to Route 31
@@ -472,6 +489,6 @@ class CrystalEnv:
             info.frontier = True
         self.steps += 1
         done = self.steps >= self.max_steps
-        if not self.machine.headless:
+        if not getattr(self.machine, "headless", True):
             self.machine.tick(1, render=True)
         return observe(after, self.visited, self.nav), reward, done, info

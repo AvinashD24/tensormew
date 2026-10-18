@@ -73,6 +73,7 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
         tile_visit_counts: dict[tuple[int, int, int, int], int] = {}
         caught_counts: dict[int, int] = {}
         blocked_count = 0
+        consecutive_bumps = 0
         steps = 0
 
         def get_obs():
@@ -87,7 +88,7 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
             return screen, ram_vec, st
 
         def reset_environment():
-            nonlocal current_state_idx, blocked_count, steps
+            nonlocal current_state_idx, blocked_count, consecutive_bumps, steps
             current_state_idx = (current_state_idx + 1) % len(start_states)
             state_to_load = start_states[current_state_idx]
             data_bytes = StateRegistry().load_bytes(state_to_load)

@@ -12,6 +12,7 @@ import numpy as np
 load_dotenv()
 
 from src.battle import tactical_battle_step
+from src.collision import is_ledge
 from src.emulator import Emulator
 from src.llm_supervisor import Supervisor
 from src.macros import Macros
@@ -19,7 +20,7 @@ from src.mover import Mover, walkable
 from src.ppo import load_policy
 from src.ram_parser import RamParser, dialogue_open
 from src.local_nav import LocalNav
-from src.rl_env import ACTIONS, observe
+from src.rl_env import ACTIONS, StepInfo, navigation_potential, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.tool_dispatch import execution_registry
@@ -109,24 +110,34 @@ def main(argv=None) -> int:
 
         policy = None
         is_deep_policy = False
-        if args.policy and os.path.exists(args.policy):
-            if args.policy.endswith(".pt"):
+        policy_path = args.policy
+        if policy_path and not os.path.exists(policy_path):
+            fallback = os.path.join("models", os.path.basename(policy_path))
+            if os.path.exists(fallback):
+                policy_path = fallback
+
+        if policy_path and os.path.exists(policy_path):
+            if policy_path.endswith(".pt"):
                 from src.deep_policy import SpatialVisionPolicy
-                policy = SpatialVisionPolicy.load(args.policy, device="cpu")
+                policy = SpatialVisionPolicy.load(policy_path, device="cpu")
                 is_deep_policy = True
                 print(
                     f"Loaded {policy.param_count:,} parameter SpatialVisionPolicy "
-                    f"(recurrent={getattr(policy, 'use_gru', False)}) from {args.policy}"
+                    f"(recurrent={getattr(policy, 'use_gru', False)}) from {policy_path}"
                 )
             else:
-                policy = load_policy(args.policy)
+                policy = load_policy(policy_path)
                 if policy is not None:
-                    print(f"Loaded policy from {args.policy} ({policy.__class__.__name__})")
+                    print(f"Loaded policy from {policy_path} ({policy.__class__.__name__})")
 
         visited: set[tuple[int, int, int, int]] = set()
         seen_tiles: set[tuple[int, int, int, int]] = set()
         seen_maps: set[tuple[int, int]] = set()
+        seen_events: set[int] = set()
+        seen_waypoints: set[tuple[int, int]] = set()
+        caught_counts: dict[int, int] = {}
         tile_visit_counts: dict[tuple[int, int, int, int], int] = {}
+        cumulative_reward: float = 0.0
 
         blocked_count = 0
         nav = LocalNav()
@@ -192,8 +203,14 @@ def main(argv=None) -> int:
                         try:
                             decision = supervisor.decide(state.to_text(), trigger_arg)
                             if decision:
-                                print(f"[Step {step_idx}] [LLM Director] Calling {decision.name}({decision.arguments}) | Reason: {decision.reason} (${decision.est_usd:.4f})", flush=True)
-                                res = supervisor.run_tool(decision.name, decision.arguments)
+                                if decision.name == "use_cut" and not state.party_can_cut:
+                                    print(f"[Step {step_idx}] [LLM Director] use_cut vetoed (no HM Cut before Gym 1); bypassing east...", flush=True)
+                                    res = mover.run_path(["right"])
+                                else:
+                                    exec_args = dict(decision.arguments)
+                                    if "reason" not in exec_args and decision.reason:
+                                        exec_args["reason"] = decision.reason
+                                    res = supervisor.run_tool(decision.name, exec_args)
                                 print(f"[Step {step_idx}] [LLM Director] Execution result: ok={getattr(res, 'ok', True)}", flush=True)
                                 blocked_count = 0
                                 recent_positions.clear()
@@ -252,6 +269,9 @@ def main(argv=None) -> int:
                 for act_idx, dir_name in enumerate(ACTIONS[:4]):
                     t = tiles.get(dir_name, 0xFF)
                     if not walkable(t, dir_name):
+                        dir_probs[act_idx] = 0.0
+                    # On Route 29, NEVER hop down over a ledge into the southern trap!
+                    if state.map_id == (24, 3) and state.y <= 10 and is_ledge(t) and dir_name == "down":
                         dir_probs[act_idx] = 0.0
 
                 # B. Novelty-biased exploration: penalize revisiting already-explored tiles
@@ -340,15 +360,59 @@ def main(argv=None) -> int:
             else:
                 blocked_count = 0
 
+            # Calculate live active reward
+            unvisited_neighbor = False
+            if 0 <= action_idx < 4:
+                d_name = ACTIONS[action_idx]
+                dx, dy = _DELTA[d_name]
+                neighbor = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                unvisited_neighbor = neighbor not in seen_tiles
+
+            info = StepInfo(consecutive_bumps=blocked_count)
+            step_rew, disc_tile, disc_map = progress_reward(
+                before=state,
+                after=after_state,
+                moved=moved,
+                seen_tiles=seen_tiles,
+                seen_maps=seen_maps,
+                unvisited_neighbor=unvisited_neighbor,
+                caught_counts=caught_counts,
+                seen_events=seen_events,
+                seen_waypoints=seen_waypoints,
+                info=info,
+            )
+            cumulative_reward += step_rew
+            phi_now = navigation_potential(after_state)
+
+            notes = []
+            if disc_map:
+                notes.append("NEW MAP!")
+            elif disc_tile:
+                notes.append("NEW TILE")
+            if info.caught_pokemon:
+                notes.append("CAUGHT POKEMON!")
+            if not moved and after_pos == before_pos and direction != "a":
+                notes.append(f"BUMP x{blocked_count}")
+            notes_str = f" [{' '.join(notes)}]" if notes else ""
+
             step_idx += 1
-            if step_idx % 25 == 0:
-                print(
-                    f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
-                    f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
-                    f"Party: {after_state.party_count}/6 | Balls: {after_state.num_balls} | "
-                    f"Action: {direction}",
-                    flush=True,
-                )
+            print(
+                f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
+                f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
+                f"Act: {direction:5s} | Rew: {step_rew:+.2f} | "
+                f"Return: {cumulative_reward:+.2f} | Phi: {phi_now:5.1f} | "
+                f"Tiles: {len(seen_tiles):3d} | Party: {after_state.party_count}/6{notes_str}",
+                flush=True,
+            )
+
+            if step_idx == 1 or step_idx % 25 == 0:
+                try:
+                    from PIL import Image
+                    scr = emu._pb.screen.ndarray[:, :, :3]
+                    img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
+                    img.save("logs/live_snapshot.png")
+                except Exception:
+                    pass
 
         return 0
     except KeyboardInterrupt:

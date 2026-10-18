@@ -365,7 +365,12 @@ if TORCH_AVAILABLE:
             device: str = "cpu",
             override_use_gru: bool | None = None,
         ) -> "SpatialVisionPolicy":
-            checkpoint = torch.load(str(path), map_location=device)
+            p = Path(path)
+            if not p.exists():
+                fallback = Path("models") / p.name
+                if fallback.exists():
+                    p = fallback
+            checkpoint = torch.load(str(p), map_location=device)
             saved_use_gru = checkpoint.get("use_gru", False)
             use_gru = saved_use_gru if override_use_gru is None else override_use_gru
             gru_hidden_dim = checkpoint.get("gru_hidden_dim", 512)

@@ -20,4 +20,5 @@ pytest tests/ -q
 
 - **ROM:** `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (US 1.1)
 - **Checkpoints:** `states/manifest.json` + `tools/make_state.py`, `tools/import_sav.py`
+- **Models & Weights:** Pre-trained weights tracked under [`models/`](models/) (`models/deep_policy.pt`, `models/ppo_policy.npz`)
 - **Cursor rules:** [`.cursor/rules/crystal-hybrid.mdc`](.cursor/rules/crystal-hybrid.mdc)
