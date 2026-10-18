@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from src.ram_parser import dialogue_open
+from src.local_nav import NAV_DIM, LocalNav
 from src.step import DIRS
 from src.story_flags import EVENT_FLAGS, REVERSE_EVENT_FLAGS
 
@@ -14,7 +15,10 @@ ACTIONS = DIRS + ("a",)
 N_ACTIONS = len(ACTIONS)
 # 4 neighbor tiles, xy, badges, battle, dialogue, 4 visited-neighbor flags,
 # party_count, max_level, caught_count, story_stage
-OBS_DIM = 17
+BASE_OBS_DIM = 17
+# Then the LocalNav block: blocked mask (indices MASK_START..+4), last action, frontier, 5x5 grid.
+MASK_START = BASE_OBS_DIM
+OBS_DIM = BASE_OBS_DIM + NAV_DIM
 _NEIGHBOR_DELTAS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 UNVISITED_NEIGHBOR_BONUS = 0.2
 
@@ -318,7 +322,8 @@ def progress_reward(
     return reward, new_tile, new_map
 
 
-def observe(state, visited: set[tuple[int, int, int, int]]) -> np.ndarray:
+def observe(state, visited: set[tuple[int, int, int, int]], nav: LocalNav | None = None) -> np.ndarray:
+    """17 base features, plus the LocalNav block when ``nav`` is given."""
     tiles = [float(state.tiles.get(direction, 0)) / 255.0 for direction in DIRS]
     pos = [state.x / 64.0, state.y / 64.0]
     flags = [
@@ -336,7 +341,12 @@ def observe(state, visited: set[tuple[int, int, int, int]]) -> np.ndarray:
         float(getattr(state, "pokedex_caught_count", 0)) / 10.0,
         story_stage(state),
     ]
-    return np.asarray(tiles + pos + flags + neighbors + extra, dtype=np.float64)
+    base = np.asarray(tiles + pos + flags + neighbors + extra, dtype=np.float64)
+    if nav is None:
+        return base
+    nav.update(state)
+    in_menu = bool(state.battle_mode) or dialogue_open(state)
+    return np.concatenate([base, nav.features(state, in_menu=in_menu)])
 
 
 @dataclass
@@ -372,6 +382,7 @@ class CrystalEnv:
         self.start: bytes | None = None
         self.steps = 0
         self.consecutive_bumps = 0
+        self.nav = LocalNav()
 
     def reset(self, start: bytes | None = None) -> np.ndarray:
         if start is not None:
@@ -383,6 +394,7 @@ class CrystalEnv:
             self.machine.load_state(blob)
         self.steps = 0
         self.consecutive_bumps = 0
+        self.nav.reset()
         # Discovery bonuses start over each episode. The frontier list does not.
         self.seen_tiles = set()
         self.seen_maps = set()
@@ -408,7 +420,7 @@ class CrystalEnv:
                 for bit in range(8):
                     if b & (1 << bit):
                         self.seen_events.add(i * 8 + bit)
-        return observe(state, self.visited)
+        return observe(state, self.visited, self.nav)
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, StepInfo]:
         before = self.reader.parse(self.machine.frame)
@@ -431,6 +443,8 @@ class CrystalEnv:
             self.consecutive_bumps = 0
         info.consecutive_bumps = self.consecutive_bumps
         after = self.reader.parse(self.machine.frame)
+        if not before.battle_mode and not dialogue_open(before):
+            self.nav.note_action(before, action, moved)
         # Read the neighbor before progress_reward records the tile this step discovers.
         unvisited_neighbor = False
         if 0 <= action < 4:
@@ -460,4 +474,4 @@ class CrystalEnv:
         done = self.steps >= self.max_steps
         if not self.machine.headless:
             self.machine.tick(1, render=True)
-        return observe(after, self.visited), reward, done, info
+        return observe(after, self.visited, self.nav), reward, done, info

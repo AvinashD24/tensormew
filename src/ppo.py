@@ -7,7 +7,7 @@ from typing import Any, Callable
 
 import numpy as np
 
-from src.rl_env import N_ACTIONS, OBS_DIM
+from src.rl_env import MASK_START, N_ACTIONS, OBS_DIM
 
 
 @dataclass
@@ -61,6 +61,18 @@ def _batch_policy_stats(
     )
 
 
+def mask_logits(logits: np.ndarray, obs: np.ndarray) -> np.ndarray:
+    """Remove moves the observation flags as blocked. Never masks every move."""
+    if obs.shape[-1] < MASK_START + 4:
+        return logits
+    blocked = obs[MASK_START : MASK_START + 4] > 0.5
+    if not blocked.any() or blocked.all():
+        return logits
+    masked = np.array(logits, dtype=np.float64, copy=True)
+    masked[:4][blocked] = -1e9
+    return masked
+
+
 @dataclass
 class Policy:
     """Linear Softmax policy and value function."""
@@ -82,7 +94,7 @@ class Policy:
             self.vw = self.rng.normal(0.0, 0.01, size=self.obs_dim)
 
     def probs(self, obs: np.ndarray) -> np.ndarray:
-        logits = self.w @ obs + self.b
+        logits = mask_logits(self.w @ obs + self.b, obs)
         logits = logits - logits.max()
         exp = np.exp(logits)
         return exp / exp.sum()
@@ -171,7 +183,7 @@ class MlpPolicy:
 
     def probs(self, obs: np.ndarray) -> np.ndarray:
         hidden = self.forward_hidden(obs)
-        logits = self.w2 @ hidden + self.b2
+        logits = mask_logits(self.w2 @ hidden + self.b2, obs)
         logits = logits - logits.max()
         exp = np.exp(logits)
         return exp / exp.sum()
@@ -276,7 +288,7 @@ def _mlp_ppo_update(
             dvb = 0.0
             for i in chosen:
                 h = policy.forward_hidden(obs[i])
-                logits = policy.w2 @ h + policy.b2
+                logits = mask_logits(policy.w2 @ h + policy.b2, obs[i])
                 logits = logits - logits.max()
                 exp_logits = np.exp(logits)
                 probabilities = exp_logits / exp_logits.sum()
@@ -480,11 +492,10 @@ def load_policy(path: str, rng: np.random.Generator | None = None) -> Policy | M
     data = np.load(path)
     if "w1" in data or str(data.get("model_type", "")) == "mlp":
         hidden_dim = int(data.get("hidden_dim", data["w1"].shape[0]))
-        obs_dim = int(data.get("obs_dim", data["w1"].shape[1]))
-        policy: Policy | MlpPolicy = MlpPolicy(rng=generator, obs_dim=obs_dim, hidden_dim=hidden_dim)
+        # Always build at the current width. load() zero-pads older, narrower checkpoints.
+        policy: Policy | MlpPolicy = MlpPolicy(rng=generator, obs_dim=OBS_DIM, hidden_dim=hidden_dim)
     else:
-        obs_dim = int(data["w"].shape[1])
-        policy = Policy(rng=generator, obs_dim=obs_dim)
+        policy = Policy(rng=generator, obs_dim=OBS_DIM)
     policy.load(path)
     return policy
 

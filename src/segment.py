@@ -12,12 +12,14 @@ from src.collision import is_cut_tree
 from src.llm_supervisor import Decision
 from src.explore import Explorer
 from src.mover import Mover, _reducing_dirs, walkable
+from src.local_nav import LocalNav
 from src.rl_env import ACTIONS, observe
 from src.supervisor_stubs import STUB_REGISTRY
 from src.tool_dispatch import execution_registry
 from src.triggers import evaluate
 
 _DIRS = ("up", "down", "left", "right")
+BUMP_FALLBACK = 3
 
 
 @dataclass
@@ -52,6 +54,8 @@ def run_segment(
     mover = _prepare_mover(machine, reader, supervisor)
     explorer = Explorer()
     visited: set[tuple[int, int, int, int]] = set()
+    nav = LocalNav()
+    rl_bumps = 0
     seen_tiles: set[tuple[int, int, int, int]] = set()
     seen_maps: set[tuple[int, int]] = set()
     previous = None
@@ -113,7 +117,7 @@ def run_segment(
                     reason = None
                 else:
                     visited.add((state.map_group, state.map_number, state.x, state.y))
-                    obs = observe(state, visited)
+                    obs = observe(state, visited, nav)
                     action, _logp = policy.act(obs)
                     if hasattr(policy, "probs"):
                         probs = policy.probs(obs)
@@ -124,6 +128,15 @@ def run_segment(
                     direction = ACTIONS[int(action)]
                     actor = "rl"
                     reason = f"policy chose {direction}"
+                    if rl_bumps >= BUMP_FALLBACK:
+                        # Circuit breaker: the policy keeps bumping, so take the known path
+                        # to the nearest unvisited open tile instead.
+                        fallback, _dist = nav.frontier(state)
+                        if fallback is not None:
+                            direction = fallback
+                            action = ACTIONS.index(fallback)
+                            actor = "rl-fallback"
+                            reason = f"{rl_bumps} bumps in a row; frontier step {fallback}"
                 if direction is None:
                     mover.stuck += 1
                     last_direction = None
@@ -138,6 +151,12 @@ def run_segment(
                         last_moved = bool(path_result.ok)
                     previous = state
                     last_direction = direction
+                    if policy is not None and action is not None:
+                        if int(action) < 4 and not last_moved:
+                            rl_bumps += 1
+                        else:
+                            rl_bumps = 0
+                        nav.note_action(state, int(action), last_moved)
 
                     after_state = reader.parse(getattr(machine, "frame", 0))
                     from src.rl_env import _NEIGHBOR_DELTAS, StepInfo, progress_reward

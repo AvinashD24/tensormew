@@ -18,6 +18,7 @@ from src.macros import Macros
 from src.mover import Mover, walkable
 from src.ppo import load_policy
 from src.ram_parser import RamParser, dialogue_open
+from src.local_nav import LocalNav
 from src.rl_env import ACTIONS, observe
 from src.states import StateRegistry
 from src.step import TileStepper
@@ -128,6 +129,7 @@ def main(argv=None) -> int:
         tile_visit_counts: dict[tuple[int, int, int, int], int] = {}
 
         blocked_count = 0
+        nav = LocalNav()
         last_action = None
         step_idx = 0
         recurrent_hx = None
@@ -228,7 +230,7 @@ def main(argv=None) -> int:
                     continue
 
             # 4. Overworld Movement via Policy
-            obs = observe(state, visited)
+            obs = observe(state, visited, None if is_deep_policy else nav)
             probs = None
             if policy is not None:
                 if is_deep_policy:
@@ -320,6 +322,7 @@ def main(argv=None) -> int:
 
             after_state = reader.parse(emu.frame)
             after_pos = (after_state.x, after_state.y)
+            nav.note_action(state, action_idx, moved)
 
             recent_positions.append(after_pos)
             is_oscillating = (len(recent_positions) == 8 and len(set(recent_positions)) <= 2)
