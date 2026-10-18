@@ -46,7 +46,7 @@ def equip_balls(emu: Emulator, count: int = 10) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Live continuous PyBoy game player")
-    parser.add_argument("--state", default="new_bark_outside", help="save state name")
+    parser.add_argument("--state", default="route29_entry", help="save state name")
     parser.add_argument("--policy", default="logs/deep_policy.pt", help="path to policy (.pt or .npz)")
     parser.add_argument(
         "--speed",

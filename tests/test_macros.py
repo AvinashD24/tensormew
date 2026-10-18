@@ -130,3 +130,18 @@ class MacroTests(unittest.TestCase):
         macros = Macros(FakeMachine(), ScriptedReader([gs(battle_mode=2, num_items=0)]))
         self.assertFalse(macros.use_battle_item(1, 1).ok)
 
+    def test_run_away_refused_in_trainer_battle(self):
+        macros = Macros(FakeMachine(), ScriptedReader([gs(battle_mode=2)]))
+        res = macros.run_away()
+        self.assertFalse(res.ok)
+        self.assertIn("cannot run from a trainer battle", res.message)
+
+    def test_run_away_allowed_in_wild_battle(self):
+        machine = FakeMachine()
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=1)]))
+        res = macros.run_away()
+        self.assertTrue(res.ok)
+        buttons = [b for b, _ in machine.presses]
+        self.assertIn("right", buttons)
+        self.assertIn("a", buttons)
+

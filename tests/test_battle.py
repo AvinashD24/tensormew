@@ -278,5 +278,29 @@ class BattleTests(unittest.TestCase):
         macros.switch_pokemon.assert_called_once_with(2)
         macros.choose_move.assert_not_called()
 
+    def test_tactical_battle_never_runs_away_in_trainer_battle_even_if_low_and_no_backups(self):
+        from unittest.mock import MagicMock
+        from src.battle import tactical_battle_step
+
+        macros = MagicMock()
+        # Trainer battle: active mon at critical 2/20 HP, 0 items, and no backups
+        state = SimpleNamespace(
+            battle_mode=2,
+            num_items=0,
+            party_count=1,
+            party_species=(155,),
+            party_hp=((2, 20),),
+            party_levels=(5,),
+            party_moves=((33, 0, 0, 0),),
+            enemy_species=152,
+            enemy_hp=10,
+            enemy_max_hp=20,
+        )
+        tactical_battle_step(state, macros)
+        # MUST attack with choose_move, and NEVER call run_away!
+        macros.choose_move.assert_called_once_with(1)
+        macros.run_away.assert_not_called()
+        macros.switch_pokemon.assert_not_called()
+
 
 

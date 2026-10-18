@@ -285,6 +285,8 @@ class Macros:
         state = self._state()
         if state.battle_mode == 0:
             return MacroResult(False, "run_away refused: not in battle")
+        if state.battle_mode == 2:
+            return MacroResult(False, "run_away refused: cannot run from a trainer battle")
         frames = self._reset_to_battle_fight()
         # From FIGHT (top-left), move down to PACK, then right to RUN (bottom-right)
         self.machine.press("down", frames=8)

@@ -157,31 +157,36 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
     num_items = getattr(state, "num_items", 0)
 
-    # 1. In-Battle Item Usage: In trainer battles where fleeing is impossible, heal if low HP
-    if mode == 2 and is_low_hp and num_items > 0:
-        return macros.use_battle_item(item_slot=1, target_slot=active_idx + 1)
+    # 1. TRAINER BATTLES (mode == 2): Running away is physically impossible in Gen 2.
+    # Under no circumstances should the policy ever attempt to flee a trainer battle.
+    if mode == 2:
+        if is_low_hp:
+            # First priority: heal active Pokémon if Pack has items (e.g. Potions)
+            if num_items > 0:
+                return macros.use_battle_item(item_slot=1, target_slot=active_idx + 1)
+            # Second priority: switch to a conscious backup Pokémon if low HP and out of items
+            conscious_backups = [
+                i + 1 for i, (hp, _) in enumerate(party_hp)
+                if i != active_idx and hp > 0
+            ]
+            if conscious_backups:
+                best_backup = max(
+                    conscious_backups,
+                    key=lambda s: (
+                        party_hp[s - 1][0] if s - 1 < len(party_hp) else 0,
+                        party_levels[s - 1] if s - 1 < len(party_levels) else 0,
+                    ),
+                )
+                return macros.switch_pokemon(best_backup)
+        # Decisive combat: Fight to the end using the best offensive move!
+        slot = pick_best_move(state, enemy_types)
+        return macros.choose_move(slot)
 
-    # 2. Tactical Backup Switch in Trainer Battles when out of healing items
-    if mode == 2 and is_low_hp and num_items == 0:
-        conscious_backups = [
-            i + 1 for i, (hp, mx) in enumerate(party_hp)
-            if i != active_idx and hp > 0 and (hp > cur_hp or (mx > 0 and (hp / mx) > 0.50))
-        ]
-        if conscious_backups:
-            best_backup = max(
-                conscious_backups,
-                key=lambda s: (
-                    party_hp[s - 1][0] if s - 1 < len(party_hp) else 0,
-                    party_levels[s - 1] if s - 1 < len(party_levels) else 0,
-                ),
-            )
-            return macros.switch_pokemon(best_backup)
-
+    # 2. WILD BATTLES (mode == 1): Strategic capture, self-preservation, and anti-grinding
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
     gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
 
-    # Wild battle branching
     if mode == 1:
         # Flee if active Pokémon is at risk of fainting
         if is_low_hp:
@@ -196,7 +201,6 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
         already_caught = enemy_spec > 0 and enemy_spec in party_spec
 
         # Anti-grinding: if already caught and level >= 7, flee to progress towards gym
-        party_levels = getattr(state, "party_levels", ())
         lead_level = party_levels[0] if party_levels else 5
         if already_caught and lead_level >= 7:
             return macros.run_away()
@@ -210,7 +214,7 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
                 return macros.choose_move(slot)
             return macros.use_pokeball()
 
-    # Trainer battles, or wild battles where fighting is beneficial
+    # Fallback combat
     slot = pick_best_move(state, enemy_types)
     return macros.choose_move(slot)
 
