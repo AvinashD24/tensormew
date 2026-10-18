@@ -482,6 +482,16 @@ def main(argv=None) -> int:
                 except Exception:
                     pass
 
+            # Auto-save frontier map states for curriculum expansion
+            if disc_map:
+                map_file = f"states/agent_map_{after_state.map_group}_{after_state.map_number}.state"
+                if not os.path.exists(map_file):
+                    try:
+                        emu.save_state(map_file)
+                        print(f"[Frontier] Saved new map checkpoint: {map_file} ({map_name})!", flush=True)
+                    except Exception:
+                        pass
+
         return 0
     except KeyboardInterrupt:
         print("\nSession stopped by user interrupt.")
