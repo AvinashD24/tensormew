@@ -18,7 +18,21 @@ N_ACTIONS = len(ACTIONS)
 BASE_OBS_DIM = 17
 # Then the LocalNav block: blocked mask (indices MASK_START..+4), last action, frontier, 5x5 grid.
 MASK_START = BASE_OBS_DIM
-OBS_DIM = BASE_OBS_DIM + NAV_DIM
+# Which story milestones are done, as a multi-hot (the "events vector" in the pokemonred_puffer
+# write-up). Order is fixed; the checkpoint width depends on it.
+OBS_EVENT_FLAGS = (
+    "EVENT_GOT_A_POKEMON_FROM_ELM",
+    "EVENT_LEARNED_TO_CATCH_POKEMON",
+    "EVENT_RIVAL_CHERRYGROVE_CITY",
+    "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON",
+    "EVENT_GAVE_MYSTERY_EGG_TO_ELM",
+    "EVENT_TALKED_TO_MOM_AFTER_MYSTERY_EGG_QUEST",
+    "EVENT_GOT_TM31_MUD_SLAP",
+    "EVENT_BEAT_FALKNER",
+    "EVENT_GOT_TOGEPI_EGG_FROM_ELMS_AIDE",
+    "EVENT_GOT_HM01_CUT",
+)
+OBS_DIM = BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS)
 _NEIGHBOR_DELTAS = ((0, -1), (0, 1), (-1, 0), (1, 0))
 UNVISITED_NEIGHBOR_BONUS = 0.2
 # Frontier-distance shaping (potential-based: gamma * phi(s') - phi(s)). Scale is per tile of
@@ -60,6 +74,40 @@ KEY_EVENT_REWARDS: dict[str, float] = {
     "EVENT_GOT_TOGEPI_EGG_FROM_ELMS_AIDE": 10.0,
     "EVENT_GOT_HM01_CUT": 20.0,
 }
+
+
+OBJECTIVE_TILE_BOOST = 2.0
+
+_STAGE_OBJECTIVE_MAPS: dict[str, frozenset] = {
+    # Fetch the Mystery Egg: Route 29 -> Cherrygrove -> Route 30 -> Mr. Pokemon's house.
+    "get_egg": frozenset({(24, 3), (26, 3), (26, 1), (26, 10)}),
+    # Bring it back to Elm.
+    "return_egg": frozenset({(26, 10), (26, 1), (26, 3), (24, 3), (24, 4), (24, 5)}),
+    # Walk to Violet City and the gym.
+    "to_gym": frozenset({(24, 3), (26, 3), (26, 1), (26, 2), (26, 11), (10, 5), (10, 7)}),
+    # After Falkner: the Togepi egg in Violet's Pokemon Center.
+    "post_gym": frozenset({(10, 5), (10, 7), (10, 10)}),
+}
+
+
+def story_objective_maps(state) -> frozenset:
+    """Maps where the current story objective lives. New tiles there pay OBJECTIVE_TILE_BOOST x.
+
+    This is the "map boost until the objective is done" idea from pokemonred_puffer: the agent
+    cannot read the dialogue that says where to go, so exploring the right maps pays more.
+    """
+    has_event = getattr(state, "has_event", None)
+    if not callable(has_event):
+        return frozenset()
+    if not has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"):
+        return _STAGE_OBJECTIVE_MAPS["get_egg"]
+    if not has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM"):
+        return _STAGE_OBJECTIVE_MAPS["return_egg"]
+    if has_event("EVENT_BEAT_FALKNER") and not has_event("EVENT_GOT_TOGEPI_EGG_FROM_ELMS_AIDE"):
+        return _STAGE_OBJECTIVE_MAPS["post_gym"]
+    if has_event("EVENT_BEAT_FALKNER"):
+        return frozenset()
+    return _STAGE_OBJECTIVE_MAPS["to_gym"]
 
 
 def catch_reward_for_species(count: int, base: float = 10.0) -> float:
@@ -295,17 +343,19 @@ def progress_reward(
     seen_waypoints: set[tuple[int, int]] | None = None,
     info: StepInfo | None = None,
     shaping: float | None = None,
+    legacy_potential: bool | None = None,
 ) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map."""
     reward = -0.01
     new_tile = False
     new_map = False
 
-    # Potential-based shaping (Ng et al., 1999). The env passes its frontier-distance delta;
-    # without it, fall back to the hand-coded per-map potential.
+    # Potential-based shaping (Ng et al., 1999). ``shaping`` is the env's frontier-distance delta.
+    # The hand-coded per-map potential runs when no shaping is given, or when asked for (hybrid).
+    use_legacy = (shaping is None) if legacy_potential is None else legacy_potential
     if shaping is not None:
         reward += shaping
-    elif moved:
+    if use_legacy and moved:
         phi_before = navigation_potential(before)
         phi_after = navigation_potential(after)
         delta_phi = phi_after - phi_before
@@ -321,7 +371,8 @@ def progress_reward(
         tile = (after.map_group, after.map_number, after.x, after.y)
         if tile not in seen_tiles:
             seen_tiles.add(tile)
-            reward += 1.0
+            on_objective = (after.map_group, after.map_number) in story_objective_maps(after)
+            reward += OBJECTIVE_TILE_BOOST if on_objective else 1.0
             new_tile = True
         # Chosen neighbor was unseen at the start of the step, including the discovery itself.
         if unvisited_neighbor:
@@ -484,7 +535,9 @@ def observe(state, visited: set[tuple[int, int, int, int]], nav: LocalNav | None
         return base
     nav.update(state)
     in_menu = bool(state.battle_mode) or dialogue_open(state)
-    return np.concatenate([base, nav.features(state, in_menu=in_menu)])
+    has_event = getattr(state, "has_event", None)
+    events = [1.0 if callable(has_event) and has_event(name) else 0.0 for name in OBS_EVENT_FLAGS]
+    return np.concatenate([base, nav.features(state, in_menu=in_menu), np.asarray(events)])
 
 
 @dataclass
@@ -509,7 +562,9 @@ class CrystalEnv:
     frontier_prob: float = 0.3
     max_steps: int = 64
     ignore_maps: frozenset = frozenset()  # (group, number) maps already completed; entering one ends the episode
-    shaping: str = "frontier"  # "frontier" (learned-map distance) or "legacy" (hand-coded per-map)
+    # "hybrid": hand-coded stage direction plus learned-map frontier distance (default);
+    # "frontier": frontier distance only; "legacy": hand-coded per-map potential only.
+    shaping: str = "hybrid"
 
     def __post_init__(self):
         self.seen_tiles: set = set()
@@ -625,7 +680,7 @@ class CrystalEnv:
             unvisited_neighbor = neighbor not in self.seen_tiles
         busy = bool(before.battle_mode) or dialogue_open(before)
         shaping = None
-        if self.shaping == "frontier":
+        if self.shaping in ("frontier", "hybrid"):
             self.nav.update(after)
             phi_after = self.nav.potential(after)
             same_map = (before.map_group, before.map_number) == (after.map_group, after.map_number)
@@ -646,6 +701,7 @@ class CrystalEnv:
             seen_waypoints=self.seen_waypoints,
             info=info,
             shaping=shaping,
+            legacy_potential=self.shaping in ("legacy", "hybrid"),
         )
         reward += self._interaction_reward(before, after, action, busy)
         tile = (after.map_group, after.map_number, after.x, after.y)

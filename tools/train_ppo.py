@@ -19,7 +19,7 @@ from src.step import TileStepper
 def _one_rollout(payload):
     """Play one batch in its own emulator. Returns lists plus how many new maps appeared."""
     state_bytes, steps, seed, weights, *rest = payload
-    shaping = rest[0] if rest else "frontier"
+    shaping = rest[0] if rest else "hybrid"
     ignore_maps = rest[1] if len(rest) > 1 else frozenset()
     emu = Emulator(headless=True, rtc_lock=True, speed=0)
     try:
@@ -123,7 +123,7 @@ def main(argv=None) -> int:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--mlp", action="store_true", help="train 2-layer MLP policy instead of linear")
     parser.add_argument("--hidden-dim", type=int, default=64, help="hidden dimension for MLP policy")
-    parser.add_argument("--shaping", choices=("frontier", "legacy"), default="frontier")
+    parser.add_argument("--shaping", choices=("hybrid", "frontier", "legacy"), default="hybrid")
     parser.add_argument(
         "--behind-maps",
         default="",
