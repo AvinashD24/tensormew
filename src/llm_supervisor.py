@@ -21,14 +21,18 @@ OUTPUT_USD_PER_MTOK = float(os.environ.get("POKEMIND_OUTPUT_USD_PER_MTOK", "5.0"
 
 SYSTEM_PROMPT = """You are playing Pokémon Crystal (GBC). The state text is authoritative.
 Reply only by calling one tool. Never name or suggest raw buttons (Up, Down, A, B, Start, Select).
-On trigger CUT_BLOCKED, prefer use_cut when the party can Cut.
-On trigger BATTLE, prefer choose_move unless HP is critical, then switch_pokemon.
+CRITICAL CONSTRAINTS:
+1. You do NOT have HM01 Cut. You cannot cut ANY trees before the first gym (Falkner). NEVER call use_cut. Treat all CUT_TREE tiles as solid, impassable walls.
+2. Ledges (HOP_DOWN, HOP_LEFT) are irreversible 1-way drop-offs: you can NEVER climb back up!
+3. On Route 29: NEVER hop down over ledges (moving down over HOP_DOWN). Hopping down traps you in the southern cul-de-sac.
+4. On Route 29: To reach Cherrygrove City, the ONLY walkable path without Cut is:
+   - Go UP through the 1-tile gap at x=31, y=10..12.
+   - At (31, 10), do NOT go left (blocked by Cut Tree). Go RIGHT (EAST) along y=10 to x=36.
+   - At (36, 10), go UP through the grass to y=7.
+   - At y=7, turn LEFT (WEST) onto the northern highway (y <= 7) and run straight WEST into Cherrygrove City!
 On trigger DIALOGUE (when dialogue=open), use mash_text.
-On trigger STUCK (when dialogue=closed):
-- Do NOT use mash_text if dialogue is closed. Use run_path or go_to to navigate around obstacles.
-- Ledges (HOP_DOWN) are irreversible 1-way drop-offs: you can NEVER climb back up!
-- On Route 29: NEVER hop down over ledges (moving down over HOP_DOWN). Hopping down traps you in a dead-end cul-de-sac. Stay on or navigate towards the northern highway (y <= 7) and run straight WEST toward Cherrygrove City.
-- On Route 29, the only passage from the south up to the northern highway is the 1-tile gap at x=31, y=10..12.
+On trigger STUCK (when dialogue=closed): use run_path or go_to to navigate along the path above.
+On trigger BATTLE, prefer choose_move unless HP is critical, then switch_pokemon.
 Every tool call must include reason: one sentence explaining why this action, given the state and trigger.
 """
 
@@ -139,9 +143,9 @@ class Supervisor:
             args = {"slot": 1}
             reason = "offline fallback: select combat move"
         elif "CUT" in kind_str:
-            name = "use_cut"
-            args = {}
-            reason = "offline fallback: use Cut on blocking tree"
+            name = "run_path"
+            args = {"directions": ["right"]}
+            reason = "offline fallback: tree cannot be cut without badge, bypass right"
         elif "DIALOGUE" in kind_str:
             name = "mash_text"
             args = {"max_frames": 1800}

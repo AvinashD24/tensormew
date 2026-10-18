@@ -201,11 +201,14 @@ def main(argv=None) -> int:
                         try:
                             decision = supervisor.decide(state.to_text(), trigger_arg)
                             if decision:
-                                print(f"[Step {step_idx}] [LLM Director] Calling {decision.name}({decision.arguments}) | Reason: {decision.reason} (${decision.est_usd:.4f})", flush=True)
-                                exec_args = dict(decision.arguments)
-                                if "reason" not in exec_args and decision.reason:
-                                    exec_args["reason"] = decision.reason
-                                res = supervisor.run_tool(decision.name, exec_args)
+                                if decision.name == "use_cut" and not state.party_can_cut:
+                                    print(f"[Step {step_idx}] [LLM Director] use_cut vetoed (no HM Cut before Gym 1); bypassing east...", flush=True)
+                                    res = mover.run_path(["right"])
+                                else:
+                                    exec_args = dict(decision.arguments)
+                                    if "reason" not in exec_args and decision.reason:
+                                        exec_args["reason"] = decision.reason
+                                    res = supervisor.run_tool(decision.name, exec_args)
                                 print(f"[Step {step_idx}] [LLM Director] Execution result: ok={getattr(res, 'ok', True)}", flush=True)
                                 blocked_count = 0
                                 recent_positions.clear()

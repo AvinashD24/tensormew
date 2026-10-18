@@ -95,18 +95,18 @@ def _route29_potential(x: float, y: float, base: float = 0.0) -> float:
     4. Northern Highway (x <= 37, y <= 7): Clear horizontal route running West directly to
        Cherrygrove City at (0, 6).
     """
-    if x < 31 and y >= 11:
-        # Southern trap: heavily penalize moving deeper west; reward moving east to escape
+    if x < 31 and y >= 10:
+        # Southern trap and Cut-tree dead-end: heavily penalize moving west; reward moving east
         return base + 5.0 + (x - 14) * 0.3
-    elif 30 <= x <= 32 and 10 <= y <= 16:
+    elif 31 <= x <= 32 and 10 <= y <= 16:
         # Choke point gap: strongly reward moving UP through the 1-tile gap
         return base + 16.0 + (16 - y) * 1.5
     elif x <= 37 and y <= 7:
         # Northern highway heading west to Cherrygrove City (x -> 0)
         return base + 31.0 + (37 - x) * 0.35
     elif 31 <= x <= 37 and 8 <= y <= 10:
-        # Connector into northern highway
-        return base + 25.0 + (x - 31) * 0.3 + (10 - y) * 1.0
+        # Connector into northern highway: moves East-North around trees
+        return base + 25.0 + (x - 31) * 0.4 + (10 - y) * 1.0
     else:
         # Eastern approach from New Bark Town (x in 33..59)
         return base + 10.0 + max(0.0, (59 - x) * 0.2)
