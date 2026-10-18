@@ -143,6 +143,8 @@ def main(argv=None) -> int:
         default=None,
         help="render live visual reward & entropy graph alongside PyBoy (defaults to True if --window)",
     )
+    parser.add_argument("--push-weights", action="store_true", default=True, help="auto-push updated weights to GitHub upon completion")
+    parser.add_argument("--no-push-weights", action="store_false", dest="push_weights")
     args = parser.parse_args(argv)
     ignore_maps = frozenset(
         tuple(int(n) for n in item.split(",")) for item in args.behind_maps.split(";") if item.strip()
@@ -291,6 +293,12 @@ def main(argv=None) -> int:
                 plotter.close()
         policy.save(args.save)
         print(f"saved={args.save} (type={policy.__class__.__name__})")
+        if getattr(args, "push_weights", True):
+            try:
+                from tools.sync_weights import sync_and_push
+                sync_and_push(push=True, message=f"feat(weights): ppo_policy.npz retrained (updates={args.updates})")
+            except Exception as e:
+                print(f"[Warning] Could not auto-push weights: {e}", flush=True)
         return 0
     finally:
         emu.close()

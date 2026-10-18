@@ -311,6 +311,7 @@ def train(
     use_gru: bool = True,
     curriculum: bool = True,
     states: list[str] | None = None,
+    push_weights: bool = True,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru})...")
@@ -488,6 +489,12 @@ def train(
                 policy.save(save_path)
 
         print(f"\nTraining completed! Saved best model to {save_path}", flush=True)
+        if push_weights:
+            try:
+                from tools.sync_weights import sync_and_push
+                sync_and_push(push=True, message=f"feat(weights): deep_policy.pt retrained (updates={updates}, rew={best_reward:.2f})")
+            except Exception as e:
+                print(f"[Warning] Could not auto-push weights: {e}", flush=True)
     finally:
         vec_env.close()
 
@@ -507,6 +514,8 @@ def main(argv=None):
     parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")
     parser.add_argument("--save", default="logs/deep_policy.pt")
     parser.add_argument("--resume", action="store_true", default=True)
+    parser.add_argument("--push-weights", action="store_true", default=True, help="auto-push updated weights to GitHub upon completion")
+    parser.add_argument("--no-push-weights", action="store_false", dest="push_weights")
     args = parser.parse_args(argv)
 
     states_list = [s.strip() for s in args.states.split(",") if s.strip()] if args.states else None
@@ -523,6 +532,7 @@ def main(argv=None):
         use_gru=args.recurrent,
         curriculum=args.curriculum,
         states=states_list,
+        push_weights=args.push_weights,
     )
 
 
