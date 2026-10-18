@@ -35,11 +35,13 @@ GYM_PATH_WAYPOINTS: dict[tuple[int, int], float] = {
     (24, 7): 4.0,   # Route 29 Gate / West
     (24, 6): 4.0,   # Route 29 Gate / Route 46
     (26, 3): 5.0,   # Cherrygrove City
+    (26, 5): 3.0,   # Cherrygrove Poké Center
     (26, 1): 5.0,   # Route 30
     (26, 10): 8.0,  # Mr. Pokémon's House (Egg quest)
     (26, 2): 8.0,   # Route 31
     (26, 11): 5.0,  # Route 31 Violet Gate
     (10, 5): 12.0,  # Violet City
+    (10, 10): 3.0,  # Violet Poké Center
     (10, 7): 20.0,  # Violet Gym
 }
 
@@ -123,6 +125,33 @@ def _route29_potential(x: float, y: float, base: float = 0.0) -> float:
         return base + 10.0 + max(0.0, (59 - x) * 0.2)
 
 
+def is_party_low_hp(state) -> bool:
+    """Return True if any party member is not at full health."""
+    hp_list = getattr(state, "party_hp", ()) or ()
+    if not hp_list:
+        return False
+    for cur, max_hp in hp_list:
+        if max_hp > 0 and cur < max_hp:
+            return True
+    return False
+
+
+def _pokecenter_potential(x: float, y: float, base: float, is_low_hp: bool) -> float:
+    """Potential gradient inside a Pokémon Center.
+
+    If low HP: pulls player towards Nurse Joy at counter (3, 3) facing UP.
+    If fully healed: pulls player towards exit door at (3.5, 7.0) to return to overworld.
+    """
+    if is_low_hp:
+        # Distance to counter at (3, 3)
+        dist = abs(x - 3.0) + abs(y - 3.0)
+        return base + max(0.0, 6.0 - 0.7 * dist)
+    else:
+        # Distance to exit door at (3.5, 7.0)
+        dist = abs(x - 3.5) + abs(y - 7.0)
+        return base + max(0.0, 6.0 - 0.7 * dist)
+
+
 def navigation_potential(state) -> float:
     """Potential-based reward shaping Phi(s) guiding the agent towards Falkner's Gym.
 
@@ -136,6 +165,12 @@ def navigation_potential(state) -> float:
     has_event = getattr(state, "has_event", None)
     has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
     gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+    low_hp = is_party_low_hp(state)
+
+    # Pokémon Center handling across all stages
+    if map_id in ((26, 5), (10, 10), (10, 13)):
+        base_pc = 170.0 if gave_egg else (235.0 if map_id == (10, 10) else 45.0)
+        return _pokecenter_potential(x, y, base_pc, low_hp)
 
     # Stage 1: Heading to Mr. Pokémon / Cherrygrove (prior to getting egg)
     if not has_egg:
@@ -144,20 +179,26 @@ def navigation_potential(state) -> float:
         elif map_id == (24, 3):  # Route 29 -> exit west towards Cherrygrove
             return _route29_potential(x, y, base=0.0)
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove City -> exit north towards Route 30 (y -> 0)
+            if low_hp:
+                # When low HP, guide toward Pokecenter at (29, 3)
+                dist_pc = abs(x - 29.0) + abs(y - 3.0)
+                return 45.0 + max(0.0, 6.0 - 0.3 * dist_pc)
             return 45.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id in ((26, 2), (24, 6)):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
+        elif map_id == (26, 1):  # Route 30 -> head north to Mr. Pokémon (y -> 0)
             return 60.0 + max(0.0, (40.0 - y) * 0.5)
         elif map_id in ((26, 10), (24, 10)):  # Mr. Pokémon's House
             return 85.0
 
     # Stage 2: Return Egg to Elm in New Bark Town
     elif not gave_egg:
-        if map_id in ((26, 2), (24, 6)):  # Route 30 -> head south to Cherrygrove (y -> 40)
+        if map_id in ((26, 10), (24, 10)):  # Mr. Pokémon's House
+            return 85.0
+        elif map_id == (26, 1):  # Route 30 -> head south to Cherrygrove (y -> 40)
             return 70.0 + y * 0.3
-        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 (x -> 20)
-            return 85.0 + x * 0.3
+        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 (x -> 39)
+            return 85.0 + (x / 39.0) * 10.0
         elif map_id == (24, 3):  # Route 29 -> head east to New Bark (x -> 60)
-            return 95.0 + x * 0.3
+            return 95.0 + (x / 60.0) * 25.0
         elif map_id == (24, 4):  # New Bark Town -> Elm Lab
             return 120.0
         elif map_id == (24, 5):  # Inside Elm's Lab
@@ -170,15 +211,24 @@ def navigation_potential(state) -> float:
         elif map_id == (24, 3):  # Route 29 -> head west to Cherrygrove
             return _route29_potential(x, y, base=130.0)
         elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head north to Route 30
-            return 175.0 + max(0.0, (20.0 - y) * 0.5)
-        elif map_id in ((26, 2), (24, 6)):  # Route 30 -> head north-west to Route 31
-            return 190.0 + max(0.0, (40.0 - y) * 0.5)
-        elif map_id in ((26, 1), (24, 2)):  # Route 31 -> head west to Violet City (x -> 0)
-            return 215.0 + max(0.0, (40.0 - x) * 0.5)
-        elif map_id == (10, 5):  # Violet City -> Violet Gym (10, 7)
-            return 240.0
-        elif map_id == (10, 7):  # Violet Gym -> Falkner
-            return 260.0
+            if low_hp:
+                dist_pc = abs(x - 29.0) + abs(y - 3.0)
+                return 170.0 + max(0.0, 6.0 - 0.3 * dist_pc)
+            return 170.0 + max(0.0, (20.0 - y) * 0.5)
+        elif map_id == (26, 1):  # Route 30 -> head north-west to Route 31 (y -> 10)
+            return 185.0 + max(0.0, (40.0 - y) * 0.5)
+        elif map_id == (26, 2):  # Route 31 -> head west to Violet Gate (x -> 0)
+            return 205.0 + max(0.0, (40.0 - x) * 0.5)
+        elif map_id == (26, 11):  # Route 31 Violet Gate -> head west (x -> 0)
+            return 225.0 + max(0.0, (10.0 - x) * 0.5)
+        elif map_id == (10, 5):  # Violet City -> Violet Gym (10, 7) at (18, 17)
+            if low_hp:
+                dist_pc = abs(x - 31.0) + abs(y - 25.0)
+                return 230.0 + max(0.0, 6.0 - 0.3 * dist_pc)
+            dist_gym = abs(x - 18.0) + abs(y - 17.0)
+            return 230.0 + max(0.0, 15.0 - 0.4 * dist_gym)
+        elif map_id == (10, 7):  # Violet Gym -> Falkner (y -> 1)
+            return 250.0 + max(0.0, (15.0 - y) * 1.5)
 
     return 0.0
 
@@ -321,7 +371,8 @@ def progress_reward(
                 # Diminishing returns: blind wild grinding yields no incentive over progressing
                 reward += 0.2
 
-    # HP Dynamics: Damage Taken, Healing, and Critical Low-HP Danger
+    # HP Dynamics: Damage Taken, Healing, and Pokémon Center Interaction
+    is_pc = map_id in ((26, 5), (10, 10), (10, 13))
     hp_b = getattr(before, "party_hp", ())
     hp_a = getattr(after, "party_hp", ())
     if hp_b and hp_a:
@@ -334,9 +385,18 @@ def progress_reward(
             dmg_frac = (cur_b - cur_a) / max_b
             reward -= dmg_frac * 2.0
         elif max_a > 0 and cur_a > cur_b:
-            # Healing reward (Pokémon Center, Mom, potions)
             heal_frac = (cur_a - cur_b) / max_a
-            reward += heal_frac * 3.0
+            if is_pc:
+                # Dedicated substantial reward for completing Pokémon Center healing
+                reward += 15.0 + heal_frac * 10.0
+                if info is not None:
+                    info.healed_party = True
+            else:
+                reward += heal_frac * 3.0
+        elif is_pc and cur_b < max_b:
+            # Low HP in Pokémon Center: reward choosing to interact with Nurse Joy
+            if dialogue_open(after) and not dialogue_open(before):
+                reward += 2.0
 
         # Critical danger penalty when active Pokémon is below 25% HP
         lead_cur, lead_max = hp_a[0]
@@ -385,6 +445,7 @@ class StepInfo:
     caught_pokemon: bool = False
     story_progress: bool = False
     level_up: bool = False
+    healed_party: bool = False
     consecutive_bumps: int = 0
 
 
@@ -462,6 +523,13 @@ class CrystalEnv:
         """One-time payments, as in pokemonred_puffer's NPC/sign/warp terms."""
         bonus = 0.0
         if action == 4 and not busy and dialogue_open(after):
+            # In a Pokémon Center, do not award interaction bonus if party is already at full health
+            if (before.map_group, before.map_number) in ((26, 5), (10, 10), (10, 13)):
+                hp_b = getattr(before, "party_hp", ()) or ()
+                cur_b = sum(p[0] for p in hp_b) if hp_b else 0
+                max_b = sum(p[1] for p in hp_b) if hp_b else 0
+                if cur_b >= max_b:
+                    return bonus
             key = (before.map_group, before.map_number, before.x, before.y, before.facing)
             if key not in self.seen_interactions:
                 self.seen_interactions.add(key)
