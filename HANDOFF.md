@@ -50,6 +50,7 @@ python -m tools.eval_exits --policy logs/ppo_policy.npz --state new_bark_outside
 python -m tools.cloud_train --updates 50 --rollout 64 --envs 12
 python -m tools.compare_cost
 python -m tools.runs recent
+python -m tools.sync_weights
 streamlit run app.py
 ```
 

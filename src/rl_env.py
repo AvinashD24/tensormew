@@ -292,23 +292,27 @@ def navigation_potential(state) -> float:
         if map_id in ((26, 10), (24, 10)):  # Inside Mr. Pokémon's House -> exit doorway at (2.5, 8.0)
             dist_exit = abs(x - 2.5) + abs(y - 8.0)
             return 90.0 + max(0.0, 5.0 - 0.7 * dist_exit)
-        elif map_id == (26, 1):  # Route 30 -> head south through east grass path to Cherrygrove
+        elif map_id == (26, 1):  # Route 30 -> head south through east grass path to Cherrygrove at (10, 53)
             if y <= 40.0:
                 dist_fork = abs(x - 15.0) + abs(y - 40.0)
                 pen = max(0.0, 12.0 - x) * 2.0
                 return 75.0 + max(0.0, 15.0 - 0.5 * dist_fork) - pen
             else:
-                return 75.0 + (y / 53.0) * 15.0
-        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 (x -> 39)
-            return 90.0 + (x / 39.0) * 10.0
-        elif map_id == (24, 3):  # Route 29 -> head east to New Bark (x -> 60)
-            return 100.0 + (x / 60.0) * 25.0
-        elif map_id == (24, 4):  # New Bark Town -> Elm Lab at (6, 4)
+                dist_south = abs(x - 10.0) + abs(y - 53.0)
+                return 75.0 + max(0.0, 15.0 - 0.3 * dist_south)
+        elif map_id in ((26, 3), (24, 7)):  # Cherrygrove -> head east to Route 29 gate at (39, 7)
+            dist_gate = abs(x - 39.0) + abs(y - 7.0)
+            pen_south = max(0.0, y - 8.0) * 0.8  # Penalty for wandering into south cul-de-sac/trees
+            return 90.0 + max(0.0, 15.0 - 0.4 * dist_gate) - pen_south
+        elif map_id == (24, 3):  # Route 29 -> head east to New Bark Town gate at (59, 9)
+            dist_new_bark = abs(x - 59.0) + abs(y - 9.0)
+            return 100.0 + max(0.0, 25.0 - 0.35 * dist_new_bark)
+        elif map_id == (24, 4):  # New Bark Town -> Elm Lab entrance at (6, 4)
             dist_lab = abs(x - 6.0) + abs(y - 4.0)
-            return 125.0 + max(0.0, 10.0 - 0.5 * dist_lab)
+            return 125.0 + max(0.0, 10.0 - 0.6 * dist_lab)
         elif map_id == (24, 5):  # Inside Elm's Lab -> approach Elm at (4, 2)
             dist_elm = abs(x - 4.0) + abs(y - 2.0)
-            return 135.0 + max(0.0, 5.0 - 0.5 * dist_elm)
+            return 135.0 + max(0.0, 5.0 - 0.7 * dist_elm)
 
     # Stage 4: Post-Falkner -> Collect Togepi Pokémon Egg from Elm's Aide in Violet Poké Center
     elif beat_falkner and not has_aide_egg:
@@ -430,14 +434,21 @@ def progress_reward(
         caught_any = True
         if info is not None:
             info.caught_pokemon = True
-        species_list = getattr(after, "party_species", ())
-        for idx in range(before_count, min(after_count, len(species_list))):
-            species_id = species_list[idx]
-            if caught_counts is not None and species_id not in (0, 255):
-                caught_counts[species_id] = caught_counts.get(species_id, 0) + 1
-                reward += catch_reward_for_species(caught_counts[species_id])
-            else:
-                reward += 10.0
+        has_ev = getattr(after, "has_event", None)
+        has_egg_now = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+        gave_egg_now = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+        if has_egg_now and not gave_egg_now:
+            # After grabbing the egg, wild catching is an errand delay and yields no bonus
+            reward += 0.0
+        else:
+            species_list = getattr(after, "party_species", ())
+            for idx in range(before_count, min(after_count, len(species_list))):
+                species_id = species_list[idx]
+                if caught_counts is not None and species_id not in (0, 255):
+                    caught_counts[species_id] = caught_counts.get(species_id, 0) + 1
+                    reward += catch_reward_for_species(caught_counts[species_id])
+                else:
+                    reward += 10.0
 
     # Also check if party was full and caught straight to PC box
     before_dex = getattr(before, "pokedex_caught_count", 0)
@@ -445,7 +456,12 @@ def progress_reward(
     if not caught_any and after_dex > before_dex:
         if info is not None:
             info.caught_pokemon = True
-        if caught_counts is not None:
+        has_ev = getattr(after, "has_event", None)
+        has_egg_now = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+        gave_egg_now = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+        if has_egg_now and not gave_egg_now:
+            reward += 0.0
+        elif caught_counts is not None:
             caught_counts[0] = caught_counts.get(0, 0) + 1
             reward += catch_reward_for_species(caught_counts[0])
         else:
@@ -481,9 +497,15 @@ def progress_reward(
     if getattr(before, "battle_mode", 0) != 0 and getattr(after, "battle_mode", 0) == 0:
         if not getattr(after, "fainted", False):
             lead_lvl = max(getattr(before, "party_levels", (0,)) or [0])
+            has_ev = getattr(after, "has_event", None)
+            has_egg_now = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+            gave_egg_now = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
             if getattr(before, "battle_mode", 0) == 2:
-                # Trainer battles are key milestones towards the gym
+                # Trainer battles are key milestones towards the gym (Rival Cherrygrove = 15.0)
                 reward += 5.0
+            elif has_egg_now and not gave_egg_now:
+                # Urgent egg delivery errand: wild fights are time sinks, not rewarded
+                reward += 0.0
             elif lead_lvl < 7:
                 # Early wild battle victory provides initial EXP
                 reward += 3.0

@@ -27,6 +27,7 @@ During this hackathon, commit and push to `main` without waiting to be asked, af
 - a new module or test file that passes `pytest` for what it touches
 - a spec or rule change
 - a checkpoint manifest update
+- updated model weights after retraining: run `python -m tools.sync_weights` to sync `logs/` to `models/` and push to GitHub
 
 Do not batch a long session into one commit. Do not push broken tests. Do not commit `.env`, API keys, or gitignored `*.state` files.
 

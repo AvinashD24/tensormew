@@ -97,6 +97,10 @@ class StateRegistry:
         return self.root / entry.file
 
     def load_bytes(self, name: str) -> bytes:
+        direct = self.root / (name if name.endswith(".state") else f"{name}.state")
+        doc = self._load()
+        if name not in doc.get("states", {}) and direct.exists():
+            return direct.read_bytes()
         entry = self.get(name)
         path = self.root / entry.file
         if not path.exists():

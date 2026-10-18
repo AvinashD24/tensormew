@@ -84,6 +84,8 @@ def main(argv=None) -> int:
         default=True,
         help="live matplotlib dashboard while headless training runs (PyBoy stays off-screen)",
     )
+    parser.add_argument("--push-weights", action="store_true", default=True, help="auto-push updated weights to GitHub upon completion")
+    parser.add_argument("--no-push-weights", action="store_false", dest="push_weights")
     args = parser.parse_args(argv)
 
     if args.train_plot or args.watch_plot:
@@ -210,6 +212,12 @@ def main(argv=None) -> int:
             plotter.close()
         policy.save(str(save_path))
         print(f"marathon_done updates={update} saved={save_path}", flush=True)
+        if getattr(args, "push_weights", True):
+            try:
+                from tools.sync_weights import sync_and_push
+                sync_and_push(push=True, message=f"feat(weights): deep_policy.pt marathon training (updates={update})")
+            except Exception as e:
+                print(f"[Warning] Could not auto-push weights: {e}", flush=True)
 
     return 0
 
