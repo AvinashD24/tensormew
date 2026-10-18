@@ -156,11 +156,17 @@ def gym_exit_step(x: int, y: int) -> str:
         if x > 5:
             return "left"
         return "down"
-    if y in (9, 10):
+    if y == 9:
+        return "down"   # the crossing runs along y=10 only: drop to it before heading west
+    if y == 10:
         return "left" if x > 5 else "down"
-    if y in (7, 8):
+    if y == 7:
+        return "down"   # likewise the west crossing runs along y=8 only
+    if y == 8:
         return "right" if x < 7 else "down"
-    return "left" if x > 2 else "down"   # centre platform (y<=6) back to the west bridge
+    if y == 6:
+        return "left" if x > 2 else "down"   # the return to the centre column runs along y=6
+    return "down"                            # Falkner's platform / centre column: down to y=6
 
 
 def in_falkner_quest(state) -> bool:
