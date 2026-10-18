@@ -75,8 +75,13 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wMoney", size=3),
     Sym("wTMsHMs", size=57),
     Sym("wEventFlags", size=256, required=False),
+
     Sym("wPokedexCaught", size=32, required=False),
+    Sym("wEnemyMonHP", size=2, required=False),
+    Sym("wEnemyMonMaxHP", size=2, required=False),
+    Sym("wTempWildMonSpecies", required=False),
 )
+
 
 
 @dataclass(frozen=True)
@@ -111,8 +116,13 @@ class GameState:
     hm_counts: tuple[int, ...] = ()
     script_mode: int = 0
     event_flags: tuple[int, ...] = ()
+
     story_objective: str = ""
     pokedex_caught: tuple[int, ...] = ()
+    enemy_hp: int = 0
+    enemy_max_hp: int = 0
+    enemy_species: int = 0
+
 
     def has_event(self, flag: str | int) -> bool:
         if not self.event_flags:
@@ -216,7 +226,11 @@ class GameState:
             "event_flags": list(self.event_flags),
             "story_objective": self.story_objective,
             "pokedex_caught": list(self.pokedex_caught),
+            "enemy_hp": self.enemy_hp,
+            "enemy_max_hp": self.enemy_max_hp,
+            "enemy_species": self.enemy_species,
         }
+
 
     @classmethod
     def from_dict(cls, d: dict) -> "GameState":
@@ -256,7 +270,12 @@ class GameState:
             event_flags=tuple(d.get("event_flags") or []),
             story_objective=str(d.get("story_objective", "")),
             pokedex_caught=tuple(d.get("pokedex_caught") or []),
+            enemy_hp=int(d.get("enemy_hp", 0)),
+            enemy_max_hp=int(d.get("enemy_max_hp", 0)),
+            enemy_species=int(d.get("enemy_species", 0)),
         )
+
+
 
     def to_text(self) -> str:
         tiles = " ".join(f"{side}={coll_name(self.tiles[side])}" for side in ("up", "down", "left", "right"))
@@ -374,6 +393,11 @@ class RamParser:
             money=money,
             hm_counts=hm_counts,
             event_flags=flags_raw,
+
             story_objective=story_objective,
             pokedex_caught=pokedex_raw,
+            enemy_hp=int(raw.get("wEnemyMonHP", 0)),
+            enemy_max_hp=int(raw.get("wEnemyMonMaxHP", 0)),
+            enemy_species=int(raw.get("wTempWildMonSpecies", 0)),
         )
+

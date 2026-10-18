@@ -16,4 +16,6 @@ def execution_registry(machine, reader, *, mover: Mover | None = None, macros: M
         "mash_text": macros.mash_text,
         "choose_move": macros.choose_move,
         "switch_pokemon": macros.switch_pokemon,
+        "use_pokeball": macros.use_pokeball,
     }
+

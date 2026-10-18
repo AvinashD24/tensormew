@@ -97,3 +97,28 @@ def pick_best_move(state, enemy_types: tuple[int, ...] = (2, 0)) -> int:
             best_score = score
             best_slot = slot
     return best_slot
+
+
+def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
+    """Execute optimal combat/capture action:
+    - In wild battles (battle_mode == 1) with available balls and open party:
+      - If species is not already caught in party:
+        - Weaken first if enemy HP > 40%.
+        - Catch with Pokéball when HP <= 40%.
+    - In trainer battles, or when already caught/no balls:
+      - Attack using the best move to KO and gain EXP.
+    """
+    if getattr(state, "battle_mode", 0) == 1 and getattr(state, "num_balls", 0) > 0 and getattr(state, "party_count", 0) < 6:
+        enemy_spec = getattr(state, "enemy_species", 0)
+        party_spec = getattr(state, "party_species", ())
+        already_caught = enemy_spec > 0 and enemy_spec in party_spec
+        if not already_caught:
+            cur_hp = getattr(state, "enemy_hp", 0)
+            max_hp = getattr(state, "enemy_max_hp", 0)
+            if max_hp > 0 and (cur_hp / max_hp) > 0.40:
+                slot = pick_best_move(state, enemy_types)
+                return macros.choose_move(slot)
+            return macros.use_pokeball()
+    slot = pick_best_move(state, enemy_types)
+    return macros.choose_move(slot)
+

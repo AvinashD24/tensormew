@@ -65,6 +65,22 @@ class Macros:
             return MacroResult(False, "Cut tree still present", frames=frames)
         return MacroResult(True, f"used Cut facing {direction}", frames=frames)
 
+    def _reset_to_battle_fight(self) -> int:
+        """Back out of open battle submenus and reset cursor to FIGHT (top-left)."""
+        frames = 0
+        # Press B twice to cancel any open submenus (PKMN, PACK, STATS, etc.)
+        for _ in range(2):
+            self.machine.press("b", frames=6)
+            self.machine.tick(8, render=False)
+            frames += 14
+        # Press UP then LEFT to ensure top-left FIGHT is selected
+        self.machine.press("up", frames=6)
+        self.machine.tick(8, render=False)
+        self.machine.press("left", frames=6)
+        self.machine.tick(8, render=False)
+        frames += 28
+        return frames
+
     def choose_move(self, slot: int | None = None) -> MacroResult:
         state = self._state()
         if state.battle_mode == 0:
@@ -74,7 +90,8 @@ class Macros:
             slot = pick_best_move(state)
         if slot < 1 or slot > 4:
             return MacroResult(False, f"move slot {slot} not in 1–4")
-        frames = 0
+        frames = self._reset_to_battle_fight()
+        # At FIGHT: press A to open move list
         self.machine.press("a", frames=8)
         self.machine.tick(16, render=False)
         frames += 24
@@ -93,19 +110,54 @@ class Macros:
         state = self._state()
         if state.battle_mode == 0:
             return MacroResult(False, "switch_pokemon refused: not in battle")
-        frames = 0
-        self.machine.press("down", frames=8)
+        frames = self._reset_to_battle_fight()
+        # From FIGHT (top-left), press RIGHT to move to PKMN (top-right)
+        self.machine.press("right", frames=8)
         self.machine.tick(12, render=False)
+        frames += 20
+        # Open PKMN menu
         self.machine.press("a", frames=8)
-        self.machine.tick(16, render=False)
-        frames += 44
+        self.machine.tick(24, render=False)
+        frames += 32
         for _ in range(slot - 1):
             self.machine.press("down", frames=8)
             self.machine.tick(8, render=False)
             frames += 16
+        # Select Pokémon and confirm switch
         self.machine.press("a", frames=8)
-        self.machine.tick(12, render=False)
+        self.machine.tick(16, render=False)
         self.machine.press("a", frames=8)
-        self.machine.tick(24, render=False)
-        frames += 52
+        self.machine.tick(32, render=False)
+        frames += 48
         return MacroResult(True, f"switched to party slot {slot}", frames=frames)
+
+    def use_pokeball(self) -> MacroResult:
+        state = self._state()
+        if state.battle_mode == 0:
+            return MacroResult(False, "use_pokeball refused: not in battle")
+        if state.num_balls <= 0:
+            return MacroResult(False, "use_pokeball refused: no Pokéballs in pack")
+        frames = self._reset_to_battle_fight()
+        # From FIGHT (top-left), press DOWN to move to PACK (bottom-left)
+        self.machine.press("down", frames=8)
+        self.machine.tick(16, render=False)
+        frames += 24
+        # Open PACK
+        self.machine.press("a", frames=8)
+        self.machine.tick(32, render=False)
+        frames += 40
+        # Switch from ITEM POCKET right to BALL POCKET
+        self.machine.press("right", frames=8)
+        self.machine.tick(20, render=False)
+        frames += 28
+        # Select first Ball
+        self.machine.press("a", frames=8)
+        self.machine.tick(20, render=False)
+        frames += 28
+        # Confirm "USE"
+        self.machine.press("a", frames=8)
+        self.machine.tick(160, render=False)
+        frames += 168
+        return MacroResult(True, "used Pokéball", frames=frames)
+
+

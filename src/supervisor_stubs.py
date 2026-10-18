@@ -29,6 +29,10 @@ def stub_switch_pokemon(slot: int) -> ActionResult:
     return ActionResult(ok=True, message=f"stub switch_pokemon {slot}")
 
 
+def stub_use_pokeball() -> ActionResult:
+    return ActionResult(ok=True, message="stub use_pokeball")
+
+
 STUB_REGISTRY: dict = {
     "go_to": stub_go_to,
     "run_path": stub_run_path,
@@ -36,4 +40,6 @@ STUB_REGISTRY: dict = {
     "mash_text": stub_mash_text,
     "choose_move": stub_choose_move,
     "switch_pokemon": stub_switch_pokemon,
+    "use_pokeball": stub_use_pokeball,
 }
+
