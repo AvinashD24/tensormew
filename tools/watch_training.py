@@ -58,7 +58,7 @@ def main(argv=None) -> int:
             time.sleep(1.0)
             log_path = find_log_path()
 
-    print(f"Tracking RL training from {log_path} (Pod: tensormew-cpu-train / f4m58oyp37mg7m)...", flush=True)
+    print(f"Tracking RL training from {log_path} (Pod: tensormew-gpu-train / RTX 4090)...", flush=True)
 
     # Initial history display
     with open(log_path, "r", encoding="utf-8", errors="replace") as f:
