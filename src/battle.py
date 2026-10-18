@@ -125,8 +125,16 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
     # 1. Health check: active Pokémon HP
     party_hp = getattr(state, "party_hp", ())
-    cur_hp = party_hp[0][0] if party_hp else 1
-    max_hp = party_hp[0][1] if party_hp else 1
+    active_idx = getattr(state, "cur_battle_mon", 0)
+    active_idx = min(active_idx, len(party_hp) - 1) if party_hp else 0
+
+    b_cur = getattr(state, "battle_mon_hp", 0)
+    b_max = getattr(state, "battle_mon_max_hp", 0)
+    if b_max > 0:
+        cur_hp, max_hp = b_cur, b_max
+    else:
+        cur_hp = party_hp[active_idx][0] if party_hp else 1
+        max_hp = party_hp[active_idx][1] if party_hp else 1
 
     # 0. Faint Check: active Pokémon fainted
     if cur_hp == 0:
@@ -142,13 +150,13 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
 
     # 1. In-Battle Item Usage: In trainer battles where fleeing is impossible, heal if low HP
     if mode == 2 and is_low_hp and num_items > 0:
-        return macros.use_battle_item(item_slot=1, target_slot=1)
+        return macros.use_battle_item(item_slot=1, target_slot=active_idx + 1)
 
     # 2. Tactical Backup Switch in Trainer Battles when out of healing items
     if mode == 2 and is_low_hp and num_items == 0:
         healthy_backups = [
-            i + 1 for i, (hp, mx) in enumerate(party_hp[1:], start=1)
-            if mx > 0 and (hp / mx) > 0.50
+            i + 1 for i, (hp, mx) in enumerate(party_hp)
+            if i != active_idx and mx > 0 and (hp / mx) > 0.50
         ]
         if healthy_backups:
             return macros.switch_pokemon(healthy_backups[0])

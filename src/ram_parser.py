@@ -81,6 +81,9 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wEnemyMonHP", size=2, required=False),
     Sym("wEnemyMonMaxHP", size=2, required=False),
     Sym("wTempWildMonSpecies", required=False),
+    Sym("wBattleMonHP", size=2, required=False),
+    Sym("wBattleMonMaxHP", size=2, required=False),
+    Sym("wCurBattleMon", required=False),
 )
 
 
@@ -123,6 +126,9 @@ class GameState:
     enemy_hp: int = 0
     enemy_max_hp: int = 0
     enemy_species: int = 0
+    cur_battle_mon: int = 0
+    battle_mon_hp: int = 0
+    battle_mon_max_hp: int = 0
 
 
     def has_event(self, flag: str | int) -> bool:
@@ -230,6 +236,9 @@ class GameState:
             "enemy_hp": self.enemy_hp,
             "enemy_max_hp": self.enemy_max_hp,
             "enemy_species": self.enemy_species,
+            "cur_battle_mon": self.cur_battle_mon,
+            "battle_mon_hp": self.battle_mon_hp,
+            "battle_mon_max_hp": self.battle_mon_max_hp,
         }
 
 
@@ -274,6 +283,9 @@ class GameState:
             enemy_hp=int(d.get("enemy_hp", 0)),
             enemy_max_hp=int(d.get("enemy_max_hp", 0)),
             enemy_species=int(d.get("enemy_species", 0)),
+            cur_battle_mon=int(d.get("cur_battle_mon", 0)),
+            battle_mon_hp=int(d.get("battle_mon_hp", 0)),
+            battle_mon_max_hp=int(d.get("battle_mon_max_hp", 0)),
         )
 
 
@@ -400,5 +412,8 @@ class RamParser:
             enemy_hp=int(raw.get("wEnemyMonHP", 0)),
             enemy_max_hp=int(raw.get("wEnemyMonMaxHP", 0)),
             enemy_species=int(raw.get("wTempWildMonSpecies", 0)),
+            cur_battle_mon=int(raw.get("wCurBattleMon", 0)),
+            battle_mon_hp=int(raw.get("wBattleMonHP", 0)),
+            battle_mon_max_hp=int(raw.get("wBattleMonMaxHP", 0)),
         )
 
