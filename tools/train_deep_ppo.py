@@ -32,11 +32,26 @@ from src.step import TileStepper
 from src.terminal_monitor import TerminalMonitor
 
 CURRICULUM_STATES = [
+    # Tier 1: Retention (4 workers / 25%) - maintain Route 29 & Cherrygrove mastery without compute waste
     "route29_entry",
-    "agent_map_24_7",
+    "route29_entry",
     "agent_map_26_3",
+    "agent_map_26_3",
+
+    # Tier 2: Bottlenecks (6 workers / 37.5%) - Route 30 maze & Rival battle
+    "agent_map_26_1",
+    "agent_map_26_1",
     "agent_map_26_1",
     "mystery_egg_received",
+    "mystery_egg_received",
+    "mystery_egg_received",
+
+    # Tier 3: Frontier Exploration (6 workers / 37.5%) - Route 29 Eastbound to Elm Lab delivery
+    "post_rival_cherrygrove",
+    "post_rival_cherrygrove",
+    "post_rival_cherrygrove",
+    "post_rival_cherrygrove",
+    "post_rival_cherrygrove",
     "post_rival_cherrygrove",
 ]
 
