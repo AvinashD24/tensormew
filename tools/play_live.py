@@ -60,6 +60,11 @@ def main(argv=None) -> int:
     parser.add_argument("--state", default="route29_entry", help="save state name")
     parser.add_argument("--policy", default="logs/deep_policy.pt", help="path to policy (.pt or .npz)")
     parser.add_argument(
+        "--post-egg-policy",
+        default=None,
+        help="optional .pt policy that takes over once the Mystery Egg is received (--policy plays until then)",
+    )
+    parser.add_argument(
         "--speed",
         type=int,
         default=int(os.environ.get("PYBOY_SPEED", "4")),
@@ -146,6 +151,14 @@ def main(argv=None) -> int:
                 policy = load_policy(policy_path)
                 if policy is not None:
                     print(f"Loaded policy from {policy_path} ({policy.__class__.__name__})")
+
+        post_egg_policy = None
+        if args.post_egg_policy:
+            if not (is_deep_policy and os.path.exists(args.post_egg_policy)):
+                raise SystemExit("--post-egg-policy needs a .pt --policy and an existing .pt file")
+            post_egg_policy = SpatialVisionPolicy.load(args.post_egg_policy, device="cpu")
+            print(f"Post-egg policy {args.post_egg_policy} takes over at EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+        active_policy = policy
 
         visited: set[tuple[int, int, int, int]] = set()
         seen_tiles: set[tuple[int, int, int, int]] = set()
@@ -350,19 +363,25 @@ def main(argv=None) -> int:
                     continue
 
             # 4. Overworld Movement via Policy
-            use_goals = is_deep_policy and getattr(policy, "obs_dim", 17) == 21
+            if post_egg_policy is not None:
+                chosen = post_egg_policy if state.has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON") else policy
+                if chosen is not active_policy:
+                    active_policy = chosen
+                    recurrent_hx = None  # hidden state from the other model is meaningless here
+                    print(f"[Step {step_idx}] Switched to {'post-egg' if chosen is post_egg_policy else 'base'} policy", flush=True)
+            use_goals = is_deep_policy and getattr(active_policy, "obs_dim", 17) == 21
             obs = observe(state, visited, None if is_deep_policy else nav, include_goals=use_goals)
             probs = None
-            if policy is not None:
+            if active_policy is not None:
                 if is_deep_policy:
                     screen = emu._pb.screen.ndarray[:, :, :3].copy()
-                    if getattr(policy, "use_gru", False):
-                        probs, recurrent_hx = policy.probs_recurrent(screen, obs, hx=recurrent_hx)
+                    if getattr(active_policy, "use_gru", False):
+                        probs, recurrent_hx = active_policy.probs_recurrent(screen, obs, hx=recurrent_hx)
                         probs = probs.copy()
                     else:
-                        probs = policy.probs(screen, obs).copy()
-                elif hasattr(policy, "probs"):
-                    probs = policy.probs(obs).copy()
+                        probs = active_policy.probs(screen, obs).copy()
+                elif hasattr(active_policy, "probs"):
+                    probs = active_policy.probs(obs).copy()
 
             if probs is not None:
                 tiles = getattr(state, "tiles", {})
