@@ -33,16 +33,24 @@ There is no town-to-town direction table. `src/routes.py` was removed.
 - A separate frontier buffer and a NumPy GRU policy. They are not what `tools/train_ppo` runs.
 - A gym affordance check that vetoes an empty or under-level-10 party. Boss stats are not hardcoded. `data/knowledge/bosses.json` is `{}`.
 - Visual runs: `--window` or `PYBOY_VISUAL=1`. Default window speed is 10×. Above 5×, PyBoy warns that the clock is not exact.
+- **Live Visual Metrics Monitor (`src/visual_metrics.py`):** Automatically renders an interactive, real-time dark-theme dashboard alongside PyBoy when `--window` is used in `tools/train_ppo`, `tools/run_segment`, and `tools/eval_exits` (or via explicit `--plot`). Tracks:
+  - Top plot: Cumulative episode returns, 20-step rolling returns, and step rewards with discovery markers (+1.0 tile, +10.0 map, +0.2 neighbor bonus).
+  - Bottom plot: Policy action entropy $H(\pi)$, 20-step rolling entropy, and theoretical bounds (Max $H \approx 1.61$, low exploration threshold $0.3$).
+  - Live HUD banner displaying Step, Episode, Last Reward, Return, Entropy, Discovered Tiles, and Maps.
+  - Automatically exports high-res curves to `logs/*.png` and appends detailed JSONL step metrics to `logs/metrics_history.jsonl`.
+  - Integrated into the Streamlit thought log (`app.py`) for web tracking.
 
 Useful commands:
 
 ```bash
 python -m tools.run_segment --state new_bark_outside --steps 80 --window
 python -m tools.run_segment --state new_bark_outside --policy logs/ppo_policy.npz --steps 80 --window
-python -m tools.train_ppo --state new_bark_outside --updates 20 --rollout 64 --envs 4 --batch-size 64 --resume
-python -m tools.eval_exits --policy logs/ppo_policy.npz --state new_bark_outside --episodes 8 --steps 80
+python -m tools.train_ppo --state new_bark_outside --updates 20 --rollout 64 --envs 1 --window
+python -m tools.eval_exits --policy logs/ppo_policy.npz --state new_bark_outside --episodes 8 --steps 80 --window
+python -m tools.cloud_train --updates 50 --rollout 64 --envs 12
 python -m tools.compare_cost
 python -m tools.runs recent
+streamlit run app.py
 ```
 
 ---

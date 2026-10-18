@@ -121,7 +121,7 @@ def main(argv=None) -> int:
                     (start, args.rollout, args.seed + update * args.envs + i, weights())
                     for i in range(args.envs)
                 ]
-                if args.envs == 1 and not args.window:
+                if args.envs == 1 and not args.window and not args.plot:
                     batch, frontier = _one_rollout(payloads[0])
                     parts = [(batch, frontier)]
                     if plotter is not None:

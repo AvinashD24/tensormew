@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+import numpy as np
+
 from src.action_results import ActionResult
 from src.agent_loop import act, append_decision
 from src.collision import is_cut_tree
