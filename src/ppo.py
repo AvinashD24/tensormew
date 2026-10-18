@@ -11,6 +11,57 @@ from src.rl_env import N_ACTIONS, OBS_DIM
 
 
 @dataclass
+class PpoUpdateStats:
+    """Diagnostics from one ``ppo_update`` call."""
+
+    weight_change: float
+    approx_kl: float = 0.0
+    clip_frac: float = 0.0
+    mean_entropy: float = 0.0
+    value_mse: float = 0.0
+
+    def __float__(self) -> float:
+        return self.weight_change
+
+    def __gt__(self, other: object) -> bool:
+        return self.weight_change > float(other)
+
+    def __ge__(self, other: object) -> bool:
+        return self.weight_change >= float(other)
+
+
+def _batch_policy_stats(
+    policy: Policy | MlpPolicy,
+    batch: dict,
+    *,
+    clip: float,
+) -> tuple[float, float, float, float]:
+    obs = np.stack(batch["obs"])
+    actions = np.asarray(batch["actions"])
+    old_logp = np.asarray(batch["logp"], dtype=np.float64)
+    returns = np.asarray(batch["ret"], dtype=np.float64)
+    kls: list[float] = []
+    clips: list[float] = []
+    ents: list[float] = []
+    value_sq: list[float] = []
+    for i in range(len(actions)):
+        probabilities = policy.probs(obs[i])
+        logp = float(np.log(probabilities[actions[i]] + 1e-8))
+        ratio = float(np.exp(logp - old_logp[i]))
+        kls.append(old_logp[i] - logp)
+        clips.append(float(ratio < 1.0 - clip or ratio > 1.0 + clip))
+        ents.append(-float(np.sum(probabilities * np.log(probabilities + 1e-8))))
+        err = returns[i] - policy.value(obs[i])
+        value_sq.append(float(err * err))
+    return (
+        float(np.mean(kls)),
+        float(np.mean(clips)),
+        float(np.mean(ents)),
+        float(np.mean(value_sq)),
+    )
+
+
+@dataclass
 class Policy:
     """Linear Softmax policy and value function."""
 
@@ -201,7 +252,7 @@ def _mlp_ppo_update(
     lr: float = 0.05,
     entropy_coef: float = 0.01,
     batch_size: int | None = None,
-) -> float:
+) -> PpoUpdateStats:
     obs = np.stack(batch["obs"])
     actions = np.asarray(batch["actions"])
     old_logp = np.asarray(batch["logp"])
@@ -274,7 +325,17 @@ def _mlp_ppo_update(
             policy.vw += scale * dvw
             policy.vb += scale * dvb
 
-    return float(np.mean(np.abs(policy.w2 - before_w2)))
+    weight_change = float(np.mean(np.abs(policy.w2 - before_w2)))
+    approx_kl, clip_frac, mean_entropy, value_mse = _batch_policy_stats(
+        policy, batch, clip=clip
+    )
+    return PpoUpdateStats(
+        weight_change=weight_change,
+        approx_kl=approx_kl,
+        clip_frac=clip_frac,
+        mean_entropy=mean_entropy,
+        value_mse=value_mse,
+    )
 
 
 def ppo_update(
@@ -286,8 +347,8 @@ def ppo_update(
     lr: float = 0.05,
     entropy_coef: float = 0.01,
     batch_size: int | None = None,
-) -> float:
-    """One clipped policy update plus an entropy bonus. Returns mean absolute weight change."""
+) -> PpoUpdateStats:
+    """One clipped policy update plus an entropy bonus."""
     if isinstance(policy, MlpPolicy):
         return _mlp_ppo_update(
             policy,
@@ -343,7 +404,17 @@ def ppo_update(
             policy.b += scale * db
             policy.vw += scale * dvw
             policy.vb += scale * dvb
-    return float(np.mean(np.abs(policy.w - before)))
+    weight_change = float(np.mean(np.abs(policy.w - before)))
+    approx_kl, clip_frac, mean_entropy, value_mse = _batch_policy_stats(
+        policy, batch, clip=clip
+    )
+    return PpoUpdateStats(
+        weight_change=weight_change,
+        approx_kl=approx_kl,
+        clip_frac=clip_frac,
+        mean_entropy=mean_entropy,
+        value_mse=value_mse,
+    )
 
 
 def collect_rollout(
@@ -366,6 +437,14 @@ def collect_rollout(
         batch["logp"].append(logp)
         batch["rew"].append(reward)
         if on_step is not None:
+            badges = 0
+            map_id = None
+            reader = getattr(env, "reader", None)
+            machine = getattr(env, "machine", None)
+            if reader is not None and machine is not None:
+                state = reader.parse(machine.frame)
+                badges = int(getattr(state, "badges", 0))
+                map_id = (int(state.map_group), int(state.map_number))
             on_step(
                 {
                     "step": step_idx,
@@ -378,6 +457,8 @@ def collect_rollout(
                     "entropy": entropy,
                     "value": val,
                     "probabilities": probabilities,
+                    "badges": badges,
+                    "map_id": map_id,
                 }
             )
         obs = env.reset() if done else nxt

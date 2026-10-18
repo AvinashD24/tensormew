@@ -69,6 +69,7 @@ def main(argv=None) -> int:
                 val = policy.value(obs)
                 action, _logp = policy.act(obs)
                 obs, reward, done, info = env.step(action)
+                state = reader.parse(emu.frame)
                 if plotter is not None:
                     plotter.log_step(
                         reward=reward,
@@ -77,6 +78,9 @@ def main(argv=None) -> int:
                         action=action,
                         value=val,
                         info=info,
+                        badges=int(getattr(state, "badges", 0)),
+                        map_id=(int(state.map_group), int(state.map_number)),
+                        probabilities=probs,
                     )
                 if reader.parse(emu.frame).map_id != origin:
                     left = True

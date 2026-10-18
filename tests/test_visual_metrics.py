@@ -67,7 +67,7 @@ class VisualMetricsTests(unittest.TestCase):
             # Check JSONL
             self.assertTrue(jsonl.is_file())
             lines = jsonl.read_text(encoding="utf-8").strip().splitlines()
-            self.assertEqual(len(lines), 2)
+            self.assertEqual(len(lines), 3)
 
             plotter.close()
 

@@ -92,20 +92,27 @@ def _as_int(value) -> int:
 
 
 def extract_metric_series(rows: list[dict]) -> dict:
-    """Extract return and entropy progression from decision rows."""
+    """Extract per-episode return and entropy from RL decision rows."""
     steps: list[int] = []
     rewards: list[float] = []
     returns: list[float] = []
     entropies: list[float] = []
     running_return = 0.0
+    ep_idx = 0
     for idx, row in enumerate(rows):
-        if "reward" in row or "entropy" in row:
-            steps.append(idx + 1)
-            rew = float(row.get("reward", 0.0))
-            running_return += rew
-            rewards.append(rew)
-            returns.append(running_return)
-            entropies.append(float(row.get("entropy", 0.0)))
+        if row.get("actor") not in (None, "rl"):
+            continue
+        if "reward" not in row and "entropy" not in row:
+            continue
+        steps.append(idx + 1)
+        rew = float(row.get("reward", 0.0))
+        running_return += rew
+        rewards.append(rew)
+        returns.append(running_return)
+        entropies.append(float(row.get("entropy", 0.0)))
+        if row.get("done") or row.get("episode_end"):
+            ep_idx += 1
+            running_return = 0.0
     return {
         "step": steps,
         "reward": rewards,

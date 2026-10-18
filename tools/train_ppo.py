@@ -112,6 +112,7 @@ def main(argv=None) -> int:
                 enabled=True,
                 headless=not args.window and not args.plot,
                 save_path="logs/training_reward_entropy.png",
+                jsonl_path="logs/training_metrics.jsonl",
             )
 
         pool = ProcessPoolExecutor(max_workers=args.envs) if args.envs > 1 else None
@@ -132,7 +133,9 @@ def main(argv=None) -> int:
                             plotter.log_step(
                                 reward=batch["rew"][s_idx],
                                 entropy=ent,
+                                done=s_idx == len(batch["rew"]) - 1,
                                 action=batch["actions"][s_idx],
+                                probabilities=probs,
                             )
                 elif args.envs == 1:
                     def _on_step(data: dict) -> None:
@@ -144,6 +147,9 @@ def main(argv=None) -> int:
                                 action=data["action"],
                                 value=data["value"],
                                 info=data["info"],
+                                badges=data.get("badges", 0),
+                                map_id=data.get("map_id"),
+                                probabilities=data.get("probabilities"),
                             )
 
                     batch = collect_rollout(env, policy, args.rollout, on_step=_on_step)
@@ -159,30 +165,28 @@ def main(argv=None) -> int:
                             plotter.log_step(
                                 reward=batch["rew"][s_idx],
                                 entropy=ent,
+                                done=(s_idx + 1) % args.rollout == 0,
                                 action=batch["actions"][s_idx],
+                                probabilities=probs,
                             )
-                delta = ppo_update(policy, batch, batch_size=args.batch_size)
+                stats = ppo_update(policy, batch, batch_size=args.batch_size)
                 mean_reward = float(np.mean(batch["rew"]))
                 frontier = sum(item[1] for item in parts)
                 if plotter is not None:
-                    recent_entropy = float(
-                        np.mean(
-                            [
-                                -np.sum(policy.probs(o) * np.log(policy.probs(o) + 1e-8))
-                                for o in batch["obs"][-min(len(batch["obs"]), args.batch_size) :]
-                            ]
-                        )
-                    )
                     plotter.log_update(
                         update=update,
                         mean_reward=mean_reward,
-                        mean_entropy=recent_entropy,
-                        weight_change=delta,
+                        mean_entropy=stats.mean_entropy,
+                        weight_change=stats.weight_change,
                         new_maps=frontier,
+                        approx_kl=stats.approx_kl,
+                        clip_frac=stats.clip_frac,
+                        value_mse=stats.value_mse,
                     )
                 print(
                     f"update={update} samples={len(batch['rew'])} mean_reward={mean_reward:.3f} "
-                    f"weight_change={delta:.5f} new_maps={frontier}",
+                    f"weight_change={stats.weight_change:.5f} kl={stats.approx_kl:.4f} "
+                    f"clip={stats.clip_frac:.2f} new_maps={frontier}",
                     flush=True,
                 )
         finally:
