@@ -83,13 +83,32 @@ Falkner is in Violet City. The New Bark save already has a party of one. The age
 2. Watch failures with `--window` and `PYBOY_SPEED=4`. Judge the batch rate, not one window.
 3. Do not expect this linear net to learn the gym fight. Fighting is a separate gap.
 
-### Build before Violet is realistic
+### Built for Violet Progression
 
-1. **Story flags.** Read the event bits that mean a required talk is unfinished. The agent cannot see them today.
-2. **Dialogue that finishes.** A script must reach `wScriptMode == 0`, not survive on one A press.
-3. **One-way ledges.** Constants `COLL_WALK_*` exist in `src/collision.py`. The walker still treats them as ordinary floor, so it can jump off and get stuck.
-4. **A battle that can beat Falkner.** Replace slot-1 once a fight starts. SayCan should sit in front of the gym, not only in a unit test.
-5. **Indoor warps.** The lab and the gym are buildings. Outdoor New Bark to Route 29 is the only exit that has been shown.
+1. **Story flags (`src/story_flags.py`, `src/ram_parser.py`):**
+   - Full 2,048-bit `wEventFlags` reader at Bank 1 `0xDA72`.
+   - Milestone tracker and `GameState.has_event()` helpers, exposed in `GameState.to_text()`.
+2. **Dialogue completion (`src/macros.py`, `src/segment.py`):**
+   - `mash_text` now polls until `wScriptMode == 0` and verifies dialogue is settled before returning.
+   - Raised `streak` cap for `DIALOGUE` and `BATTLE` from 3 to 25 so legitimate interactions are not killed as "stuck".
+3. **One-way ledges & directional collision (`src/collision.py`, `src/mover.py`, `src/explore.py`):**
+   - Added `allows_direction(tile, direction)` to classify `COLL_HOP_*` and `COLL_WALK_*`.
+   - `walkable(tile, direction)` prevents stepping up into drop-down ledges.
+   - `Explorer.choose` prioritizes reversible paths over one-way ledge hops to avoid trapping the agent on lower paths.
+4. **Battle decision policy (`src/battle.py`, `src/macros.py`):**
+   - Implemented dynamic move selection scoring base power, accuracy, and Gen 2 type effectiveness (e.g. against Falkner's Flying/Normal Pokémon).
+   - `Macros.choose_move()` now auto-selects the optimal damaging move with remaining PP.
+   - Wired `can_attempt_gym(state)` affordance check in `src/saycan.py`.
+5. **Indoor warps (`src/collision.py`, `src/explore.py`):**
+   - Added warp tile detection (`is_warp`, `COLL_WARP_CARPET_DOWN`, `COLL_DOOR`, `COLL_STAIRCASE`).
+   - Settle transitions allow moving between indoor rooms (Elm's Lab, Gym) and outdoors.
+6. **Enriched Progression Rewards & 2-Layer MLP Policy (`src/rl_env.py`, `src/ppo.py`, `tools/train_ppo.py`):**
+   - Catching Pokémon rewarded with diminishing returns for duplicates (1st: 10.0, 2nd: 5.0, 3rd: 2.5, min 0.5).
+   - Milestone event flag rewards (`EVENT_GOT_A_POKEMON_FROM_ELM`, `EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON`, `EVENT_GAVE_MYSTERY_EGG_TO_ELM`, `EVENT_RIVAL_CHERRYGROVE_CITY`, `EVENT_BEAT_FALKNER`).
+   - Gym transit waypoints rewarded (Route 29, Cherrygrove, Route 30, Route 31, Violet City, Violet Gym).
+   - Pokémon level-ups (+5.0/level) and battle victories (+3.0); wall-bump penalty removed during dialogue and battle.
+   - Observations expanded to 17 features (including party size, max level, caught count, and story milestone stage).
+   - Added non-linear `MlpPolicy` (2-layer MLP with backprop) trained via `--mlp` flag, with backward-compatible checkpoint loader.
 
 ### Explicitly not required for this badge
 

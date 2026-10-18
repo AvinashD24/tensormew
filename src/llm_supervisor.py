@@ -94,28 +94,65 @@ class Supervisor:
             return None
         model = self.hard_model if hard else self.model
         user = format_user_message(state_text, trigger)
-        response = self._client().messages.create(
-            model=model,
-            max_tokens=256,
-            system=SYSTEM_PROMPT,
-            tools=anthropic_tools(),
-            tool_choice={"type": "any"},
-            messages=[{"role": "user", "content": user}],
-        )
-        name, arguments = _first_tool_use(response)
-        call = parse_tool_call(name, arguments)
-        reason, handler_args = split_reason(call.arguments)
-        usage = getattr(response, "usage", None)
-        in_tok = int(getattr(usage, "input_tokens", 0) or 0)
-        out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+        try:
+            client = self._client()
+            response = client.messages.create(
+                model=model,
+                max_tokens=256,
+                system=SYSTEM_PROMPT,
+                tools=anthropic_tools(),
+                tool_choice={"type": "any"},
+                messages=[{"role": "user", "content": user}],
+            )
+            name, arguments = _first_tool_use(response)
+            call = parse_tool_call(name, arguments)
+            reason, handler_args = split_reason(call.arguments)
+            usage = getattr(response, "usage", None)
+            in_tok = int(getattr(usage, "input_tokens", 0) or 0)
+            out_tok = int(getattr(usage, "output_tokens", 0) or 0)
+            decision = Decision(
+                name=call.name,
+                arguments=handler_args,
+                reason=reason,
+                model=getattr(response, "model", None) or model,
+                input_tokens=in_tok,
+                output_tokens=out_tok,
+                est_usd=estimate_usd(in_tok, out_tok),
+            )
+            self._log(decision)
+            return decision
+        except Exception:
+            return self._offline_fallback(trigger)
+
+    def _offline_fallback(self, trigger: TriggerContext | str | None) -> Decision:
+        kind = getattr(trigger, "kind", str(trigger or ""))
+        if hasattr(kind, "value"):
+            kind = kind.value
+        kind_str = str(kind)
+        if "BATTLE" in kind_str:
+            name = "choose_move"
+            args = {"slot": 1}
+            reason = "offline fallback: select combat move"
+        elif "CUT" in kind_str:
+            name = "use_cut"
+            args = {}
+            reason = "offline fallback: use Cut on blocking tree"
+        elif "DIALOGUE" in kind_str:
+            name = "mash_text"
+            args = {"max_frames": 1800}
+            reason = "offline fallback: advance open dialogue"
+        else:
+            name = "mash_text"
+            args = {"max_frames": 300}
+            reason = "offline fallback: clearing obstruction"
         decision = Decision(
-            name=call.name,
-            arguments=handler_args,
+            name=name,
+            arguments=args,
             reason=reason,
-            model=getattr(response, "model", None) or model,
-            input_tokens=in_tok,
-            output_tokens=out_tok,
-            est_usd=estimate_usd(in_tok, out_tok),
+            model="offline_fallback",
+            input_tokens=0,
+            output_tokens=0,
+            est_usd=0.0,
         )
         self._log(decision)
         return decision

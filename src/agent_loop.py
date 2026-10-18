@@ -71,6 +71,8 @@ def append_decision(
     result: ActionResult,
     run_log=None,
     run_id: int | None = None,
+    reward: float | None = None,
+    entropy: float | None = None,
 ) -> None:
     log_path = Path(path)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,6 +98,10 @@ def append_decision(
         "input_tokens": decision.input_tokens,
         "output_tokens": decision.output_tokens,
     }
+    if reward is not None:
+        row["reward"] = float(reward)
+    if entropy is not None:
+        row["entropy"] = float(entropy)
     with log_path.open("a", encoding="utf-8") as handle:
         handle.write(json.dumps(row) + "\n")
     if run_log is not None and run_id is not None:

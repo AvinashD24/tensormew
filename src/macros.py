@@ -17,15 +17,19 @@ class Macros:
     def _state(self):
         return self.reader.parse(self.machine.frame)
 
-    def mash_text(self, max_frames: int = 600) -> MacroResult:
-        """Advance an open script. A lone wTextboxFlags bit is text speed, not a box."""
+    def mash_text(self, max_frames: int = 1800) -> MacroResult:
+        """Advance an open script until wScriptMode == 0."""
         used = 0
         presses = 0
         if not dialogue_open(self._state()):
             return MacroResult(True, "no dialogue open", frames=0)
         while used < max_frames:
             if not dialogue_open(self._state()):
-                return MacroResult(True, f"text clear after {presses} presses", frames=used)
+                self.machine.tick(12, render=False)
+                used += 12
+                if not dialogue_open(self._state()):
+                    return MacroResult(True, f"text clear after {presses} presses", frames=used)
+                continue
             self.machine.press("a", frames=4)
             self.machine.tick(24, render=False)
             used += 28
@@ -61,12 +65,15 @@ class Macros:
             return MacroResult(False, "Cut tree still present", frames=frames)
         return MacroResult(True, f"used Cut facing {direction}", frames=frames)
 
-    def choose_move(self, slot: int) -> MacroResult:
-        if slot < 1 or slot > 4:
-            return MacroResult(False, f"move slot {slot} not in 1–4")
+    def choose_move(self, slot: int | None = None) -> MacroResult:
         state = self._state()
         if state.battle_mode == 0:
             return MacroResult(False, "choose_move refused: not in battle")
+        if slot is None:
+            from src.battle import pick_best_move
+            slot = pick_best_move(state)
+        if slot < 1 or slot > 4:
+            return MacroResult(False, f"move slot {slot} not in 1–4")
         frames = 0
         self.machine.press("a", frames=8)
         self.machine.tick(16, render=False)
@@ -76,8 +83,8 @@ class Macros:
             self.machine.tick(8, render=False)
             frames += 16
         self.machine.press("a", frames=8)
-        self.machine.tick(24, render=False)
-        frames += 32
+        self.machine.tick(32, render=False)
+        frames += 40
         return MacroResult(True, f"chose move slot {slot}", frames=frames)
 
     def switch_pokemon(self, slot: int) -> MacroResult:

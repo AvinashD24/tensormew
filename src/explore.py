@@ -32,6 +32,7 @@ class Explorer:
         self.visited: set[tuple[int, int]] = set()
         self.tried: dict[tuple[int, int], set[str]] = {}
         self.trail: list[tuple[int, int]] = []
+        self.last_dir: str | None = None
 
     def choose(self, state) -> str | None:
         self._ensure(tuple(state.map_id))
@@ -53,15 +54,17 @@ class Explorer:
                 fresh.append(direction)
         if fresh:
             regular_fresh = [d for d in fresh if not is_ledge(int(state.tiles.get(d, 0xFF)))]
-            if regular_fresh:
-                return regular_fresh[0]
-            return fresh[0]
+            pool = regular_fresh if regular_fresh else fresh
+            if self.last_dir in pool:
+                return self.last_dir
+            return pool[0]
         untried = [direction for direction in open_dirs if direction not in self.tried[pos]]
         if untried:
             regular_untried = [d for d in untried if not is_ledge(int(state.tiles.get(d, 0xFF)))]
-            if regular_untried:
-                return regular_untried[0]
-            return untried[0]
+            pool = regular_untried if regular_untried else untried
+            if self.last_dir in pool:
+                return self.last_dir
+            return pool[0]
         if len(self.trail) >= 2 and self.trail[-1] == pos:
             return _toward(pos, self.trail[-2])
         return None
@@ -75,11 +78,14 @@ class Explorer:
             arrived = (after.x, after.y)
             self.visited.add(arrived)
             self.trail = [arrived]
+            self.last_dir = direction
             return
         if not moved:
+            self.last_dir = None
             return
         arrived = (after.x, after.y)
         self.visited.add(arrived)
+        self.last_dir = direction
         if not self.trail or self.trail[-1] != origin:
             self.trail.append(origin)
         if self.trail[-1] != arrived:
@@ -92,3 +98,4 @@ class Explorer:
         self.visited = set()
         self.tried = {}
         self.trail = []
+        self.last_dir = None

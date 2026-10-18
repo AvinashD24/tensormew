@@ -210,5 +210,134 @@ class TrainStepTests(unittest.TestCase):
         self.assertLess(float(after_probs.max()), float(before_probs.max()))
 
 
+class ExtendedRewardTests(unittest.TestCase):
+    def test_catching_pokemon_has_diminishing_returns_for_duplicates(self):
+        seen_tiles, seen_maps = set(), {(1, 1)}
+        caught_counts = {}
+
+        # Initial party has 1 mon (Cyndaquil, 155)
+        s0 = _S(1, 1, 0, 0)
+        s0.party_count = 1
+        s0.party_species = (155,)
+
+        # 1st catch: Pidgey (species 16) -> novelty reward 10.0
+        s1 = _S(1, 1, 0, 0)
+        s1.party_count = 2
+        s1.party_species = (155, 16)
+        r1, _, _ = progress_reward(
+            s0, s1, False, seen_tiles, seen_maps, caught_counts=caught_counts
+        )
+        # Should get 10.0 catch reward - 0.01 step penalty
+        self.assertAlmostEqual(r1, -0.01 - 0.05 + 10.0)
+
+        # 2nd catch: Duplicate Pidgey (species 16) -> 50% diminishing return (5.0)
+        s2 = _S(1, 1, 0, 0)
+        s2.party_count = 3
+        s2.party_species = (155, 16, 16)
+        r2, _, _ = progress_reward(
+            s1, s2, False, seen_tiles, seen_maps, caught_counts=caught_counts
+        )
+        self.assertAlmostEqual(r2, -0.01 - 0.05 + 5.0)
+        self.assertLess(r2, r1)
+
+        # 3rd catch: Another duplicate Pidgey (species 16) -> 25% diminishing return (2.5)
+        s3 = _S(1, 1, 0, 0)
+        s3.party_count = 4
+        s3.party_species = (155, 16, 16, 16)
+        r3, _, _ = progress_reward(
+            s2, s3, False, seen_tiles, seen_maps, caught_counts=caught_counts
+        )
+        self.assertAlmostEqual(r3, -0.01 - 0.05 + 2.5)
+        self.assertLess(r3, r2)
+
+        # Catch a new unique species: Rattata (species 19) -> Full 10.0 reward!
+        s4 = _S(1, 1, 0, 0)
+        s4.party_count = 5
+        s4.party_species = (155, 16, 16, 16, 19)
+        r4, _, _ = progress_reward(
+            s3, s4, False, seen_tiles, seen_maps, caught_counts=caught_counts
+        )
+        self.assertAlmostEqual(r4, -0.01 - 0.05 + 10.0)
+        self.assertGreater(r4, r3)
+
+    def test_story_flag_and_waypoint_rewards(self):
+        seen_tiles, seen_maps = set(), {(1, 1)}
+        seen_events = set()
+        seen_waypoints = set()
+
+        # Step into Violet Gym (10, 7)
+        s0 = _S(10, 5, 5, 5)
+        s1 = _S(10, 7, 5, 5)
+        r_gym, _, _ = progress_reward(
+            s0, s1, True, seen_tiles, seen_maps, seen_waypoints=seen_waypoints
+        )
+        # 10.0 new map + 20.0 Violet Gym waypoint + 1.0 new tile - 0.01
+        self.assertAlmostEqual(r_gym, -0.01 + 1.0 + 10.0 + 20.0)
+
+        # Beat Falkner event flag (1213: byte 151, bit 5)
+        flags = [0] * 256
+        flags[1213 // 8] = 1 << (1213 % 8)
+        s2 = _S(10, 7, 5, 5)
+        s2.event_flags = tuple(flags)
+        s2.badges = 1
+        r_falkner, _, _ = progress_reward(
+            s1, s2, False, seen_tiles, seen_maps, seen_events=seen_events
+        )
+        # EVENT_BEAT_FALKNER (50.0) + badge earned (30.0) - 0.01 - 0.05
+        self.assertAlmostEqual(r_falkner, -0.01 - 0.05 + 50.0 + 30.0)
+
+    def test_level_up_and_battle_victories(self):
+        seen_tiles, seen_maps = set(), {(1, 1)}
+        s0 = _S(1, 1, 0, 0)
+        s0.party_levels = (5,)
+        s1 = _S(1, 1, 0, 0)
+        s1.party_levels = (7,)  # Gained 2 levels!
+        r_level, _, _ = progress_reward(s0, s1, False, seen_tiles, seen_maps)
+        # 2 levels * 5.0 = 10.0
+        self.assertAlmostEqual(r_level, -0.01 - 0.05 + 10.0)
+
+        # Battle victory: before was battle_mode=1, after is battle_mode=0
+        s_battle = _S(1, 1, 0, 0)
+        s_battle.battle_mode = 1
+        s_victory = _S(1, 1, 0, 0)
+        s_victory.battle_mode = 0
+        r_battle, _, _ = progress_reward(s_battle, s_victory, False, seen_tiles, seen_maps)
+        # Battle won gives +3.0 and does NOT penalize wall bump
+        self.assertAlmostEqual(r_battle, -0.01 + 3.0)
+
+
+class MlpPolicyTests(unittest.TestCase):
+    def test_mlp_policy_act_and_learn(self):
+        from src.ppo import MlpPolicy, load_policy
+        import tempfile
+
+        policy = MlpPolicy(rng=np.random.default_rng(42), obs_dim=OBS_DIM, hidden_dim=32)
+        obs = np.zeros(OBS_DIM)
+        obs[0] = 1.0
+        action, logp = policy.act(obs)
+        self.assertIn(action, range(5))
+        self.assertLessEqual(logp, 0.0)
+
+        # Test PPO update on MLP
+        batch = {
+            "obs": [obs.copy() for _ in range(4)],
+            "actions": [0, 1, 0, 1],
+            "logp": [-1.6, -1.6, -1.6, -1.6],
+            "adv": np.array([1.0, -1.0, 1.0, -1.0]),
+            "ret": np.array([1.0, 0.0, 1.0, 0.0]),
+        }
+        delta = ppo_update(policy, batch)
+        self.assertGreater(delta, 0.0)
+
+        # Test save and load via load_policy
+        with tempfile.NamedTemporaryFile(suffix=".npz") as tmp:
+            policy.save(tmp.name)
+            loaded = load_policy(tmp.name)
+            self.assertIsInstance(loaded, MlpPolicy)
+            loaded_action, _ = loaded.act(obs)
+            self.assertIn(loaded_action, range(5))
+
+
 if __name__ == "__main__":
     unittest.main()
+

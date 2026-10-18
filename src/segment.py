@@ -43,12 +43,15 @@ def run_segment(
     run_log=None,
     state_name: str = "",
     policy=None,
+    plotter=None,
 ) -> SegmentResult:
     """Step until the target map or tile, a badge, or a starting Cut tree changes."""
     log_path = str(decision_log)
     mover = _prepare_mover(machine, reader, supervisor)
     explorer = Explorer()
     visited: set[tuple[int, int, int, int]] = set()
+    seen_tiles: set[tuple[int, int, int, int]] = set()
+    seen_maps: set[tuple[int, int]] = set()
     previous = None
     last_direction = None
     last_moved = False
@@ -61,6 +64,8 @@ def run_segment(
     try:
         state = reader.parse(getattr(machine, "frame", 0))
         start_map = tuple(state.map_id)
+        seen_tiles.add((state.map_group, state.map_number, state.x, state.y))
+        seen_maps.add(start_map)
         end_map = start_map
         start_badges = int(state.badges)
         end_badges = start_badges
@@ -91,16 +96,29 @@ def run_segment(
                 )
 
             trigger = evaluate(state, stuck_count=mover.stuck)
+            if trigger is not None and _trigger_kind(trigger) == "CUT_BLOCKED":
+                if not started_with_cut and not state.party_can_cut:
+                    trigger = None
             if trigger is None and not getattr(supervisor, "always_on", False):
                 streak_kind = None
                 streak = 0
+                entropy = None
+                val = None
+                action = None
                 if policy is None:
                     direction = _step_direction(state, target_xy, explorer)
                     actor = "script"
                     reason = None
                 else:
                     visited.add((state.map_group, state.map_number, state.x, state.y))
-                    action, _logp = policy.act(observe(state, visited))
+                    obs = observe(state, visited)
+                    action, _logp = policy.act(obs)
+                    if hasattr(policy, "probs"):
+                        probs = policy.probs(obs)
+                        entropy = -float(np.sum(probs * np.log(probs + 1e-8)))
+                    else:
+                        entropy = 0.0
+                    val = policy.value(obs) if hasattr(policy, "value") else None
                     direction = ACTIONS[int(action)]
                     actor = "rl"
                     reason = f"policy chose {direction}"
@@ -118,6 +136,36 @@ def run_segment(
                         last_moved = bool(path_result.ok)
                     previous = state
                     last_direction = direction
+
+                    after_state = reader.parse(getattr(machine, "frame", 0))
+                    from src.rl_env import _NEIGHBOR_DELTAS, StepInfo, progress_reward
+
+                    unvisited_neighbor = False
+                    if action is not None and 0 <= int(action) < 4:
+                        dx, dy = _NEIGHBOR_DELTAS[int(action)]
+                        neighbor = (state.map_group, state.map_number, state.x + dx, state.y + dy)
+                        unvisited_neighbor = neighbor not in seen_tiles
+
+                    step_rew, disc_tile, disc_map = progress_reward(
+                        state,
+                        after_state,
+                        last_moved,
+                        seen_tiles,
+                        seen_maps,
+                        unvisited_neighbor=unvisited_neighbor,
+                    )
+                    if plotter is not None:
+                        plotter.log_step(
+                            reward=step_rew,
+                            entropy=entropy if entropy is not None else 0.0,
+                            done=False,
+                            action=direction,
+                            value=val,
+                            info=StepInfo(discovered_tile=disc_tile, discovered_map=disc_map),
+                            step=steps,
+                            badges=after_state.badges,
+                            map_id=(after_state.map_group, after_state.map_number),
+                        )
                     _log_script(
                         decision_log,
                         machine,
@@ -129,6 +177,8 @@ def run_segment(
                         run_id=run_id,
                         actor=actor,
                         reason=reason,
+                        reward=step_rew,
+                        entropy=entropy,
                     )
                 steps += 1
             else:
@@ -162,7 +212,8 @@ def run_segment(
                     run_log, run_id, "advanced", steps, start_map, end_map,
                     start_badges, end_badges, cut_cleared, log_path,
                 )
-            if streak >= 3 or mover.stuck >= mover.stuck_limit:
+            streak_limit = 25 if streak_kind in ("DIALOGUE", "BATTLE") else 3
+            if streak >= streak_limit or mover.stuck >= mover.stuck_limit:
                 return _close(
                     run_log, run_id, "stuck", steps, start_map, end_map,
                     start_badges, end_badges, False, log_path,
@@ -278,6 +329,8 @@ def _log_script(
     run_id: int | None = None,
     actor: str = "script",
     reason: str | None = None,
+    reward: float | None = None,
+    entropy: float | None = None,
 ) -> None:
     if decision_log is None:
         return
@@ -307,6 +360,8 @@ def _log_script(
         result=result,
         run_log=run_log,
         run_id=run_id,
+        reward=reward,
+        entropy=entropy,
     )
 
 

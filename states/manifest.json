@@ -1,6 +1,75 @@
 {
   "version": 1,
   "states": {
+    "agent_map_24_3": {
+      "name": "agent_map_24_3",
+      "file": "agent_map_24_3.state",
+      "description": "Arrived on map (24, 3) by walking.",
+      "map": [
+        24,
+        3
+      ],
+      "pos": [
+        59,
+        9
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 0,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "b10a5244282411ec2844688d6e4bdd467b0ea10c",
+      "created_at": "2026-10-18T01:05:51+00:00",
+      "tags": [
+        "route_test",
+        "agent"
+      ]
+    },
+    "agent_map_24_6": {
+      "name": "agent_map_24_6",
+      "file": "agent_map_24_6.state",
+      "description": "Arrived on map (24, 6) by walking.",
+      "map": [
+        24,
+        6
+      ],
+      "pos": [
+        9,
+        1
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 0,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "0985231165e91de743ac77d636e2f9012b157eb7",
+      "created_at": "2026-10-18T01:18:15+00:00",
+      "tags": [
+        "route_test",
+        "agent"
+      ]
+    },
+    "agent_map_24_7": {
+      "name": "agent_map_24_7",
+      "file": "agent_map_24_7.state",
+      "description": "Arrived on map (24, 7) by walking.",
+      "map": [
+        24,
+        7
+      ],
+      "pos": [
+        7,
+        1
+      ],
+      "badges": 0,
+      "party_count": 1,
+      "time_of_day": 0,
+      "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
+      "state_sha1": "cd80f7d7ad6d8756a8d98ee65f5f1580eb1642d2",
+      "created_at": "2026-10-18T01:24:36+00:00",
+      "tags": [
+        "route_test",
+        "agent"
+      ]
+    },
     "elm_lab_starter": {
       "name": "elm_lab_starter",
       "file": "elm_lab_starter.state",
@@ -59,7 +128,10 @@
       "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
       "state_sha1": "df239d7fa5d2056a887cbe7dac180b35beecf04e",
       "created_at": "2026-10-17T22:09:30+00:00",
-      "tags": ["route_test", "human"]
+      "tags": [
+        "route_test",
+        "human"
+      ]
     },
     "route29_entry": {
       "name": "route29_entry",
@@ -79,7 +151,10 @@
       "rom_sha1": "f2f52230b536214ef7c9924f483392993e226cfb",
       "state_sha1": "aa96bba526bff00055e8f4da4ac240a3ea969e65",
       "created_at": "2026-10-17T22:06:44+00:00",
-      "tags": ["route_test", "human"]
+      "tags": [
+        "route_test",
+        "human"
+      ]
     },
     "smoke_sign": {
       "name": "smoke_sign",

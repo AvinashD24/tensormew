@@ -20,3 +20,12 @@ def evaluate(party: dict, gym: str) -> dict:
         "verdict": "APPROVE",
         "reason": f"party of {count} at level {highest} can attempt {gym}",
     }
+
+
+def can_attempt_gym(state, gym: str = "Falkner") -> dict:
+    party = {
+        "party_count": getattr(state, "party_count", 0),
+        "levels": list(getattr(state, "party_levels", ())),
+        "badges": getattr(state, "badges", 0),
+    }
+    return evaluate(party, gym)

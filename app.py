@@ -91,6 +91,29 @@ def _as_int(value) -> int:
         return 0
 
 
+def extract_metric_series(rows: list[dict]) -> dict:
+    """Extract return and entropy progression from decision rows."""
+    steps: list[int] = []
+    rewards: list[float] = []
+    returns: list[float] = []
+    entropies: list[float] = []
+    running_return = 0.0
+    for idx, row in enumerate(rows):
+        if "reward" in row or "entropy" in row:
+            steps.append(idx + 1)
+            rew = float(row.get("reward", 0.0))
+            running_return += rew
+            rewards.append(rew)
+            returns.append(running_return)
+            entropies.append(float(row.get("entropy", 0.0)))
+    return {
+        "step": steps,
+        "reward": rewards,
+        "cumulative_return": returns,
+        "entropy": entropies,
+    }
+
+
 def main() -> None:
     import streamlit as st
 
@@ -129,6 +152,29 @@ def main() -> None:
     st.subheader("Recent decisions")
     st.caption(f"Last {min(len(rows), RECENT_LIMIT)} of {summary['steps']} steps.")
     st.dataframe(recent_table(rows), use_container_width=True, hide_index=True)
+
+    metrics = extract_metric_series(rows)
+    if metrics["step"]:
+        st.subheader("Model Returns & Policy Entropy")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.caption("Cumulative Model Return & Step Reward")
+            st.line_chart(
+                {"Cumulative Return": metrics["cumulative_return"], "Step Reward": metrics["reward"]}
+            )
+        with col2:
+            st.caption("Policy Action Entropy")
+            st.line_chart({"Entropy": metrics["entropy"]})
+
+    for plot_candidate in (
+        Path("logs/training_reward_entropy.png"),
+        Path("logs/segment_reward_entropy.png"),
+        Path("logs/reward_entropy_curve.png"),
+    ):
+        if plot_candidate.is_file():
+            st.subheader(f"Saved Run Curve ({plot_candidate.name})")
+            st.image(str(plot_candidate), use_container_width=True)
+            break
 
 
 if __name__ == "__main__":

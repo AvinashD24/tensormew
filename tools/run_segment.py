@@ -23,6 +23,12 @@ def main(argv=None) -> int:
     parser.add_argument("--target-map", default="", help="group,number to reach, e.g. 24,3")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--policy", default="", help="path to ppo_policy.npz; walks with PPO instead of search")
+    parser.add_argument(
+        "--plot",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="render live visual reward & entropy graph alongside PyBoy (defaults to True if --window and --policy)",
+    )
     args = parser.parse_args(argv)
     target_map = None
     if args.target_map:
@@ -31,6 +37,8 @@ def main(argv=None) -> int:
 
     emu = None
     run_log = RunLog(args.db)
+    should_plot = bool(args.window and args.policy) if args.plot is None else bool(args.plot)
+    plotter = None
     try:
         data = StateRegistry().load_bytes(args.state)
         emu = Emulator(headless=not args.window, rtc_lock=True)
@@ -38,12 +46,18 @@ def main(argv=None) -> int:
         reader = RamParser(emu)
         policy = None
         if args.policy:
-            import numpy as np
+            from src.ppo import load_policy
 
-            from src.ppo import Policy
+            policy = load_policy(args.policy)
+        if should_plot:
+            from src.visual_metrics import LiveMetricsPlotter
 
-            policy = Policy(rng=np.random.default_rng(0))
-            policy.load(args.policy)
+            plotter = LiveMetricsPlotter(
+                title=f"TensorMew: Segment Run ({args.state})",
+                enabled=True,
+                headless=not args.window and not args.plot,
+                save_path="logs/segment_reward_entropy.png",
+            )
         supervisor = Supervisor(
             client=None,
             registry=execution_registry(emu, reader),
@@ -59,6 +73,7 @@ def main(argv=None) -> int:
             run_log=run_log,
             state_name=args.state,
             policy=policy,
+            plotter=plotter,
         )
         print(
             f"outcome={result.outcome} steps={result.steps} "
@@ -71,6 +86,11 @@ def main(argv=None) -> int:
         print(f"error={exc}")
         return 1
     finally:
+        if plotter is not None:
+            saved_plot = plotter.save()
+            if saved_plot:
+                print(f"saved_plot={saved_plot}")
+            plotter.close()
         run_log.close()
         if emu is not None:
             emu.close()

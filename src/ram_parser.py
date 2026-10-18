@@ -75,6 +75,7 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wMoney", size=3),
     Sym("wTMsHMs", size=57),
     Sym("wEventFlags", size=256, required=False),
+    Sym("wPokedexCaught", size=32, required=False),
 )
 
 
@@ -111,6 +112,7 @@ class GameState:
     script_mode: int = 0
     event_flags: tuple[int, ...] = ()
     story_objective: str = ""
+    pokedex_caught: tuple[int, ...] = ()
 
     def has_event(self, flag: str | int) -> bool:
         if not self.event_flags:
@@ -120,6 +122,12 @@ class GameState:
         if flag_id is None:
             return False
         return is_flag_set(self.event_flags, flag_id)
+
+    @property
+    def pokedex_caught_count(self) -> int:
+        if not self.pokedex_caught:
+            return self.party_count
+        return sum(bin(b).count("1") for b in self.pokedex_caught)
 
     @property
     def map_id(self) -> tuple[int, int]:
@@ -152,6 +160,13 @@ class GameState:
     @property
     def fainted(self) -> bool:
         return self.party_count > 0 and all(hp == 0 for hp, _ in self.party_hp)
+
+    @property
+    def party_can_cut(self) -> bool:
+        for moves in self.party_moves:
+            if 15 in moves:
+                return True
+        return False
 
     def not_ready_reasons(self) -> list[str]:
         reasons = []
@@ -200,6 +215,7 @@ class GameState:
             "script_mode": self.script_mode,
             "event_flags": list(self.event_flags),
             "story_objective": self.story_objective,
+            "pokedex_caught": list(self.pokedex_caught),
         }
 
     @classmethod
@@ -239,6 +255,7 @@ class GameState:
             script_mode=int(d.get("script_mode", 0)),
             event_flags=tuple(d.get("event_flags") or []),
             story_objective=str(d.get("story_objective", "")),
+            pokedex_caught=tuple(d.get("pokedex_caught") or []),
         )
 
     def to_text(self) -> str:
@@ -318,6 +335,9 @@ class RamParser:
         if flags_raw:
             from src.story_flags import next_story_milestone
             story_objective = next_story_milestone(flags_raw)
+        pokedex_raw = raw.get("wPokedexCaught", ())
+        if not isinstance(pokedex_raw, tuple):
+            pokedex_raw = (int(pokedex_raw),) if pokedex_raw else ()
         return GameState(
             map_group=int(raw["wMapGroup"]),
             map_number=int(raw["wMapNumber"]),
@@ -355,4 +375,5 @@ class RamParser:
             hm_counts=hm_counts,
             event_flags=flags_raw,
             story_objective=story_objective,
+            pokedex_caught=pokedex_raw,
         )
