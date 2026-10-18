@@ -57,10 +57,21 @@ def equip_balls(emu: Emulator, count: int = 10) -> None:
         pass
 
 
+def _write_gif(frames, path) -> None:
+    if frames:
+        frames[0].save(path, save_all=True, append_images=frames[1:], duration=90, loop=0)
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Live continuous PyBoy game player")
     parser.add_argument("--state", default="route29_entry", help="save state name")
     parser.add_argument("--policy", default="logs/deep_policy.pt", help="path to policy (.pt or .npz)")
+    parser.add_argument(
+        "--record-dir",
+        default=None,
+        help="save a run.gif (and a .state per story milestone) here; needs a window, headless frames are blank",
+    )
+    parser.add_argument("--record-every", type=int, default=6, help="steps between recorded GIF frames")
     parser.add_argument(
         "--post-egg-policy",
         default=None,
@@ -186,6 +197,14 @@ def main(argv=None) -> int:
         milestones = MilestoneTracker()
         unsticker = Unsticker()
         last_status_write = 0.0
+        record_dir = None
+        rec_frames: list = []
+        last_rec_step = -args.record_every
+        if args.record_dir:
+            from pathlib import Path
+            record_dir = Path(args.record_dir)
+            record_dir.mkdir(parents=True, exist_ok=True)
+            print(f"Recording to {record_dir} (GIF frame every {args.record_every} steps, state saved per milestone)")
         seed_seen_events(reader.parse(emu.frame), seen_events)
         while True:
             # Check if PyBoy window was closed
@@ -194,12 +213,22 @@ def main(argv=None) -> int:
                 break
 
             state = reader.parse(emu.frame)
+            if record_dir is not None and step_idx - last_rec_step >= args.record_every:
+                last_rec_step = step_idx
+                rec_frames.append(emu._pb.screen.image.convert("RGB").quantize(64))
+                if len(rec_frames) % 500 == 0:
+                    _write_gif(rec_frames, record_dir / "run.gif")
             if time.time() - last_status_write > 3.0:
                 write_status(args.tag, state, story_snapshot(state, milestones), step_idx, cumulative_reward)
                 last_status_write = time.time()
             for _key in milestones.update(state, step_idx):
                 print(milestone_line(_key, step_idx, milestones), flush=True)
                 write_status(args.tag, state, story_snapshot(state, milestones), step_idx, cumulative_reward)
+                if record_dir is not None:
+                    emu.save_state(record_dir / f"{_key}.state")
+                    if _key == "falkner_beaten":
+                        _write_gif(rec_frames, record_dir / "run.gif")
+                        print(f"Falkner beaten: recording saved to {record_dir / 'run.gif'}", flush=True)
             tile = (state.map_group, state.map_number, state.x, state.y)
             visited.add(tile)
             seen_tiles.add(tile)
@@ -224,8 +253,9 @@ def main(argv=None) -> int:
                     res = macros.choose_move()
                     reason = getattr(res, "message", getattr(res, "reason", "attacked"))
                 elif p_cur == 0 and not getattr(res, "ok", True):
+                    failed = reason
                     res = macros.handle_whiteout()
-                    reason = "handling whiteout / fainted"
+                    reason = f"handling whiteout / fainted ({failed})"
                 mon_name = get_species_name(state.party_species[act_idx]) if state.party_species and act_idx < len(state.party_species) else "Mon"
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "

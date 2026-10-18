@@ -35,6 +35,13 @@ class FakeMachine:
         return True
 
 
+class ReadableMachine(FakeMachine):
+    """FakeMachine with RAM reads (all zeros) so macros take their real-emulator code path."""
+
+    def read(self, bank, addr, n=1):
+        return bytes([0] * n)
+
+
 class ScriptedReader:
     def __init__(self, states):
         self.states = list(states)
@@ -146,55 +153,33 @@ class MacroTests(unittest.TestCase):
         self.assertIn("a", buttons)
 
     def test_switch_fainted_pokemon_closed_loop_memory(self):
-        class FakeMachineWithMemory(FakeMachine):
-            def __init__(self, start_cursor=5):
-                super().__init__()
-                self.cursor = start_cursor
-
-            def press(self, button, frames=8):
-                super().press(button, frames)
-                if button == "up" and self.cursor > 1:
-                    self.cursor -= 1
-                elif button == "down" and self.cursor < 6:
-                    self.cursor += 1
-
-            def read(self, bank: int, addr: int, n: int = 1) -> bytes:
-                if addr == 0xcfa9:
-                    return bytes([self.cursor])
-                return bytes([0] * n)
-
-        machine = FakeMachineWithMemory(start_cursor=5)
+        # The cursor is never read: the macro steps DOWN and presses A, and the first pick works here.
+        machine = ReadableMachine()
         macros = Macros(machine, ScriptedReader([gs(battle_mode=2), gs(battle_mode=2, battle_mon_hp=15)]))
         res = macros.switch_fainted_pokemon(4)
         self.assertTrue(res.ok)
-        self.assertEqual(machine.cursor, 4)
         buttons = [b for b, _ in machine.presses]
-        self.assertIn("up", buttons)
+        self.assertEqual(buttons.count("down"), 1)
+        self.assertNotIn("up", buttons)
         self.assertIn("a", buttons)
 
 
     def test_switch_fainted_pokemon_tries_next_slot_when_one_is_rejected(self):
-        class Mem(FakeMachine):
-            def __init__(self):
-                super().__init__()
-                self.cursor = 1
-
-            def press(self, button, frames=8):
-                super().press(button, frames)
-                if button == "up" and self.cursor > 1:
-                    self.cursor -= 1
-                elif button == "down" and self.cursor < 6:
-                    self.cursor += 1
-
-            def read(self, bank, addr, n=1):
-                return bytes([self.cursor]) if addr == 0xcfa9 else bytes([0] * n)
-
-        machine = Mem()
-        # first pick (slot 3) is rejected by the game, the next one (slot 2) goes in
+        machine = ReadableMachine()
+        # the first row is rejected by the game ("no will to fight"), the next DOWN press lands on one that goes in
         states = [gs(battle_mode=2), gs(battle_mode=2, battle_mon_hp=0), gs(battle_mode=2, battle_mon_hp=11)]
         macros = Macros(machine, ScriptedReader(states))
         res = macros.switch_fainted_pokemon(3)
         self.assertTrue(res.ok)
-        self.assertIn("slot 2", res.message)
-        self.assertEqual([b for b, _ in machine.presses].count("down"), 2)
-        self.assertEqual([b for b, _ in machine.presses].count("up"), 1)
+        self.assertIn("2 down-press", res.message)
+        buttons = [b for b, _ in machine.presses]
+        self.assertEqual(buttons.count("down"), 2)
+        self.assertNotIn("up", buttons)
+
+    def test_switch_fainted_pokemon_cycles_every_row_then_gives_up(self):
+        machine = ReadableMachine()
+        macros = Macros(machine, ScriptedReader([gs(battle_mode=2, party_count=3)]))
+        res = macros.switch_fainted_pokemon(2)
+        self.assertFalse(res.ok)
+        # 3 party rows + CANCEL, one DOWN press each, never the same row twice in a row without moving
+        self.assertEqual([b for b, _ in machine.presses].count("down"), 4)

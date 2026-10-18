@@ -178,12 +178,8 @@ class Macros:
         return MacroResult(True, f"switched to party slot {slot}", frames=frames)
 
     def _party_cursor(self) -> int:
-        try:
-            val = self.machine.read(1, 0xD0D8, 1)[0]
-            if val != 0:
-                return val
-        except Exception:
-            pass
+        # wMenuCursorY is the live cursor row. wPartyMenuCursor (0xD0D8) only holds the last selection,
+        # so it stays non-zero while the party menu is closed and must not be used to detect an open menu.
         try:
             return self.machine.read(0, 0xCFA9, 1)[0]
         except Exception:
@@ -246,42 +242,41 @@ class Macros:
         self.machine.tick(16, render=False)
         frames += 22
         # If the party menu is not open yet (faint message / 'Use next POKéMON?'), advance to it
-        if self._party_cursor() == 0:
-            for _ in range(3):
-                self.machine.press("a", frames=6)
-                self.machine.tick(16, render=False)
-                frames += 22
-            for _ in range(6):
-                self.machine.tick(16, render=False)
-                frames += 16
-                if self._party_cursor() > 0:
-                    break
+        # The menu opens by itself once the faint text finishes and its cursor starts ON the fainted
+        # Pokémon, so A here would just select that one ("There's no will to battle!"). Wait for it,
+        # and only nudge the text along with B, which cannot select anything.
+        for _ in range(12):
+            if self._party_cursor() > 0:
+                break
+            self.machine.tick(30, render=False)
+            frames += 30
+            if self._party_cursor() > 0:
+                break
+            self.machine.press("b", frames=6)
+            self.machine.tick(16, render=False)
+            frames += 22
 
+        # A freshly opened menu ignores input for a moment: a DOWN pressed right away is swallowed and the
+        # following A would select the fainted Pokémon again.
+        self.machine.tick(60, render=False)
+        frames += 60
+
+        # The party menu opens on the fainted Pokémon, so cycle with DOWN (the list wraps through CANCEL),
+        # press A on each row and check whether a Pokémon came out. Rows already known to be fainted (and
+        # CANCEL) are stepped over without pressing A, so "no will to fight" rarely comes up at all.
         count = getattr(state, "party_count", 0) or len(getattr(state, "party_hp", ()) or ()) or 6
         count = max(1, min(6, count))
         party_hp = tuple(getattr(state, "party_hp", ()) or ())
-        active = getattr(state, "cur_battle_mon", 0) + 1
-        with_hp = [
-            s for s in range(1, count + 1)
-            if s != active and s - 1 < len(party_hp) and party_hp[s - 1][0] > 0
-        ]
-        rest = [s for s in range(1, count + 1) if s != active and s not in with_hp]
-        order = [slot] + [s for s in with_hp if s != slot] + [s for s in rest if s != slot]
+        order = list(range(1, count + 2))  # one press per party row, plus CANCEL
 
         for attempt, cand in enumerate(order):
-            cur_c = self._party_cursor()
-            if cur_c > 0:
-                frames += self._move_party_cursor(cand)
-            else:
-                # Blind fallback: reset to top with UP x5, then step DOWN (cand - 1) times
-                for _ in range(5):
-                    self.machine.press("up", frames=6)
-                    self.machine.tick(16, render=False)
-                    frames += 22
-                for _ in range(cand - 1):
-                    self.machine.press("down", frames=6)
-                    self.machine.tick(16, render=False)
-                    frames += 22
+            self.machine.press("down", frames=6)   # next row; the menu wraps around
+            self.machine.tick(24, render=False)
+            frames += 30
+
+            row = self._party_cursor()
+            if row and party_hp and (row > count or (row - 1 < len(party_hp) and party_hp[row - 1][0] <= 0)):
+                continue
 
             self.machine.press("a", frames=8)   # select the Pokémon
             self.machine.tick(32, render=False)
@@ -295,7 +290,7 @@ class Macros:
                     self.machine.press("b", frames=6)
                     self.machine.tick(20, render=False)
                     frames += 26
-                return MacroResult(True, f"switched fainted Pokémon to party slot {cand}", frames=frames)
+                return MacroResult(True, f"switched fainted Pokémon after {attempt + 1} down-press(es)", frames=frames)
             # Rejected: close the message / submenu and move on to the next slot
             for _ in range(2):
                 self.machine.press("b", frames=6)
