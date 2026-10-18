@@ -201,6 +201,7 @@ def main(argv=None) -> int:
                     from PIL import Image
                     scr = emu._pb.screen.ndarray[:, :, :3]
                     img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
+                    img.save(f"logs/live_snapshot_{args.tag}.png")
                     img.save("logs/live_snapshot.png")
                 except Exception:
                     pass
@@ -531,6 +532,7 @@ def main(argv=None) -> int:
                     from PIL import Image
                     scr = emu._pb.screen.ndarray[:, :, :3]
                     img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
+                    img.save(f"logs/live_snapshot_{args.tag}.png")
                     img.save("logs/live_snapshot.png")
                 except Exception:
                     pass
