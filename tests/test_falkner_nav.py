@@ -111,7 +111,7 @@ class TestFalknerNav(unittest.TestCase):
         self.assertEqual(falkner_nav_direction(st_exit), "left")
 
     def test_violet_city_to_gym(self):
-        # East entrance from gatehouse at (39, 25)
+        # East entrance from gatehouse at (39, 25) with healthy party -> heads to Gym
         st = _make_state(MAP_VIOLET_CITY, 39, 25, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
         step = falkner_nav_direction(st)
         self.assertIn(step, ("left", "up"))
@@ -119,6 +119,29 @@ class TestFalknerNav(unittest.TestCase):
         # Outside Violet Gym at (18, 18) -> step into Gym
         st_gym = _make_state(MAP_VIOLET_CITY, 18, 18, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
         self.assertEqual(falkner_nav_direction(st_gym), "up")
+
+    def test_violet_city_routes_to_pokecenter_when_damaged(self):
+        from src.falkner_nav import MAP_VIOLET_POKECENTER
+        # Entering Violet City at (39, 25) with fainted/damaged Pokémon
+        st = _make_state(MAP_VIOLET_CITY, 39, 25, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st.party_hp = ((0, 20), (5, 15))
+        step = falkner_nav_direction(st)
+        self.assertEqual(step, "left")
+
+        # Outside Violet PC doorway at (31, 26) when damaged -> step up to enter
+        st_door = _make_state(MAP_VIOLET_CITY, 31, 26, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st_door.party_hp = ((0, 20), (5, 15))
+        self.assertEqual(falkner_nav_direction(st_door), "up")
+
+        # Inside Violet PC at (3, 3) facing up with damaged party -> press A to talk to Nurse Joy
+        st_nurse = _make_state(MAP_VIOLET_POKECENTER, 3, 3, facing="up", events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st_nurse.party_hp = ((0, 20), (5, 15))
+        self.assertEqual(falkner_nav_direction(st_nurse), "a")
+
+        # Inside Violet PC fully healed on exit mat at (3, 7) -> step down to exit
+        st_healed = _make_state(MAP_VIOLET_POKECENTER, 3, 7, events=("EVENT_GAVE_MYSTERY_EGG_TO_ELM",))
+        st_healed.party_hp = ((20, 20), (15, 15))
+        self.assertEqual(falkner_nav_direction(st_healed), "down")
 
     def test_violet_gym_s_curve_and_falkner_challenge(self):
         # Entrance at (4, 15) -> walk up

@@ -30,6 +30,7 @@ MAP_ROUTE_30 = (26, 1)
 MAP_ROUTE_31 = (26, 2)
 MAP_VIOLET_GATE = (26, 11)
 MAP_VIOLET_CITY = (10, 5)
+MAP_VIOLET_POKECENTER = (10, 10)
 MAP_VIOLET_GYM = (10, 7)
 
 
@@ -78,6 +79,9 @@ class FalknerNav:
         # 5. Violet City to Violet Gym entrance at (18, 18)
         wV, hV, cellsV, _ = rom.grid("VioletCity")
         self.dist_violet = _bfs_grid(cellsV, wV, hV, [(18, 18)])
+
+        # 6. Violet City to Violet Poké Center doorway at (31, 26)
+        self.dist_violet_pc = _bfs_grid(cellsV, wV, hV, [(31, 26)])
 
     def step_on_field(self, dist_field: dict[tuple[int, int], int], x: int, y: int) -> str | None:
         """Choose adjacent walkable tile with strictly lowest BFS distance."""
@@ -220,8 +224,41 @@ def falkner_nav_direction(state) -> str | None:
             return "left"  # Step through west doorway into Violet City
         return "left"
 
-    # 8. In Violet City (10, 5) -> head to Violet Gym at (18, 18)
+    # 8. Inside Violet Poké Center (10, 10) -> heal at Nurse Joy counter
+    if map_id == MAP_VIOLET_POKECENTER:
+        party_hp = tuple(getattr(state, "party_hp", ()) or ())
+        needs_heal = any(hp[0] < hp[1] for hp in party_hp)
+        if needs_heal:
+            if x == 3 and y == 3:
+                return "a" if facing == "up" else "up"
+            if x < 3:
+                return "right"
+            if x > 3:
+                return "left"
+            if y > 3:
+                return "up"
+            return "up"
+        else:
+            if y == 7 and x in (3, 4):
+                return "down"  # Exit through doorway mat
+            if x < 3:
+                return "right"
+            if x > 4:
+                return "left"
+            return "down"
+
+    # 9. In Violet City (10, 5) -> visit Poké Center if damaged, then head to Violet Gym at (18, 18)
     if map_id == MAP_VIOLET_CITY:
+        party_hp = tuple(getattr(state, "party_hp", ()) or ())
+        needs_heal = any(hp[0] < hp[1] for hp in party_hp)
+        if needs_heal:
+            if x == 31 and y == 26:
+                return "up"  # Enter Violet Poké Center doorway at (31, 25)
+            step = nav.step_on_field(nav.dist_violet_pc, x, y)
+            if step is not None:
+                return step
+
+        # Proceed to Violet Gym
         if x == 18 and y == 18:
             return "up"  # Enter Violet Gym doorway
         step = nav.step_on_field(nav.dist_violet, x, y)
@@ -235,7 +272,7 @@ def falkner_nav_direction(state) -> str | None:
             return "up"
         return "down"
 
-    # 9. Inside Violet Gym (10, 7) -> navigate S-curve bridge and challenge Falkner
+    # 10. Inside Violet Gym (10, 7) -> navigate S-curve bridge and challenge Falkner
     if map_id == MAP_VIOLET_GYM:
         return violet_gym_step(x, y, facing)
 
