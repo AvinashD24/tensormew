@@ -178,7 +178,16 @@ class Macros:
         return MacroResult(True, f"switched to party slot {slot}", frames=frames)
 
     def _party_cursor(self) -> int:
-        return self.machine.read(0, 0xcfa9, 1)[0]
+        try:
+            val = self.machine.read(1, 0xD0D8, 1)[0]
+            if val != 0:
+                return val
+        except Exception:
+            pass
+        try:
+            return self.machine.read(0, 0xCFA9, 1)[0]
+        except Exception:
+            return 0
 
     def _move_party_cursor(self, slot: int) -> int:
         """Walk the party-menu cursor to `slot` (1-indexed) using up/down, checking the cursor each press."""
@@ -238,11 +247,11 @@ class Macros:
         frames += 22
         # If the party menu is not open yet (faint message / 'Use next POKéMON?'), advance to it
         if self._party_cursor() == 0:
-            for _ in range(2):
+            for _ in range(3):
                 self.machine.press("a", frames=6)
                 self.machine.tick(16, render=False)
                 frames += 22
-            for _ in range(4):
+            for _ in range(6):
                 self.machine.tick(16, render=False)
                 frames += 16
                 if self._party_cursor() > 0:
@@ -260,9 +269,20 @@ class Macros:
         order = [slot] + [s for s in with_hp if s != slot] + [s for s in rest if s != slot]
 
         for attempt, cand in enumerate(order):
-            if self._party_cursor() == 0:
-                break  # menu closed: the switch went through or the battle moved on
-            frames += self._move_party_cursor(cand)
+            cur_c = self._party_cursor()
+            if cur_c > 0:
+                frames += self._move_party_cursor(cand)
+            else:
+                # Blind fallback: reset to top with UP x5, then step DOWN (cand - 1) times
+                for _ in range(5):
+                    self.machine.press("up", frames=6)
+                    self.machine.tick(16, render=False)
+                    frames += 22
+                for _ in range(cand - 1):
+                    self.machine.press("down", frames=6)
+                    self.machine.tick(16, render=False)
+                    frames += 22
+
             self.machine.press("a", frames=8)   # select the Pokémon
             self.machine.tick(32, render=False)
             self.machine.press("a", frames=8)   # SWITCH (top option); harmless if no submenu opened
