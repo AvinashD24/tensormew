@@ -37,6 +37,7 @@ CURRICULUM_STATES = [
     "agent_map_26_3",
     "agent_map_26_1",
     "mystery_egg_received",
+    "post_rival_cherrygrove",
 ]
 
 _DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
@@ -329,11 +330,11 @@ def train(
     lr: float = 3e-4,
     clip_ratio: float = 0.2,
     entropy_coef: float = 0.02,
-    start_state: str = "new_bark_outside",
+    start_state: str = "route29_entry",
     save_path: str = "logs/deep_policy.pt",
     resume: bool = True,
     use_gru: bool = True,
-    curriculum: bool = False,
+    curriculum: bool = True,
     states: list[str] | None = None,
     push_weights: bool = True,
     max_steps: int | None = None,
@@ -574,9 +575,9 @@ def main(argv=None):
     parser.add_argument("--envs", type=int, default=default_envs)
     parser.add_argument("--batch-size", type=int, default=default_batch_size)
     parser.add_argument("--lr", type=float, default=3e-4)
-    parser.add_argument("--state", default="new_bark_outside")
+    parser.add_argument("--state", default="route29_entry")
     parser.add_argument("--states", default="", help="comma-separated list of curriculum states")
-    parser.add_argument("--curriculum", action="store_true", default=False, help="use multi-state curriculum resets")
+    parser.add_argument("--curriculum", action="store_true", default=True, help="use multi-state curriculum resets")
     parser.add_argument("--no-curriculum", action="store_false", dest="curriculum")
     parser.add_argument("--recurrent", action="store_true", default=True, help="use recurrent GRU temporal memory (13.2M model)")
     parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")

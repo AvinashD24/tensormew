@@ -374,9 +374,19 @@ def main(argv=None) -> int:
                 elif state.map_id == (26, 3) and has_egg and beat_rival and not gave_egg and state.x == 39 and state.y in (6, 7):
                     # Defeated rival, standing at Cherrygrove east gate -> step right into Route 29!
                     action_idx = 3
-                elif state.map_id == (24, 3) and has_egg and beat_rival and not gave_egg and state.x == 59 and state.y in (8, 9):
-                    # Route 29 east gate into New Bark Town -> step right!
-                    action_idx = 3
+                elif state.map_id == (24, 3) and has_egg and beat_rival and not gave_egg:
+                    # Route 29 Eastbound to Elm: stay on upper northern highway to avoid one-way ledge traps
+                    if state.x == 59 and state.y in (8, 9):
+                        action_idx = 3
+                    elif state.y >= 7 and state.x <= 38:
+                        dir_probs[1] = 0.0  # Mask 'down' to strictly prevent falling off ledges
+                        if dir_probs[3] > 0:
+                            dir_probs[3] *= 3.0  # Boost 'right'
+                        if dir_probs[0] > 0:
+                            dir_probs[0] *= 2.0  # Boost 'up'
+                        total_p = dir_probs.sum()
+                        if total_p > 0:
+                            dir_probs /= total_p
                 elif state.map_id == (24, 4) and has_egg and beat_rival and not gave_egg and state.x == 6 and state.y == 4:
                     # Outside Elm's Lab in New Bark Town with Mystery Egg -> enter lab!
                     action_idx = 0
