@@ -1,0 +1,170 @@
+[
+  {
+    "file": "01_start.png",
+    "name": "start",
+    "caption": "Start of the run: New Bark Town",
+    "step": 0,
+    "lead": "Cyndaquil Lv.5",
+    "map": "New Bark Town"
+  },
+  {
+    "file": "02_starter_party.png",
+    "name": "starter_party",
+    "caption": "First Pok\u00e9mon: the Cyndaquil starter (Lv 5)",
+    "step": 0,
+    "lead": "Cyndaquil Lv.5",
+    "map": "New Bark Town"
+  },
+  {
+    "file": "03_first_catch.png",
+    "name": "first_catch",
+    "caption": "Caught its first wild Pok\u00e9mon",
+    "step": 54,
+    "lead": "Cyndaquil Lv.5",
+    "map": "Route 29"
+  },
+  {
+    "file": "04_cherrygrove.png",
+    "name": "cherrygrove",
+    "caption": "Reached Cherrygrove City",
+    "step": 620,
+    "lead": "Cyndaquil Lv.5",
+    "map": "Cherrygrove City"
+  },
+  {
+    "file": "05_pokecenter.png",
+    "name": "pokecenter",
+    "caption": "Entered the Pok\u00e9mon Center",
+    "step": 639,
+    "lead": "Cyndaquil Lv.5",
+    "map": "Cherrygrove Pok\u00e9 Center"
+  },
+  {
+    "file": "06_healed.png",
+    "name": "healed",
+    "caption": "Healing the party at the Pok\u00e9mon Center",
+    "step": 646,
+    "lead": "Cyndaquil Lv.5",
+    "map": "Cherrygrove Pok\u00e9 Center"
+  },
+  {
+    "file": "07_mr_pokemon.png",
+    "name": "mr_pokemon",
+    "caption": "Entered Mr. Pok\u00e9mon's house",
+    "step": 794,
+    "lead": "Cyndaquil Lv.6",
+    "map": "Mr. Pok\u00e9mon's House"
+  },
+  {
+    "file": "08_got_egg.png",
+    "name": "got_egg",
+    "caption": "Got the Mystery Egg from Mr. Pok\u00e9mon",
+    "step": 796,
+    "lead": "Cyndaquil Lv.6",
+    "map": "Mr. Pok\u00e9mon's House"
+  },
+  {
+    "file": "09_rival_fight.png",
+    "name": "rival_fight",
+    "caption": "Rival battle begins in Cherrygrove",
+    "step": 929,
+    "lead": "Cyndaquil Lv.6",
+    "map": "Cherrygrove City"
+  },
+  {
+    "file": "10_rival_beaten.png",
+    "name": "rival_beaten",
+    "caption": "Rival defeated",
+    "step": 943,
+    "lead": "Cyndaquil Lv.6",
+    "map": "Cherrygrove City"
+  },
+  {
+    "file": "11_gave_egg.png",
+    "name": "gave_egg",
+    "caption": "Gave the Mystery Egg back to Professor Elm",
+    "step": 1088,
+    "lead": "Cyndaquil Lv.6",
+    "map": "Elm's Lab"
+  },
+  {
+    "file": "12_farming_xp.png",
+    "name": "farming_xp",
+    "caption": "Farming XP: wild battle in Route 30's tall grass (lead under Lv 15)",
+    "step": 1133,
+    "lead": "Cyndaquil Lv.6",
+    "map": "Route 29"
+  },
+  {
+    "file": "13_lead_lv12.png",
+    "name": "lead_lv12",
+    "caption": "Cyndaquil reaches Lv 12 (Ember)",
+    "step": 2011,
+    "lead": "Cyndaquil Lv.12",
+    "map": "Route 30"
+  },
+  {
+    "file": "14_lead_lv15.png",
+    "name": "lead_lv15",
+    "caption": "Cyndaquil reaches Lv 15: ready for Falkner",
+    "step": 2645,
+    "lead": "Quilava Lv.15",
+    "map": "Route 30"
+  },
+  {
+    "file": "15_talked_mom.png",
+    "name": "talked_mom",
+    "caption": "Talked to Mom",
+    "step": 2754,
+    "lead": "Quilava Lv.15",
+    "map": "Route 31"
+  },
+  {
+    "file": "16_violet_city.png",
+    "name": "violet_city",
+    "caption": "Reached Violet City",
+    "step": 2820,
+    "lead": "Quilava Lv.15",
+    "map": "Violet City"
+  },
+  {
+    "file": "17_gym_entered.png",
+    "name": "gym_entered",
+    "caption": "Walked into Violet Gym",
+    "step": 2868,
+    "lead": "Quilava Lv.15",
+    "map": "Violet Gym (Falkner)"
+  },
+  {
+    "file": "18_falkner_fight.png",
+    "name": "falkner_fight",
+    "caption": "Battle with Gym Leader Falkner begins",
+    "step": 2875,
+    "lead": "Quilava Lv.15",
+    "map": "Violet Gym (Falkner)"
+  },
+  {
+    "file": "19_falkner_beaten.png",
+    "name": "falkner_beaten",
+    "caption": "Falkner defeated: Zephyr Badge",
+    "step": 3147,
+    "lead": "Quilava Lv.16",
+    "map": "Violet Gym (Falkner)"
+  },
+  {
+    "file": "20_trainer_card.png",
+    "name": "trainer_card",
+    "caption": "Trainer Card after the win",
+    "step": 3152,
+    "lead": "Quilava Lv.16",
+    "map": "Violet Gym (Falkner)"
+  },
+  {
+    "file": "21_badge.png",
+    "name": "badge",
+    "caption": "Zephyr Badge earned",
+    "step": 3152,
+    "lead": "Quilava Lv.16",
+    "map": "Violet Gym (Falkner)"
+  }
+]
