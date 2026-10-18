@@ -52,8 +52,16 @@ class Policy:
         self.vb = float(data["vb"])
 
 
-def ppo_update(policy: Policy, batch: dict, *, clip: float = 0.2, epochs: int = 4, lr: float = 0.05) -> float:
-    """One clipped policy update. Returns mean absolute weight change."""
+def ppo_update(
+    policy: Policy,
+    batch: dict,
+    *,
+    clip: float = 0.2,
+    epochs: int = 4,
+    lr: float = 0.05,
+    entropy_coef: float = 0.01,
+) -> float:
+    """One clipped policy update plus an entropy bonus. Returns mean absolute weight change."""
     obs = np.stack(batch["obs"])
     actions = np.asarray(batch["actions"])
     old_logp = np.asarray(batch["logp"])
@@ -76,6 +84,12 @@ def ppo_update(policy: Policy, batch: dict, *, clip: float = 0.2, epochs: int = 
                 scale = lr * weight * ratio
                 policy.w += scale * np.outer(grad_logits, obs[i])
                 policy.b += scale * grad_logits
+            # Entropy H = -sum(p log p). dH/dlogits raises the less likely actions.
+            log_probs = np.log(probabilities + 1e-8)
+            entropy = -float(np.sum(probabilities * log_probs))
+            grad = -probabilities * (log_probs + entropy)
+            policy.w += lr * entropy_coef * np.outer(grad, obs[i])
+            policy.b += lr * entropy_coef * grad
             value = policy.value(obs[i])
             value_error = returns[i] - value
             policy.vw += lr * value_error * obs[i]

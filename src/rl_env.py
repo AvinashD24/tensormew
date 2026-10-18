@@ -13,9 +13,18 @@ ACTIONS = DIRS + ("a",)
 N_ACTIONS = len(ACTIONS)
 # 4 neighbor tiles, xy, badges, battle, dialogue, 4 visited-neighbor flags.
 OBS_DIM = 13
+_NEIGHBOR_DELTAS = ((0, -1), (0, 1), (-1, 0), (1, 0))
+UNVISITED_NEIGHBOR_BONUS = 0.2
 
 
-def progress_reward(before, after, moved: bool, seen_tiles: set, seen_maps: set) -> tuple[float, bool, bool]:
+def progress_reward(
+    before,
+    after,
+    moved: bool,
+    seen_tiles: set,
+    seen_maps: set,
+    unvisited_neighbor: bool = False,
+) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map."""
     reward = -0.01
     new_tile = False
@@ -27,6 +36,9 @@ def progress_reward(before, after, moved: bool, seen_tiles: set, seen_maps: set)
         seen_tiles.add(tile)
         reward += 1.0
         new_tile = True
+    # Chosen neighbor was unseen at the start of the step, including the discovery itself.
+    if unvisited_neighbor:
+        reward += UNVISITED_NEIGHBOR_BONUS
     map_id = (after.map_group, after.map_number)
     if map_id not in seen_maps:
         seen_maps.add(map_id)
@@ -46,7 +58,7 @@ def observe(state, visited: set[tuple[int, int, int, int]]) -> np.ndarray:
         1.0 if dialogue_open(state) else 0.0,
     ]
     neighbors = []
-    for direction, (dx, dy) in zip(DIRS, ((0, -1), (0, 1), (-1, 0), (1, 0))):
+    for direction, (dx, dy) in zip(DIRS, _NEIGHBOR_DELTAS):
         key = (state.map_group, state.map_number, state.x + dx, state.y + dy)
         neighbors.append(1.0 if key in visited else 0.0)
     return np.asarray(tiles + pos + flags + neighbors, dtype=np.float64)
@@ -114,8 +126,19 @@ class CrystalEnv:
         else:
             moved = self.stepper.step(ACTIONS[action]).moved
         after = self.reader.parse(self.machine.frame)
+        # Read the neighbor before progress_reward records the tile this step discovers.
+        unvisited_neighbor = False
+        if 0 <= action < 4:
+            dx, dy = _NEIGHBOR_DELTAS[action]
+            neighbor = (before.map_group, before.map_number, before.x + dx, before.y + dy)
+            unvisited_neighbor = neighbor not in self.seen_tiles
         reward, info.discovered_tile, info.discovered_map = progress_reward(
-            before, after, moved, self.seen_tiles, self.seen_maps
+            before,
+            after,
+            moved,
+            self.seen_tiles,
+            self.seen_maps,
+            unvisited_neighbor=unvisited_neighbor,
         )
         tile = (after.map_group, after.map_number, after.x, after.y)
         self.visited.add(tile)
