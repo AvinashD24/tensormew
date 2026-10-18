@@ -168,20 +168,27 @@ def main(argv=None) -> int:
                 p_cur = state.party_hp[0][0] if state.party_hp else 0
                 p_max = state.party_hp[0][1] if state.party_hp else 1
                 res = tactical_battle_step(state, macros)
-                reason = getattr(res, "reason", "acted")
+                reason = getattr(res, "message", getattr(res, "reason", "acted"))
                 print(
                     f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
                     f"lead_hp={p_cur}/{p_max}, "
                     f"enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}",
                     flush=True,
                 )
-                if not reason.startswith("switched fainted"):
+                if not reason.startswith("switched"):
                     for _ in range(8):
                         emu.tick(20, render=render_screen)
                         emu.press("b", frames=6)
                 else:
                     for _ in range(4):
                         emu.tick(20, render=render_screen)
+                try:
+                    from PIL import Image
+                    scr = emu._pb.screen.ndarray[:, :, :3]
+                    img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
+                    img.save("logs/live_snapshot.png")
+                except Exception:
+                    pass
                 step_idx += 1
                 continue
 
