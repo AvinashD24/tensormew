@@ -341,7 +341,7 @@ def main(argv=None) -> int:
                 blocked_count = 0
 
             step_idx += 1
-            if step_idx % 25 == 0:
+            if step_idx == 1 or step_idx % 25 == 0:
                 print(
                     f"[Step {step_idx:4d}] Map: {after_state.map_group},{after_state.map_number} | "
                     f"Pos: ({after_state.x:2d}, {after_state.y:2d}) | "
@@ -349,6 +349,13 @@ def main(argv=None) -> int:
                     f"Action: {direction}",
                     flush=True,
                 )
+                try:
+                    from PIL import Image
+                    scr = emu._pb.screen.ndarray[:, :, :3]
+                    img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
+                    img.save("logs/live_snapshot.png")
+                except Exception:
+                    pass
 
         return 0
     except KeyboardInterrupt:
