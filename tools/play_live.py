@@ -18,6 +18,7 @@ from src.emulator import Emulator
 from src.llm_supervisor import Supervisor
 from src.macros import Macros
 from src.return_nav import egg_return_direction
+from src.falkner_nav import falkner_nav_direction
 from src.unstick import Unsticker
 from src.mover import Mover, walkable
 from src.ppo import load_policy
@@ -467,24 +468,9 @@ def main(argv=None) -> int:
                 elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y > 3 and walkable(tiles.get("up", 0xFF), "up"):
                     # Straight up column 5 to Elm
                     action_idx = 0
-                elif state.map_id == (24, 5) and gave_egg and state.y == 11 and state.x in (4, 5):
-                    # Standing on exit carpet in Elm's Lab after delivering egg -> step out!
-                    action_idx = 1
-                elif state.map_id == (26, 2) and state.x == 4 and state.y in (6, 7):
-                    # Route 31 west entrance doorway into Violet Gate -> step left!
-                    action_idx = 2
-                elif state.map_id == (26, 11) and state.x == 0 and state.y in (4, 5):
-                    # Route 31 Violet Gate west exit doorway into Violet City -> step left!
-                    action_idx = 2
-                elif state.map_id == (10, 5) and not beat_falkner and state.x == 18 and state.y == 18:
-                    # Outside Violet Gym in Violet City facing entrance -> step up!
-                    action_idx = 0
-                elif state.map_id == (10, 7) and not beat_falkner and state.x in (4, 5) and state.y in (2, 3):
-                    if state.facing == "up":
-                        # Standing in front of Leader Falkner facing up -> challenge Falkner!
-                        action_idx = 4
-                    else:
-                        action_idx = 0
+                elif gave_egg and not beat_falkner and falkner_nav_direction(state) is not None:
+                    # Post-egg Falkner quest: follow deterministic shortest path from Elm's Lab to Falkner's defeat
+                    action_idx = ACTIONS.index(falkner_nav_direction(state))
                 elif state.map_id in ((26, 4), (26, 6), (26, 7), (26, 8), (26, 9), (24, 6), (24, 7), (24, 8), (24, 9), (10, 6), (10, 8), (10, 9), (10, 11)) and state.y == 7 and state.x in (2, 3, 4):
                     # Incidental building exit mat -> step out!
                     action_idx = 1
