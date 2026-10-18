@@ -72,6 +72,11 @@ class Emulator:
             speed = 0 if headless else int(os.environ.get("PYBOY_SPEED", "10"))
         self._pb.set_emulation_speed(speed)
         self._frame = 0
+        # Watch mode: draw every frame in a window, even inside macros that tick with render=False, so a
+        # viewer sees menus, battles and walking instead of a window that freezes and jumps. `frame_hook`
+        # (if set) runs after each drawn frame, e.g. to record video.
+        self.always_render = False
+        self.frame_hook = None
         self._listeners: list[InputListener] = []
         self._rtc_lock = rtc_lock
         self._closed = False
@@ -98,11 +103,13 @@ class Emulator:
 
     def tick(self, n: int = 1, render: bool = True) -> bool:
         n = max(1, n)
-        if not self._headless and render:
+        if not self._headless and (render or self.always_render):
             ok = True
             for _ in range(n):
                 ok = self._pb.tick(1, True)
                 self._frame += 1
+                if self.frame_hook is not None:
+                    self.frame_hook()
             return bool(ok)
         ok = self._pb.tick(n, render)
         self._frame += n

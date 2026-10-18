@@ -58,9 +58,12 @@ def equip_balls(emu: Emulator, count: int = 10) -> None:
         pass
 
 
-def _write_gif(frames, path) -> None:
+def _write_gif(frames, path, durations=None) -> None:
     if frames:
-        frames[0].save(path, save_all=True, append_images=frames[1:], duration=90, loop=0)
+        frames[0].save(
+            path, save_all=True, append_images=frames[1:], loop=0,
+            duration=list(durations) if durations else 90,
+        )
 
 
 def main(argv=None) -> int:
@@ -73,6 +76,17 @@ def main(argv=None) -> int:
         help="save a run.gif (and a .state per story milestone) here; needs a window, headless frames are blank",
     )
     parser.add_argument("--record-every", type=int, default=6, help="steps between recorded GIF frames")
+    parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="draw every frame and pause on battle text so viewers can follow (use with --speed 2)",
+    )
+    parser.add_argument(
+        "--record-frames-every",
+        type=int,
+        default=0,
+        help="with --watch and --record-dir: also record a smooth GIF frame every N game frames in Violet City/the gym",
+    )
     parser.add_argument(
         "--post-egg-policy",
         default=None,
@@ -204,12 +218,31 @@ def main(argv=None) -> int:
         last_status_write = 0.0
         record_dir = None
         rec_frames: list = []
+        rec_durations: list = []
         last_rec_step = -args.record_every
+        rec_ctl = {"detail": False, "n": 0}   # detail: smooth capture while in Violet City / the gym
+        if args.watch:
+            emu.always_render = True
         if args.record_dir:
             from pathlib import Path
             record_dir = Path(args.record_dir)
             record_dir.mkdir(parents=True, exist_ok=True)
             print(f"Recording to {record_dir} (GIF frame every {args.record_every} steps, state saved per milestone)")
+            if args.watch and args.record_frames_every > 0:
+                frame_ms = max(1, round(args.record_frames_every * 1000 / 60))
+
+                def _record_game_frame():
+                    if not rec_ctl["detail"]:
+                        return
+                    rec_ctl["n"] += 1
+                    if rec_ctl["n"] % args.record_frames_every == 0:
+                        rec_frames.append(emu._pb.screen.image.convert("RGB").quantize(64))
+                        rec_durations.append(frame_ms)
+                        if len(rec_frames) % 500 == 0:
+                            _write_gif(rec_frames, record_dir / "run.gif", rec_durations)
+
+                emu.frame_hook = _record_game_frame
+                print(f"Smooth recording: a frame every {args.record_frames_every} game frames in Violet City / the gym")
         seed_seen_events(reader.parse(emu.frame), seen_events)
         while True:
             # Check if PyBoy window was closed
@@ -218,11 +251,13 @@ def main(argv=None) -> int:
                 break
 
             state = reader.parse(emu.frame)
-            if record_dir is not None and step_idx - last_rec_step >= args.record_every:
+            rec_ctl["detail"] = state.map_group == 10   # Violet City, gym and Pokémon Center
+            if record_dir is not None and not (emu.frame_hook and rec_ctl["detail"]) and step_idx - last_rec_step >= args.record_every:
                 last_rec_step = step_idx
                 rec_frames.append(emu._pb.screen.image.convert("RGB").quantize(64))
+                rec_durations.append(90)
                 if len(rec_frames) % 100 == 0:
-                    _write_gif(rec_frames, record_dir / "run.gif")
+                    _write_gif(rec_frames, record_dir / "run.gif", rec_durations)
             if time.time() - last_status_write > 3.0:
                 write_status(args.tag, state, story_snapshot(state, milestones), step_idx, cumulative_reward)
                 last_status_write = time.time()
@@ -232,7 +267,7 @@ def main(argv=None) -> int:
                 if record_dir is not None:
                     emu.save_state(record_dir / f"{_key}.state")
                     if _key == "falkner_beaten":
-                        _write_gif(rec_frames, record_dir / "run.gif")
+                        _write_gif(rec_frames, record_dir / "run.gif", rec_durations)
                         print(f"Falkner beaten: recording saved to {record_dir / 'run.gif'}", flush=True)
             tile = (state.map_group, state.map_number, state.x, state.y)
             visited.add(tile)
@@ -274,13 +309,15 @@ def main(argv=None) -> int:
                     f"enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}",
                     flush=True,
                 )
+                # In --watch mode give each text box time to be read before the next B press skips it.
+                text_pause = 70 if args.watch else 20
                 if not reason.startswith("switched"):
                     for _ in range(8):
-                        emu.tick(20, render=render_screen)
+                        emu.tick(text_pause, render=render_screen)
                         emu.press("b", frames=6)
                 else:
                     for _ in range(4):
-                        emu.tick(20, render=render_screen)
+                        emu.tick(text_pause, render=render_screen)
                 try:
                     from PIL import Image
                     scr = emu._pb.screen.ndarray[:, :, :3]

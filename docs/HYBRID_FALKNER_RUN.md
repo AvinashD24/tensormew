@@ -16,12 +16,26 @@ Output goes to `recordings/my_run/`:
 | `run.gif` | the run, one frame every 6 steps (`--record-every`), rewritten every 100 frames and again when Falkner is beaten |
 | `<milestone>.state` | an emulator save state per story milestone (`got_egg`, `gave_egg`, `gym_entered`, `falkner_beaten`, ...). Resume from one with `--state recordings/my_run/gave_egg.state` |
 
-`recordings/` is untracked and `*.gif`, `*.state` are in `.gitignore`. A sample recording of a full run that beats Falkner is
-checked in at `docs/recordings/falkner_beaten_example.gif` (it is from an older version of the logic and shows a loop plus
-two blackouts before the win).
+Recordings can be committed (`*.gif` is no longer ignored, and `recordings/**/*.state` is un-ignored). Samples:
+
+- `docs/recordings/falkner_beaten_example.gif`: an older version of the logic, with a loop and two blackouts before the win.
+- `recordings/falkner_showcase/`: the paced showcase run described below.
 
 Recording needs a window (no `--headless`): headless runs render blank frames, so the GIF would be blank.
 It reads PyBoy's own frame buffer, so the window can sit behind others.
+
+## Showcase mode (paced for viewers)
+
+```bash
+python -m tools.play_live --state recordings/falkner_run_4/violet.state \
+  --policy models/deep_policy_baseline_351cb55.pt --post-egg-policy models/deep_policy.pt \
+  --speed 2 --watch --record-dir recordings/falkner_showcase --record-frames-every 6
+```
+
+`--speed 2` is twice game speed. `--watch` draws every frame (the macros normally advance the emulator without drawing, which
+freezes the window during menus and battles) and gives battle text 70 frames before the next skip press.
+`--record-frames-every 6` adds a smooth ~10 fps recording while the run is in Violet City / the gym; elsewhere it records one frame
+every `--record-every` steps.
 
 ## What is RL and what is hardcoded
 

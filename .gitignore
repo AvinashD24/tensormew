@@ -9,6 +9,6 @@ __pycache__/
 runs/
 logs/
 states/_autosave/
-*.gif
-*.mp4
+# Run recordings (run.gif and the per-milestone .state files) are meant to be committed and shared.
+!recordings/**/*.state
 .planning/collision_constants.asm
