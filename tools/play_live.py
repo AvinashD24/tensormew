@@ -335,6 +335,15 @@ def main(argv=None) -> int:
                 elif state.map_id == (26, 10) and has_egg and not gave_egg and state.y == 7 and state.x in (2, 3):
                     # Standing on exit carpet in Mr. Pokémon's House with Mystery Egg -> step out!
                     action_idx = 1
+                elif state.map_id == (24, 4) and has_egg and not gave_egg and state.x == 6 and state.y == 4:
+                    # Outside Elm's Lab in New Bark Town with Mystery Egg -> enter lab!
+                    action_idx = 0
+                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x in (4, 5) and state.y == 3:
+                    if state.facing == "up":
+                        # Standing at Professor Elm's desk facing up with Mystery Egg -> deliver it!
+                        action_idx = 4
+                    else:
+                        action_idx = 0
                 elif state.map_id == (24, 5) and gave_egg and state.y == 11 and state.x in (4, 5):
                     # Standing on exit carpet in Elm's Lab after delivering egg -> step out!
                     action_idx = 1

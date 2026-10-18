@@ -120,10 +120,18 @@ def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0)):
     max_hp = party_hp[0][1] if party_hp else 1
     is_low_hp = max_hp > 0 and (cur_hp / max_hp) <= 0.30
 
+    has_event = getattr(state, "has_event", None)
+    has_egg = callable(has_event) and has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+    gave_egg = callable(has_event) and has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
+
     # Wild battle branching
     if mode == 1:
         # Flee if active Pokémon is at risk of fainting
         if is_low_hp:
+            return macros.run_away()
+
+        # Urgent Quest Delivery: When returning Mystery Egg to Elm, avoid wild battle distractions
+        if has_egg and not gave_egg:
             return macros.run_away()
 
         enemy_spec = getattr(state, "enemy_species", 0)

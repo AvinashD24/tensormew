@@ -32,9 +32,10 @@ from src.step import TileStepper
 
 CURRICULUM_STATES = [
     "route29_entry",
-    "agent_map_24_3",
     "agent_map_24_7",
-    "agent_map_24_6",
+    "agent_map_26_3",
+    "agent_map_26_1",
+    "mystery_egg_received",
 ]
 
 _DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
