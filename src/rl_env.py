@@ -395,9 +395,15 @@ def navigation_potential(state) -> float:
                 return 315.0 + max(0.0, 8.0 - 0.4 * dist_pc)
             dist_gym = abs(x - 18.0) + abs(y - 17.0)
             return 315.0 + max(0.0, 22.0 - 0.5 * dist_gym)
-        elif map_id == (10, 7):  # Violet Gym -> Falkner (x in 4..5, y -> 2)
-            dist_falkner = abs(x - 4.5) + abs(y - 2.5)
-            return 340.0 + max(0.0, 20.0 - 1.2 * dist_falkner)
+        elif map_id == (10, 7):  # Violet Gym -> Falkner at (5, 1)
+            # Valid approach tiles: (5, 2) from south, (4, 1) from west, (6, 1) from east
+            dist_falkner = min(
+                abs(x - 5.0) + abs(y - 2.0),
+                abs(x - 4.0) + abs(y - 1.0),
+                abs(x - 6.0) + abs(y - 1.0),
+            )
+            wall_pen = 4.0 if y <= 0 else 0.0
+            return 340.0 + max(0.0, 20.0 - 1.2 * dist_falkner) - wall_pen
 
     return 0.0
 

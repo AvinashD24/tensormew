@@ -569,6 +569,14 @@ def main(argv=None) -> int:
                 elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y > 3 and walkable(tiles.get("up", 0xFF), "up"):
                     # Straight up column 5 to Elm
                     action_idx = 0
+                elif state.map_id == (10, 7) and gave_egg and not beat_falkner and (state.x, state.y) in ((5, 2), (4, 1), (6, 1)):
+                    # Standing directly in front of or beside Gym Leader Falkner at (5, 1) -> face him and challenge!
+                    if (state.x, state.y) == (5, 2):
+                        action_idx = 4 if state.facing == "up" else 0
+                    elif (state.x, state.y) == (4, 1):
+                        action_idx = 4 if state.facing == "right" else 3
+                    elif (state.x, state.y) == (6, 1):
+                        action_idx = 4 if state.facing == "left" else 2
                 elif gave_egg and not beat_falkner and prep_direction(state) is not None:
                     # Lead too weak for Falkner: farm wild battles on Route 30, heal at Cherrygrove when hurt
                     action_idx = ACTIONS.index(prep_direction(state))

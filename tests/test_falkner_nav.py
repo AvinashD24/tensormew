@@ -184,11 +184,14 @@ class TestFalknerNav(unittest.TestCase):
         # At (4, 10) -> turn right
         self.assertEqual(violet_gym_step(4, 10, "up"), "right")
 
-        # Facing Falkner at (5, 3) facing up -> press A to challenge!
-        self.assertEqual(violet_gym_step(5, 3, "up"), "a")
+        # Facing Falkner at (5, 2) facing up -> press A to challenge!
+        self.assertEqual(violet_gym_step(5, 2, "up"), "a")
 
-        # In front of Falkner facing right -> turn up
-        self.assertEqual(violet_gym_step(5, 3, "right"), "up")
+        # In front of Falkner at (5, 2) facing right -> turn up
+        self.assertEqual(violet_gym_step(5, 2, "right"), "up")
+
+        # Beside Falkner at (4, 1) facing right -> press A to challenge!
+        self.assertEqual(violet_gym_step(4, 1, "right"), "a")
 
 
 if __name__ == "__main__":

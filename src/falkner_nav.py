@@ -109,14 +109,63 @@ def _get_falkner_nav() -> FalknerNav:
 
 
 def violet_gym_step(x: int, y: int, facing: str) -> str:
-    """Deterministic navigation along the elevated S-curve bridge in Violet Gym (10, 7)."""
-    # Standing in front of Leader Falkner at (4..5, 2..3)
-    if x in (4, 5) and y in (2, 3):
-        if facing == "up":
-            return "a"
+    """Deterministic navigation along the elevated S-curve bridge in Violet Gym (10, 7).
+
+    Leader Falkner stands at (5, 1).
+    Valid interaction tiles:
+    - (5, 2) facing 'up'
+    - (4, 1) facing 'right'
+    - (6, 1) facing 'left'
+    """
+    # 1. Directly adjacent to Leader Falkner at (5, 1) -> face him and press A!
+    if (x, y) == (5, 2):
+        return "a" if facing == "up" else "up"
+    if (x, y) == (4, 1):
+        return "a" if facing == "right" else "right"
+    if (x, y) == (6, 1):
+        return "a" if facing == "left" else "left"
+
+    # 2. Top wall boundary protection
+    if y <= 0:
+        return "down"
+
+    # 3. Top platform row (y=1): move horizontally toward Falkner's columns (4..6)
+    if y == 1:
+        if x < 4:
+            return "right"
+        if x > 6:
+            return "left"
+        return "down"
+
+    # 4. Approach row (y=2): center onto column 5 directly in front of Falkner
+    if y == 2:
+        if x < 5:
+            return "right"
+        if x > 5:
+            return "left"
         return "up"
 
-    # Bottom straight section (entrance y=15 up to y=11)
+    # 5. Upper center straight (y=3..6): center onto column 5 and move up
+    if y in (3, 4, 5, 6):
+        if x < 5:
+            return "right"
+        if x > 5:
+            return "left"
+        return "up"
+
+    # 6. West crossover (y=7..8): move west across to the left-hand bridge
+    if y in (7, 8):
+        if x > 2:
+            return "left"
+        return "up"
+
+    # 7. East turn (y=9..10): move east onto the right-hand bridge
+    if y in (9, 10):
+        if x < 7:
+            return "right"
+        return "up"
+
+    # 8. Bottom straight section (entrance y=15 up to y=11)
     if y > 10:
         if x < 4:
             return "right"
@@ -124,27 +173,8 @@ def violet_gym_step(x: int, y: int, facing: str) -> str:
             return "left"
         return "up"
 
-    # East turn (y=9..10): move east onto the right-hand bridge
-    if y in (9, 10):
-        if x < 7:
-            return "right"
-        return "up"
-
-    # West crossover (y=7..8): move west across to the left-hand bridge
-    if y in (7, 8):
-        if x > 2:
-            return "left"
-        return "up"
-
-    # Return to center platform (y=4..6): move right back to center column 4..5
-    if y in (4, 5, 6):
-        if x < 4:
-            return "right"
-        if x > 5:
-            return "left"
-        return "up"
-
     return "up"
+
 
 
 def falkner_nav_direction(state) -> str | None:
