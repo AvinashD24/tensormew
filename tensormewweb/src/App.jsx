@@ -6,6 +6,7 @@ import PokedexTab from "./components/PokedexTab";
 import BlogTab from "./components/BlogTab";
 import FoundersTab from "./components/FoundersTab";
 import { soundEffects } from "./utils/soundEffects";
+import { Analytics } from "@vercel/analytics/react";
 
 export default function App() {
   const [activeTab, setActiveTab] = useState("landing");
@@ -91,6 +92,9 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      {/* Vercel Web Analytics */}
+      <Analytics />
     </div>
   );
 }
