@@ -2324,8 +2324,184 @@ body {
 }
 
 /* ========================================================
-   RESPONSIVE DESIGN
+   RESPONSIVE DESIGN SYSTEM
    ======================================================== */
+
+/* Mobile Nav Elements & Header Actions */
+.header-actions-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.retro-mobile-toggle {
+  display: none;
+  align-items: center;
+  gap: 6px;
+  background: #ffffff;
+  border: 2px solid #000000;
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  font-weight: bold;
+  cursor: pointer;
+  color: #000000;
+  transition: all 0.15s ease;
+  user-select: none;
+}
+
+.retro-mobile-toggle:hover,
+.retro-mobile-toggle:active {
+  background: #000000;
+  color: #ffffff;
+}
+
+.mobile-toggle-label {
+  letter-spacing: 0.5px;
+}
+
+/* Mobile Dropdown Drawer */
+.mobile-menu-overlay {
+  position: fixed;
+  top: 61px;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(5px);
+  z-index: 999;
+  padding: 16px;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  animation: fadeIn 0.15s ease-out;
+}
+
+.mobile-menu-dropdown {
+  background: #ffffff;
+  border: 3px solid #000000;
+  box-shadow: 4px 4px 0px rgba(0, 0, 0, 0.25);
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border-radius: 6px;
+  width: 100%;
+  max-width: 400px;
+}
+
+.mobile-menu-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 2px solid #000000;
+  padding-bottom: 8px;
+}
+
+.mobile-menu-title {
+  font-family: var(--font-pixel);
+  font-size: 10px;
+  color: #000000;
+  font-weight: bold;
+}
+
+.mobile-menu-badge {
+  font-family: var(--font-pixel);
+  font-size: 8px;
+  background: #f0f0ea;
+  border: 1px solid #000000;
+  padding: 2px 6px;
+  border-radius: 3px;
+  color: #000000;
+}
+
+.mobile-nav-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.mobile-nav-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  background: #fdfdfc;
+  border: 2px solid #000000;
+  border-radius: 4px;
+  font-family: var(--font-pixel);
+  font-size: 11px;
+  color: #000000;
+  cursor: pointer;
+  transition: all 0.12s ease;
+  text-align: left;
+  width: 100%;
+}
+
+.mobile-nav-item:hover {
+  background: #f2f2ec;
+}
+
+.mobile-nav-item.active {
+  background: #000000;
+  color: #ffffff;
+  box-shadow: 2px 2px 0px rgba(0, 0, 0, 0.2);
+}
+
+.mobile-nav-item-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.mobile-tab-num {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.mobile-nav-item.active .mobile-tab-num {
+  color: #aaaaaa;
+}
+
+.mobile-active-cursor {
+  font-size: 8px;
+  color: #ffffff;
+  letter-spacing: 0.5px;
+}
+
+.mobile-cursor-idle {
+  font-size: 9px;
+  color: var(--text-muted);
+}
+
+.mobile-menu-footer {
+  border-top: 2px solid #000000;
+  padding-top: 10px;
+}
+
+.mobile-menu-sound-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: #f8f8f4;
+  border: 1px solid #000000;
+  border-radius: 4px;
+  font-family: var(--font-pixel);
+  font-size: 9px;
+  cursor: pointer;
+  color: #000000;
+  transition: background 0.15s ease;
+}
+
+.mobile-menu-sound-btn:hover {
+  background: #eeeeea;
+}
+
+/* Tablet & Smaller Desktop Screens */
 @media (max-width: 1024px) {
   .blog-main-layout {
     grid-template-columns: 1fr;
@@ -2348,37 +2524,437 @@ body {
   }
 }
 
+/* Mobile Navigation Breakpoint */
+@media (max-width: 860px) {
+  .desktop-nav {
+    display: none !important;
+  }
+
+  .retro-mobile-toggle {
+    display: inline-flex !important;
+  }
+
+  .header-inner {
+    padding: 10px 16px;
+  }
+
+  .brand-title {
+    font-size: 16px;
+  }
+}
+
+/* Smartphone Layouts */
 @media (max-width: 768px) {
   .hidden-mobile {
     display: none !important;
   }
 
-  .hero-title {
-    font-size: 26px;
+  /* Main Container */
+  .main-content {
+    padding: 16px 12px 48px;
   }
 
+  /* Landing Tab Hero Spacing */
+  .landing-view {
+    gap: 32px;
+  }
+
+  .hero-section {
+    padding: 10px 0 12px;
+  }
+
+  .hero-brand-banner {
+    margin: 24px 0 20px 0;
+    padding: 10px 20px;
+    border-width: 3px;
+    box-shadow:
+      0 0 0 2px var(--bg-dark),
+      0 0 0 5px #000000,
+      4px 4px 0px rgba(0, 0, 0, 0.15);
+    max-width: 96%;
+  }
+
+  .hero-brand-title {
+    font-size: clamp(24px, 7.8vw, 36px);
+    letter-spacing: 2px;
+  }
+
+  .hero-title {
+    font-size: clamp(13px, 4vw, 18px);
+    margin: 0 0 20px 0;
+    line-height: 1.45;
+    padding: 0 4px;
+  }
+
+  .hero-synopsis-box {
+    padding: 16px 14px;
+    margin-bottom: 20px;
+  }
+
+  .hero-synopsis-text {
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  /* Section Headers */
+  .section-header-row {
+    flex-direction: row;
+    flex-wrap: wrap;
+    gap: 8px 12px;
+    align-items: center;
+    padding-bottom: 10px;
+  }
+
+  .section-title-wrap {
+    gap: 8px;
+  }
+
+  .section-heading {
+    font-size: clamp(12px, 3.8vw, 15px);
+    line-height: 1.35;
+  }
+
+  .record-badge {
+    font-size: 8px;
+    padding: 4px 8px;
+    white-space: nowrap;
+  }
+
+  /* Showcase Section */
+  .showcase-card {
+    grid-template-columns: 1fr;
+    padding: 12px;
+    gap: 16px;
+  }
+
+  .showcase-info-title {
+    font-size: 13px;
+    line-height: 1.35;
+  }
+
+  .showcase-info-desc {
+    font-size: 12px;
+  }
+
+  .showcase-specs-list {
+    padding: 10px 12px;
+    font-size: 11px;
+  }
+
+  /* Screenshots Section */
   .screenshots-grid {
     grid-template-columns: 1fr;
+    gap: 14px;
+  }
+
+  .screenshot-card {
+    padding: 12px;
+  }
+
+  .card-desc-snippet {
+    font-size: 11px;
   }
 
   .metrics-grid {
     grid-template-columns: 1fr;
   }
 
+  /* Modals */
+  .retro-modal-backdrop {
+    padding: 12px 10px;
+  }
+
+  .retro-modal-content {
+    padding: 14px 12px;
+    max-height: 92vh;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .modal-header {
+    padding-bottom: 10px;
+    margin-bottom: 14px;
+  }
+
+  .modal-title-wrap {
+    flex-wrap: wrap;
+    gap: 6px 10px;
+  }
+
+  .modal-title {
+    font-size: 13px;
+  }
+
+  .category-text {
+    font-size: 10px;
+  }
+
   .modal-body {
     grid-template-columns: 1fr;
+    gap: 14px;
+    padding-bottom: 16px;
   }
 
   .dex-modal-body {
     grid-template-columns: 1fr;
+    gap: 14px;
+    padding-bottom: 16px;
+  }
+
+  .dex-modal-sprite-box {
+    padding: 12px;
+  }
+
+  .dex-modal-sprite {
+    width: 90px;
+    height: 90px;
+  }
+
+  .dex-physical-grid {
+    padding: 8px;
+    font-size: 11px;
+  }
+
+  .agent-encounter-card {
+    padding: 10px 12px;
+  }
+
+  .encounter-row {
+    font-size: 11px;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  /* Pokédex Tab */
+  .dex-tracker-wrapper {
+    margin-bottom: 14px;
+  }
+
+  .dex-tracker-card {
+    padding: 12px;
+  }
+
+  .dex-count-row {
+    font-size: 11px;
   }
 
   .dex-controls-bar {
     flex-direction: column;
     align-items: stretch;
+    padding: 12px;
+    gap: 10px;
   }
 
   .search-wrap {
     width: 100%;
+  }
+
+  .filter-group {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    width: 100%;
+  }
+
+  .filter-btn {
+    padding: 8px 4px;
+    font-size: 8px;
+    text-align: center;
+  }
+
+  .dex-grid {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 10px;
+  }
+
+  .dex-card {
+    padding: 10px 8px;
+  }
+
+  .dex-sprite-wrap {
+    width: 72px;
+    height: 72px;
+    margin: 6px 0;
+  }
+
+  .dex-8bit-sprite {
+    width: 60px;
+    height: 60px;
+  }
+
+  .dex-mon-name {
+    font-size: 11px;
+  }
+
+  .dex-type-pills {
+    gap: 4px;
+  }
+
+  .type-badge {
+    font-size: 7.5px;
+    padding: 2px 6px;
+  }
+
+  .dex-status-foot {
+    font-size: 7.5px;
+  }
+
+  /* Founders Tab */
+  .founders-grid {
+    gap: 14px;
+  }
+
+  .trainer-card-wrapper {
+    padding: 12px;
+  }
+
+  .trainer-profile-box {
+    grid-template-columns: 84px 1fr;
+    gap: 12px;
+  }
+
+  .avatar-frame {
+    width: 80px;
+    height: 80px;
+  }
+
+  .trainer-sprite-img {
+    width: 60px;
+    height: 60px;
+  }
+
+  .trainer-name {
+    font-size: 13px;
+  }
+
+  .trainer-stats-table {
+    padding: 6px 8px;
+    gap: 4px;
+    font-size: 10px;
+  }
+
+  .ts-label {
+    font-size: 7.5px;
+  }
+
+  .ts-val {
+    font-size: 8.5px;
+  }
+
+  .badges-case-strip {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 6px;
+    padding: 10px 8px;
+    align-items: center;
+  }
+
+  .badge-case-title {
+    grid-column: span 4;
+    font-size: 8.5px;
+    margin-bottom: 2px;
+  }
+
+  .badge-slot {
+    height: 28px;
+    font-size: 7.5px;
+    gap: 2px;
+    padding: 2px;
+  }
+
+  .badge-pixel-symbol {
+    font-size: 9px;
+  }
+
+  .vision-story-section {
+    padding: 16px 14px;
+  }
+
+  .vision-text {
+    font-size: 12px;
+    line-height: 1.7;
+  }
+
+  /* Blog Tab */
+  .blog-empty-dialog {
+    padding: 18px 14px;
+  }
+
+  .empty-headline {
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  .empty-desc {
+    font-size: 11px;
+    line-height: 1.6;
+  }
+
+  /* Footer on Mobile */
+  .site-footer {
+    padding: 24px 16px 36px;
+  }
+
+  .footer-inner {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 18px;
+  }
+
+  .footer-brand-wrap {
+    flex-direction: column;
+    align-items: center;
+    text-align: center;
+    gap: 8px;
+  }
+
+  .footer-brand {
+    font-size: 12px;
+  }
+
+  .footer-tagline {
+    font-size: 10px;
+    line-height: 1.4;
+    max-width: 300px;
+  }
+
+  .footer-right {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 8px 12px;
+  }
+
+  .footer-link {
+    font-size: 10px;
+    padding: 6px 10px;
+    border: 1px solid rgba(0, 0, 0, 0.15);
+    border-radius: 4px;
+    background: #ffffff;
+  }
+}
+
+/* Extra Small Phones (<= 380px) */
+@media (max-width: 380px) {
+  .brand-tagline {
+    display: none;
+  }
+
+  .hero-brand-banner {
+    padding: 8px 14px;
+  }
+
+  .hero-brand-title {
+    font-size: 22px;
+    letter-spacing: 1px;
+  }
+
+  .filter-btn {
+    font-size: 7px;
+    padding: 6px 2px;
+  }
+
+  .badge-slot {
+    font-size: 6.5px;
   }
 }
