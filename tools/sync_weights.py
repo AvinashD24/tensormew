@@ -73,9 +73,13 @@ def sync_and_push(
     # Git pull, stage, commit, and push
     commit_msg = message or f"feat(weights): update {', '.join(Path(u).name for u in updated)} from retraining"
     try:
-        # Pull latest first
+        branch = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        if branch in ("main", "master", "HEAD"):
+            print(f"[sync_weights] Refusing to push weights from '{branch}'; use a training branch.", flush=True)
+            return updated
         subprocess.run(["git", "fetch", "origin"], check=True, capture_output=True)
-        subprocess.run(["git", "pull", "origin", "main"], check=True, capture_output=True)
 
         # Stage updated models
         for u in updated:
@@ -87,12 +91,9 @@ def sync_and_push(
             print("[sync_weights] No changes to commit.", flush=True)
             return updated
 
-        # Pull again in case remote advanced
-        subprocess.run(["git", "pull", "origin", "main"], check=True, capture_output=True)
-
-        # Push to origin
-        print(f"[sync_weights] Pushing {', '.join(updated)} to GitHub origin/main...", flush=True)
-        push_res = subprocess.run(["git", "push", "origin", "main"], capture_output=True, text=True, check=True)
+        # Push to origin (current branch only)
+        print(f"[sync_weights] Pushing {', '.join(updated)} to GitHub origin/{branch}...", flush=True)
+        push_res = subprocess.run(["git", "push", "-u", "origin", branch], capture_output=True, text=True, check=True)
         print("[sync_weights] Successfully pushed updated weights to GitHub!", flush=True)
     except subprocess.CalledProcessError as e:
         stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else str(e.stderr)

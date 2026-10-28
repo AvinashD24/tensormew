@@ -347,11 +347,11 @@ def train(
     entropy_coef: float = 0.02,
     start_state: str = "route29_entry",
     save_path: str = "logs/deep_policy.pt",
-    resume: bool = True,
+    resume: bool = False,
     use_gru: bool = True,
     curriculum: bool = True,
     states: list[str] | None = None,
-    push_weights: bool = True,
+    push_weights: bool = False,
     max_steps: int | None = None,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -597,9 +597,8 @@ def main(argv=None):
     parser.add_argument("--recurrent", action="store_true", default=True, help="use recurrent GRU temporal memory (13.2M model)")
     parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")
     parser.add_argument("--save", default="logs/deep_policy.pt")
-    parser.add_argument("--resume", action="store_true", default=True)
-    parser.add_argument("--push-weights", action="store_true", default=True, help="auto-push updated weights to GitHub upon completion")
-    parser.add_argument("--no-push-weights", action="store_false", dest="push_weights")
+    parser.add_argument("--resume", action="store_true", default=False, help="warm-start from --save if it exists (off by default: train from scratch)")
+    parser.add_argument("--push-weights", action="store_true", default=False, help="commit and push updated weights to the current branch on completion (off by default)")
     args = parser.parse_args(argv)
 
     states_list = [s.strip() for s in args.states.split(",") if s.strip()] if args.states else None

@@ -5,8 +5,6 @@ Autonomous agent for **Pokémon Crystal** (GBC) on PyBoy — **goal: progress as
 ## Docs
 
 - **[`SPEC.md`](SPEC.md)** — mission, architecture, RAM, checkpoints, phases H0–H4
-- [`pokemon_agent.pdf`](pokemon_agent.pdf) — long-term CRYSTAL-HYBRID research (defer during hackathon)
-- [`CONTEXT.md`](CONTEXT.md) — redirect stub (content merged into SPEC)
 
 ## Quick start
 
@@ -19,4 +17,15 @@ pytest tests/ -q
 
 - **ROM:** `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (US 1.1)
 - **Checkpoints:** `states/manifest.json` + `tools/make_state.py`, `tools/import_sav.py`
-- **Models & Weights:** Pre-trained weights tracked under [`models/`](models/) (`models/deep_policy.pt`, `models/ppo_policy.npz`)
+
+## Training from scratch
+
+This branch carries the infrastructure only: no trained weights, recordings or web app.
+
+```bash
+python -m tools.train_deep_ppo --updates 100 --save logs/deep_policy.pt   # fresh policy
+python -m tools.train_deep_ppo --resume ...                               # opt in to warm-start
+python -m tools.train_deep_ppo --push-weights ...                         # opt in to commit/push weights to THIS branch
+```
+
+Resume and weight-push are both off by default. `tools/sync_weights.py` refuses to push from `main`.

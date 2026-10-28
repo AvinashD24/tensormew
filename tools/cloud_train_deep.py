@@ -40,6 +40,7 @@ def main(argv=None) -> int:
     parser.add_argument("--recurrent", action="store_true", default=True, help="use recurrent GRU temporal memory (13.2M model)")
     parser.add_argument("--no-recurrent", action="store_false", dest="recurrent")
     parser.add_argument("--save", default="logs/deep_policy.pt")
+    parser.add_argument("--resume", action="store_true", default=False, help="warm-start from the remote checkpoint (off by default)")
     args = parser.parse_args(argv)
 
     ssh_cmd = f"ssh -i {args.key} -p {args.port} -o StrictHostKeyChecking=no"
@@ -97,7 +98,7 @@ def main(argv=None) -> int:
         f"root@{args.host}",
         f"cd /workspace/tensormew && PYTHONUNBUFFERED=1 python3 -m tools.train_deep_ppo --updates {args.updates} "
         f"--rollout {args.rollout} --max-steps {args.max_steps} --envs {args.envs} --batch-size {args.batch_size} --lr {args.lr} "
-        f"--state {args.state} --save {args.save} --resume {flags_str}",
+        f"--state {args.state} --save {args.save} {'--resume ' if args.resume else ''}{flags_str}",
     ]
     if run_cmd(train_remote) != 0:
         print("Remote GPU training encountered an error.", file=sys.stderr)

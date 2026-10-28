@@ -1,6 +1,5 @@
 # tensormew (PokéMind) — System Specification
 
-**Single source of truth.** Consolidates hackathon execution (`CONTEXT.md` retired) and long-term CRYSTAL-HYBRID research direction (`pokemon_agent.pdf`).
 
 **Game:** Pokémon Crystal (GBC) on PyBoy · **ROM:** Crystal US **1.1** · **Implement with:** Cursor Agent
 
@@ -37,7 +36,6 @@ Compare **LLM-on-triggers** vs **LLM-every-step baseline** on the **same checkpo
 | --- | --- |
 | New Bark → 3+ badges via agent | **Stretch** — needs many checkpoints + segment scripts |
 | 8 badges + Lance | **Unlikely** unless heavily pre-seeded and scripted |
-| Full `pokemon_agent.pdf` stack (PPO, scouts, Metamon CI) | **Post-hackathon** — see [Appendix A](#appendix-a-crystal-hybrid-research-roadmap-deferred) |
 
 ---
 
@@ -126,7 +124,6 @@ pytest tests/ -q
 ```text
 tensormew/
 ├── SPEC.md                    ← you are here
-├── pokemon_agent.pdf          ← long research narrative (defer implementation)
 ├── requirements.txt
 ├── rom/pokemon_crystal.{gbc,sym}
 ├── states/manifest.json       ← checkpoint registry (+ gitignored *.state)
@@ -288,7 +285,6 @@ H0 Infra ──► H1 Mover ──► H2 Macros+Triggers ──► H3 LLM ──
 
 ## 7. Cursor Agent workflow
 
-- **Contract:** `@SPEC.md` — not `pokemon_agent.pdf` for day-to-day work.
 - **One phase per task:** e.g. *"Implement H2 per SPEC §6; do not start H3."*
 - **Run commands:** `pytest`, `tools/run_episode.py` — report exit codes.
 - **ROM:** do not rebuild from pret unless asked.
@@ -317,13 +313,11 @@ Rekursiv and research deps — **do not invent packages**. Use when building [Ap
 | PyBoy | Emulator |
 | UT-Austin-RPL/metamon | Gen2OU combat (research phase) |
 
-Craftax patterns (frontier buffer, action-effect head) live in `pokemon_agent.pdf` + priml/configgle — **not** hackathon scope.
 
 ---
 
 ## Appendix A — CRYSTAL-HYBRID research roadmap (deferred)
 
-Long-term **3-tier** design from `pokemon_agent.pdf` / original SPEC:
 
 - **Tier 3:** Worker A (A* autopilot), Worker B (Recurrent PPO + Craftax curriculum), Worker C (Metamon + minimax)
 - **Tier 2:** Interrupt router, SayCan gate, ghost scouts, stall caps
@@ -357,4 +351,3 @@ Summary:
 
 ---
 
-*Canonical spec for tensormew. Narrative detail: `pokemon_agent.pdf`.*
