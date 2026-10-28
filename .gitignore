@@ -15,3 +15,5 @@ states/_autosave/
 node_modules/
 dist/
 .vercel/
+.DS_Store
+.pytest_cache/

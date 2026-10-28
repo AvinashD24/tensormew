@@ -15,8 +15,6 @@ This directory contains public model weights and checkpoints for PokéMind / Ten
 - **Usage:**
   ```bash
   # Run live visual player using deep policy
-  ./run_live.sh
-  # or
   python -m tools.play_live --policy models/deep_policy.pt
   ```
 

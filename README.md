@@ -5,7 +5,6 @@ Autonomous agent for **Pokémon Crystal** (GBC) on PyBoy — **goal: progress as
 ## Docs
 
 - **[`SPEC.md`](SPEC.md)** — mission, architecture, RAM, checkpoints, phases H0–H4
-- **Parallel Phase 1:** [`phase-1/01-dev-a-execution.md`](phase-1/01-dev-a-execution.md) · [`phase-1/02-dev-b-supervisor.md`](phase-1/02-dev-b-supervisor.md)
 - [`pokemon_agent.pdf`](pokemon_agent.pdf) — long-term CRYSTAL-HYBRID research (defer during hackathon)
 - [`CONTEXT.md`](CONTEXT.md) — redirect stub (content merged into SPEC)
 
@@ -14,11 +13,10 @@ Autonomous agent for **Pokémon Crystal** (GBC) on PyBoy — **goal: progress as
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python crystal_smoke.py --headless
+python -m tools.play_live --help
 pytest tests/ -q
 ```
 
 - **ROM:** `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (US 1.1)
 - **Checkpoints:** `states/manifest.json` + `tools/make_state.py`, `tools/import_sav.py`
 - **Models & Weights:** Pre-trained weights tracked under [`models/`](models/) (`models/deep_policy.pt`, `models/ppo_policy.npz`)
-- **Cursor rules:** [`.cursor/rules/crystal-hybrid.mdc`](.cursor/rules/crystal-hybrid.mdc)
