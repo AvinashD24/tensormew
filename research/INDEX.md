@@ -11,6 +11,7 @@ Compiled 2026-10-19 by parallel research agents. Unverified claims are tagged `[
 | `prior-work/llm-agents-pokemon.md` | Claude / Gemini / GPT plays Pokémon, PokeAgent, Orak, harness designs, cost and steps |
 | `prior-work/battle-ai-and-crystal-progression.md` | Battle AI (Metamon, PokéChamp...), Crystal trainer AI, 58-milestone progression checklist, HM map |
 | `prior-work/rl-techniques-long-horizon.md` | Exploration, hierarchy, LLM rewards, memory; ranked list of 8 research directions |
+| `prior-work/frontier-long-horizon-training.md` | 2026-10-30: batch size, optimizer steps, horizon and reward-shaping numbers from OpenAI Five / pokerl / Pleines, compared with this repo's training; verified findings and a ranked next-run plan |
 | `prior-work/rl-for-games-history.md` | History of RL beating games, Atari to Minecraft to NetHack |
 | `analysis/codebase-audit.md` | What tensormew actually does today and its top 10 gaps for a full clear |
 | `paper-draft/venue-and-publication-plan.md` | NeurIPS timelines, track fit, framing, experiments, risks |
