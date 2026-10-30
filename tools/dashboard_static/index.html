@@ -48,6 +48,14 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
 .chip { padding: 3px 9px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); font-size: 12px; }
 .chip b { color: var(--text); font-weight: 600; }
+.runpick { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.runpick select { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; font: inherit; max-width: 230px; }
+#replayPane { display: none; }
+#replayPane img { max-width: 100%; max-height: 400px; width: auto; image-rendering: pixelated; border-radius: 8px; background: #000; display: block; margin: 0 auto; }
+.ctl { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.ctl button, .ctl select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; cursor: pointer; font: inherit; }
+.ctl input[type=range] { flex: 1 1 220px; accent-color: var(--accent); }
+.ctl .lbl { font: 12px var(--mono); color: var(--muted); min-width: 150px; text-align: right; }
 .theme { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
 
 /* cards */
@@ -152,6 +160,7 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
       <div><h1>TensorMew Live Training</h1><small id="subtitle">connecting…</small></div>
     </div>
     <span id="status" class="pill"><span class="dot"></span><span id="statusText">WAITING</span></span>
+    <label class="runpick">Source <select id="runSel" aria-label="Choose live view or a saved run to replay"><option value="">Live</option></select></label>
     <div class="chips" id="chips"></div>
     <button class="theme" id="themeBtn" type="button" aria-label="Toggle light and dark theme">Theme</button>
   </header>
@@ -174,8 +183,17 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 
     <section class="grid2">
       <div class="card">
-        <h2>Live agents <span class="sub" id="envSub"></span></h2>
+        <h2><span id="envTitle">Live agents</span> <span class="sub" id="envSub"></span></h2>
         <div class="envs" id="envs"></div>
+        <div id="replayPane">
+          <img id="repImg" alt="Frame montage of every agent at the selected update">
+          <div class="ctl">
+            <button id="repPlay" type="button" aria-label="Play or pause replay">Play</button>
+            <input id="repSlider" type="range" min="0" max="0" value="0" aria-label="Replay position (update number)">
+            <select id="repSpeed" aria-label="Replay speed"><option value="1">1x</option><option value="3" selected>3x</option><option value="10">10x</option><option value="30">30x</option></select>
+            <span class="lbl" id="repLabel"></span>
+          </div>
+        </div>
       </div>
       <div class="stack">
         <div class="card"><h2>Run health</h2><div class="diag" id="diag"></div></div>
@@ -301,6 +319,7 @@ class Chart {
       if (s.fill && started) { const last = s.ys.length - 1; ctx.save(); ctx.lineTo(X(last), Y(y0)); ctx.lineTo(X(0), Y(y0)); ctx.closePath(); ctx.globalAlpha = .12; ctx.fillStyle = s.color; ctx.fill(); ctx.restore(); ctx.beginPath(); started = false; s.ys.forEach((v, i) => { if (v == null) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); }); }
       ctx.strokeStyle = s.color; ctx.lineWidth = s.w || 2; ctx.lineJoin = "round"; ctx.setLineDash(s.dash || []); ctx.globalAlpha = s.alpha || 1; ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
     }
+    if (cfg.marker != null && cfg.marker >= 0 && cfg.marker < n) { const mx = X(cfg.marker); ctx.strokeStyle = css("--gold"); ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(mx, g.t); ctx.lineTo(mx, g.h - g.b); ctx.stroke(); ctx.setLineDash([]); }
     if (this.hover >= 0) { const x = X(this.hover); ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.h - g.b); ctx.stroke();
       for (const s of cfg.series) { const v = s.ys[this.hover]; if (v == null || s.hidden) continue; ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(x, Y(v), 3.5, 0, 7); ctx.fill(); } }
   }
@@ -424,7 +443,7 @@ function loadFrame(img, i, noimg, big) {
   probe.src = `/frames/env_${i}.png?k=${key}`;
 }
 function renderEnvs() {
-  if (!live) return;
+  if (!live || mode === "replay") return;
   ensureEnvs(live.num_envs);
   const rets = live.envs.map(e => e.ep_return), topRet = Math.max(...rets);
   live.envs.forEach((e, i) => {
@@ -498,7 +517,8 @@ zoom.addEventListener("click", (e) => { if (e.target === zoom) zoom.close(); });
 function renderHeader() {
   const el = $("status"), age = live ? Date.now() / 1000 - live.t : Infinity;
   let cls = "", txt = "WAITING";
-  if (live && live.finished) { cls = "done"; txt = "FINISHED"; }
+  if (mode === "replay") { cls = "done"; txt = "REPLAY"; }
+  else if (live && live.finished) { cls = "done"; txt = "FINISHED"; }
   else if (live && age < 8) { cls = "live"; txt = "LIVE"; }
   else if (live) { cls = "stale"; txt = "STALE " + dur(age); }
   else if (metrics.length) { cls = "stale"; txt = "METRICS ONLY"; }
@@ -523,8 +543,88 @@ function renderAll() {
 }
 function redrawAll() { renderCharts(); renderKpis(); renderHeat(); }
 
+/* ---------- replay of a saved run ---------- */
+let mode = "live";
+let rep = null;                 // { id, meta, records, metricsAll, frames, idx, playing, timer, cum: Map }
+const CUM_EVERY = 20;
+const mapName = (key) => { const f = (rep && rep.names && rep.names[key]); return f || `Map (${key.replace(",", ", ")})`; };
+
+function heatAt(idx) {          // cumulative per-map visit counts after record idx
+  let start = -1, base = null;
+  for (let k = Math.floor(idx / CUM_EVERY) * CUM_EVERY - 1; k >= 0; k -= CUM_EVERY) if (rep.cum.has(k)) { start = k; base = rep.cum.get(k); break; }
+  const heat = {}; if (base) for (const [m, cells] of Object.entries(base)) heat[m] = new Map(cells);
+  for (let i = start + 1; i <= idx; i++) {
+    for (const [m, cells] of Object.entries(rep.records[i].heat || {})) {
+      const t = heat[m] || (heat[m] = new Map());
+      for (const [x, y, c] of cells) { const k = x + "," + y; t.set(k, (t.get(k) || 0) + c); }
+    }
+    if ((i + 1) % CUM_EVERY === 0 && !rep.cum.has(i)) { const snap = {}; for (const [m, cells] of Object.entries(heat)) snap[m] = new Map(cells); rep.cum.set(i, snap); }
+  }
+  return heat;
+}
+function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from history so every panel renders unchanged
+  const recs = rep.records, r = recs[idx], meta = rep.meta, names = meta.action_names || ["up", "down", "left", "right", "a"];
+  const heat = heatAt(idx), total = names.map(() => 0);
+  const episodes = [], events = []; let maps = new Set();
+  for (let i = 0; i <= idx; i++) { recs[i].actions.forEach((c, k) => total[k] += c); if (episodes.length < 400) episodes.push(...recs[i].episodes); events.push(...recs[i].events); }
+  for (const m of Object.keys(heat)) maps.add(m);
+  const heatList = Object.entries(heat).map(([m, cells]) => { let v = 0; const arr = []; for (const [k, c] of cells) { const [x, y] = k.split(",").map(Number); arr.push([x, y, c]); v += c; } return { map: m, name: mapName(m), visits: v, cells: arr }; }).sort((a, b) => b.visits - a.visits).slice(0, 12);
+  const envs = r.envs.map(([m, x, y, ret, st, bt], i) => ({ id: i, map: m, map_name: m ? mapName(m) : "", x, y, state: "", battle: !!bt, ep_return: ret, ep_steps: st, last_action: "", last_reward: 0 }));
+  const mm = r.metrics || {};
+  return { t: r.t, started: meta.started, finished: true, update: r.update, steps: r.steps, samples: mm.samples ? recs.slice(0, idx + 1).reduce((a, q) => a + ((q.metrics || {}).samples || 0), 0) : 0,
+    steps_per_sec: mm.samples && mm.duration_sec ? mm.samples / mm.duration_sec : 0, num_envs: meta.num_envs, run: meta.run || {}, run_id: rep.id, maps_seen: maps.size,
+    actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
+}
+function nearestFrame(update) { let lo = 0, hi = rep.frames.length - 1, best = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (rep.frames[mid] <= update) { best = mid; lo = mid + 1; } else hi = mid - 1; } return best < 0 ? null : rep.frames[best]; }
+function replayRender() {
+  const idx = rep.idx;
+  metrics = rep.metricsAll.slice(0, idx + 1);
+  live = snapshotAt(idx);
+  const fu = nearestFrame(live.update);
+  if (fu != null) $("repImg").src = `/runframes/${rep.id}/u${String(fu).padStart(6, "0")}.jpg`;
+  $("repSlider").value = idx;
+  $("repLabel").textContent = `update ${live.update} / ${rep.records[rep.records.length - 1].update}` + (fu != null && fu !== live.update ? ` · frame @${fu}` : "");
+  renderAll();
+}
+function replayStop() { if (rep && rep.timer) { clearInterval(rep.timer); rep.timer = null; } if (rep) rep.playing = false; $("repPlay").textContent = "Play"; }
+function replayPlay() {
+  if (!rep) return; if (rep.playing) return replayStop();
+  if (rep.idx >= rep.records.length - 1) rep.idx = 0;
+  rep.playing = true; $("repPlay").textContent = "Pause";
+  const speed = Number($("repSpeed").value);
+  rep.timer = setInterval(() => { rep.idx = Math.min(rep.records.length - 1, rep.idx + 1); replayRender(); if (rep.idx >= rep.records.length - 1) replayStop(); }, Math.max(40, 1000 / speed));
+}
+async function enterReplay(id) {
+  $("subtitle").textContent = "loading saved run…";
+  const r = await fetch(`/api/run/${encodeURIComponent(id)}/history`, { cache: "no-store" }); if (!r.ok) { $("subtitle").textContent = "could not load that run"; $("runSel").value = ""; return; }
+  const h = await r.json(); if (!h.records.length) { $("subtitle").textContent = "that run has no saved updates yet"; $("runSel").value = ""; return; }
+  replayStop(); mode = "replay"; selectedMap = null; $("runSel").value = id;
+  rep = { id, meta: h.meta, records: h.records, frames: h.frames, metricsAll: h.records.map(x => x.metrics || {}).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
+  $("envs").style.display = "none"; $("replayPane").style.display = "block"; $("envTitle").textContent = "Replay · all agents";
+  $("repSlider").max = rep.records.length - 1; $("envSub").textContent = "frame montage of all agents · scrub or press play";
+  replayRender();
+}
+function exitReplay() {
+  replayStop(); mode = "live"; rep = null; metrics = []; live = null; lastLiveT = 0; selectedMap = null;
+  $("envs").style.display = ""; $("replayPane").style.display = "none"; $("envTitle").textContent = "Live agents";
+  pollMetrics(); pollLive();
+}
+$("runSel").addEventListener("change", (e) => e.target.value ? enterReplay(e.target.value) : exitReplay());
+$("repPlay").onclick = replayPlay;
+$("repSlider").addEventListener("input", (e) => { replayStop(); rep.idx = Number(e.target.value); replayRender(); });
+$("repSpeed").addEventListener("change", () => { if (rep && rep.playing) { replayStop(); replayPlay(); } });
+async function refreshRuns() {
+  try {
+    const runs = await (await fetch("/api/runs", { cache: "no-store" })).json(), sel = $("runSel"), cur = sel.value;
+    sel.innerHTML = `<option value="">Live</option>` + runs.map(r => `<option value="${r.id}">${r.id} (${r.updates} upd${r.finished ? "" : ", running"})</option>`).join("");
+    sel.value = runs.some(r => r.id === cur) ? cur : "";
+  } catch (e) {}
+}
+refreshRuns(); setInterval(refreshRuns, 20000);
+
 /* polling */
 async function pollMetrics() {
+  if (mode === "replay") return;
   try {
     const since = metrics.length ? metrics[metrics.length - 1].update : -1;
     const r = await fetch(`/api/metrics?since=${since}`, { cache: "no-store" }); const fresh = await r.json();
@@ -537,6 +637,7 @@ async function pollMetrics() {
   } catch (e) { $("subtitle").textContent = "dashboard server unreachable…"; }
 }
 async function pollLive() {
+  if (mode === "replay") return;
   try {
     const r = await fetch("/api/live", { cache: "no-store" }); const s = await r.json();
     if (s && live && s.started !== live.started) { metrics = []; selectedMap = null; pollMetrics(); }   // new run began

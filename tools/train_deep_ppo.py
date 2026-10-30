@@ -371,6 +371,9 @@ def train(
     max_steps: int | None = None,
     live: bool = True,
     live_dir: str = "logs/live",
+    runs_dir: str | None = "logs/runs",
+    run_id: str | None = None,
+    frame_every: int = 5,
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru})...")
@@ -404,10 +407,15 @@ def train(
     monitor = TerminalMonitor(total_updates=updates, jsonl_path="logs/training_metrics.jsonl")
     feed = None
     if live:
+        history_dir = None
+        if runs_dir:
+            history_dir = Path(runs_dir) / (run_id or time.strftime("%Y%m%d-%H%M%S"))
         feed = LiveFeed(
             live_dir,
             num_envs=num_envs,
             action_names=ACTIONS,
+            history_dir=history_dir,
+            frame_every=frame_every,
             run_info={
                 "total_updates": updates,
                 "rollout_steps": rollout_steps,
@@ -421,6 +429,8 @@ def train(
             },
         )
         print(f"Live dashboard feed -> {live_dir}  (view with: python -m tools.dashboard)", flush=True)
+        if history_dir is not None:
+            print(f"Run history (replay later) -> {history_dir}", flush=True)
 
     try:
         for update in range(updates):
@@ -610,7 +620,26 @@ def train(
                 samples=total_samples,
             )
             if feed is not None:
-                feed.on_update(update, total_samples)
+                feed.on_update(
+                    update,
+                    total_samples,
+                    metrics={
+                        "update": update,
+                        "mean_reward": round(mean_rew, 3),
+                        "rolling_reward": round(float(monitor.last_rolling_avg or mean_rew), 3),
+                        "entropy": round(mean_entropy, 4),
+                        "value_loss": round(mean_val_loss, 4),
+                        "policy_loss": round(mean_pol_loss, 4),
+                        "approx_kl": round(mean_kl, 5),
+                        "clip_frac": round(mean_clip, 4),
+                        "lr": cur_lr,
+                        "maps_discovered": max_maps,
+                        "badges": max_badges,
+                        "duration_sec": round(dt, 2),
+                        "samples": total_samples,
+                        "status": monitor.last_status,
+                    },
+                )
 
             if mean_rew > best_reward or (update + 1) % 10 == 0:
                 best_reward = max(best_reward, mean_rew)
@@ -654,6 +683,9 @@ def main(argv=None):
     parser.add_argument("--live", action="store_true", default=True, help="write live telemetry for tools.dashboard (default on)")
     parser.add_argument("--no-live", action="store_false", dest="live")
     parser.add_argument("--live-dir", default="logs/live")
+    parser.add_argument("--runs-dir", default="logs/runs", help="where per-run replay history is written ('' to disable)")
+    parser.add_argument("--run-id", default=None, help="name for this run's history folder (default: timestamp)")
+    parser.add_argument("--frame-every", type=int, default=5, help="save a frame montage every N updates")
     args = parser.parse_args(argv)
 
     states_list = [s.strip() for s in args.states.split(",") if s.strip()] if args.states else None
@@ -674,6 +706,9 @@ def main(argv=None):
         max_steps=args.max_steps,
         live=args.live,
         live_dir=args.live_dir,
+        runs_dir=args.runs_dir or None,
+        run_id=args.run_id,
+        frame_every=args.frame_every,
     )
 
 

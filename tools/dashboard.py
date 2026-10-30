@@ -13,10 +13,12 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import gzip
 import io
 import json
 import math
 import random
+import re
 import sys
 import tempfile
 import threading
@@ -54,7 +56,54 @@ def read_metrics(path: Path, since: int = -1) -> list[dict]:
     return out
 
 
-def make_handler(live_dir: Path, metrics_path: Path):
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+FRAME_RE = re.compile(r"^u\d{6}\.jpg$")
+
+
+def list_runs(runs_dir: Path) -> list[dict]:
+    """Saved training runs (newest first), read from each run's meta.json."""
+    out: list[dict] = []
+    if not runs_dir.is_dir():
+        return out
+    for d in runs_dir.iterdir():
+        meta_path = d / "meta.json"
+        if not (d.is_dir() and meta_path.is_file()):
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        out.append(
+            {
+                "id": d.name,
+                "started": meta.get("started"),
+                "finished": meta.get("finished", False),
+                "updates": meta.get("updates_logged", 0),
+                "num_envs": meta.get("num_envs"),
+            }
+        )
+    return sorted(out, key=lambda r: r.get("started") or 0, reverse=True)
+
+
+def read_history(run_dir: Path) -> dict:
+    """Whole saved run: meta, per-update records and which updates have a frame montage."""
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    records: list[dict] = []
+    hist = run_dir / "history.jsonl"
+    if hist.is_file():
+        for line in hist.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue  # a partial last line while the run is still writing
+    frames = sorted(int(p.stem[1:]) for p in (run_dir / "frames").glob("u??????.jpg")) if (run_dir / "frames").is_dir() else []
+    return {"meta": meta, "records": records, "frames": frames}
+
+
+def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = None):
+    runs_dir = runs_dir or live_dir.parent / "runs"
+
     class Handler(BaseHTTPRequestHandler):
         server_version = "TensorMewDashboard/1.0"
 
@@ -64,6 +113,9 @@ def make_handler(live_dir: Path, metrics_path: Path):
         def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store") -> None:
             self.send_response(code)
             self.send_header("Content-Type", ctype)
+            if ctype.startswith("application/json") and len(body) > 4096 and "gzip" in self.headers.get("Accept-Encoding", ""):
+                body = gzip.compress(body, compresslevel=5)
+                self.send_header("Content-Encoding", "gzip")
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", cache)
             self.end_headers()
@@ -85,6 +137,19 @@ def make_handler(live_dir: Path, metrics_path: Path):
                     if not state.is_file():
                         return self._send(200, b"null", "application/json")
                     return self._send(200, state.read_bytes(), "application/json")
+                if route == "/api/runs":
+                    return self._send(200, json.dumps(list_runs(runs_dir)).encode(), "application/json")
+                parts = route.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "history" and RUN_ID_RE.match(parts[2]):
+                    run_dir = runs_dir / parts[2]
+                    if not run_dir.is_dir():
+                        return self._send(404, b"no such run", "text/plain")
+                    return self._send(200, json.dumps(read_history(run_dir), separators=(",", ":")).encode(), "application/json")
+                if len(parts) == 3 and parts[0] == "runframes" and RUN_ID_RE.match(parts[1]) and FRAME_RE.match(parts[2]):
+                    frame = runs_dir / parts[1] / "frames" / parts[2]
+                    if not frame.is_file():
+                        return self._send(404, b"", "image/jpeg")
+                    return self._send(200, frame.read_bytes(), "image/jpeg", cache="max-age=3600")
                 if route.startswith("/frames/env_") and route.endswith(".png"):
                     name = route.rsplit("/", 1)[-1]
                     frame = live_dir / name
@@ -122,7 +187,7 @@ def _demo_frame(env: int, map_idx: int, x: int, y: int, battle: bool, t: float):
     return img
 
 
-def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event) -> None:
+def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event, runs_dir: Path | None = None) -> None:
     """Drive the real LiveFeed + TerminalMonitor with a synthetic training run."""
     import numpy as np
 
@@ -136,6 +201,8 @@ def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event) -> None:
         live_dir,
         num_envs=n_envs,
         action_names=actions,
+        history_dir=(runs_dir / "demo-run") if runs_dir else None,
+        frame_every=3,
         run_info={
             "total_updates": 400,
             "rollout_steps": 128,
@@ -202,22 +269,25 @@ def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event) -> None:
             entropy = max(0.18, 1.55 * math.exp(-x / 260) + rng.gauss(0, 0.04) - (0.9 if collapse else 0))
             kl = abs(rng.gauss(0.012, 0.008)) + (0.09 if x in (60, 61) else 0)
             seen = max(seen, 1 + int(progress * 4.2))
+            fields = dict(
+                update=update,
+                mean_reward=reward,
+                entropy=entropy,
+                value_loss=max(0.2, 40 * math.exp(-x / 70) + rng.gauss(0, 2)),
+                policy_loss=rng.gauss(0, 0.02),
+                approx_kl=kl,
+                clip_frac=min(0.5, kl * 4 + rng.random() * 0.03),
+                lr=3e-4,
+                maps_discovered=seen,
+                badges=0,
+                duration_sec=2.0 + rng.random(),
+                samples=40 * n_envs,
+            )
             with contextlib.redirect_stdout(io.StringIO()):
-                monitor.log_update(
-                    update=update,
-                    mean_reward=reward,
-                    entropy=entropy,
-                    value_loss=max(0.2, 40 * math.exp(-x / 70) + rng.gauss(0, 2)),
-                    policy_loss=rng.gauss(0, 0.02),
-                    approx_kl=kl,
-                    clip_frac=min(0.5, kl * 4 + rng.random() * 0.03),
-                    lr=3e-4,
-                    maps_discovered=seen,
-                    badges=0,
-                    duration_sec=2.0 + rng.random(),
-                    samples=40 * n_envs,
-                )
-            feed.on_update(update, 40 * n_envs)
+                monitor.log_update(**fields)
+            fields["rolling_reward"] = round(float(monitor.last_rolling_avg or reward), 3)
+            fields["status"] = monitor.last_status
+            feed.on_update(update, 40 * n_envs, metrics=fields)
             update += 1
         time.sleep(0.04)
     feed.finish()
@@ -230,6 +300,7 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--live-dir", default="logs/live")
     parser.add_argument("--metrics", default="logs/training_metrics.jsonl")
+    parser.add_argument("--runs-dir", default="logs/runs", help="saved run histories for replay")
     parser.add_argument("--demo", action="store_true", help="drive the UI with a synthetic training run")
     parser.add_argument("--no-open", action="store_true", help="do not open a browser tab")
     args = parser.parse_args(argv)
@@ -238,14 +309,14 @@ def main(argv=None) -> int:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
     stop = threading.Event()
-    live_dir, metrics_path = Path(args.live_dir), Path(args.metrics)
+    live_dir, metrics_path, runs_dir = Path(args.live_dir), Path(args.metrics), Path(args.runs_dir)
     if args.demo:
         tmp = Path(tempfile.mkdtemp(prefix="tensormew_demo_"))
-        live_dir, metrics_path = tmp / "live", tmp / "metrics.jsonl"
-        threading.Thread(target=run_demo, args=(live_dir, metrics_path, stop), daemon=True).start()
+        live_dir, metrics_path, runs_dir = tmp / "live", tmp / "metrics.jsonl", tmp / "runs"
+        threading.Thread(target=run_demo, args=(live_dir, metrics_path, stop, runs_dir), daemon=True).start()
         print(f"Demo mode: synthetic run in {tmp}")
 
-    server = ThreadingHTTPServer((args.host, args.port), make_handler(live_dir, metrics_path))
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(live_dir, metrics_path, runs_dir))
     url = f"http://{args.host}:{args.port}/"
     print(f"Dashboard: {url}   (Ctrl+C to stop)")
     if not args.no_open:

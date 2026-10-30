@@ -77,6 +77,89 @@ class LiveFeedTests(unittest.TestCase):
             self.assertTrue(json.loads((Path(tmp) / "state.json").read_text())["finished"])
 
 
+class RunHistoryTests(unittest.TestCase):
+    def _run(self, tmp, updates=3):
+        feed = LiveFeed(
+            Path(tmp) / "live",
+            num_envs=2,
+            action_names=ACTIONS,
+            state_interval=0.0,
+            history_dir=Path(tmp) / "runs" / "r1",
+            frame_every=2,
+        )
+        screens = np.full((2, 144, 160, 3), 90, dtype=np.uint8)
+        for u in range(updates):
+            for s in range(2):
+                feed.observe(
+                    infos=[_info(u + s, 5), _info(1, 1, map_id=(24, 3))],
+                    actions=np.array([3, 0]),
+                    rewards=np.array([0.5, 0.5], dtype=np.float32),
+                    dones=np.array([False, False]),
+                    screens=screens,
+                )
+            feed.on_update(u, 2, metrics={"update": u, "mean_reward": float(u)})
+        feed.finish()
+        return Path(tmp) / "runs" / "r1"
+
+    def test_history_records_per_update_deltas_and_frames(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            run = self._run(tmp)
+            records = [json.loads(l) for l in (run / "history.jsonl").read_text().splitlines()]
+            self.assertEqual([r["update"] for r in records], [0, 1, 2])
+            # heat is a per-update delta, not cumulative: 2 steps x 2 envs per update
+            self.assertEqual(sum(c for cells in records[0]["heat"].values() for _, _, c in cells), 4)
+            self.assertEqual(records[1]["metrics"]["mean_reward"], 1.0)
+            self.assertEqual(len(records[1]["envs"]), 2)
+            frames = sorted(p.name for p in (run / "frames").glob("*.jpg"))
+            self.assertEqual(frames, ["u000000.jpg", "u000002.jpg"])  # every 2 updates + final
+            meta = json.loads((run / "meta.json").read_text())
+            self.assertTrue(meta["finished"])
+            self.assertEqual(meta["map_names"]["24,4"], "New Bark Town")
+
+    def test_no_history_dir_means_no_history_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            feed = LiveFeed(Path(tmp) / "live", num_envs=1, action_names=ACTIONS, state_interval=0.0)
+            feed.observe(infos=None, actions=np.array([0]), rewards=np.array([0.0]), dones=np.array([False]))
+            feed.on_update(0, 1, metrics={"update": 0})
+            feed.finish()
+            self.assertFalse((Path(tmp) / "runs").exists())
+
+    def test_runs_api_history_frames_and_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self._run(tmp)
+            server = ThreadingHTTPServer(
+                ("127.0.0.1", 0), make_handler(Path(tmp) / "live", Path(tmp) / "m.jsonl", Path(tmp) / "runs")
+            )
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                get = lambda path: urllib.request.urlopen(base + path, timeout=5).read()
+                runs = json.loads(get("/api/runs"))
+                self.assertEqual([r["id"] for r in runs], ["r1"])
+                self.assertTrue(runs[0]["finished"])
+                hist = json.loads(get("/api/run/r1/history"))
+                self.assertEqual(len(hist["records"]), 3)
+                self.assertEqual(hist["frames"], [0, 2])
+                self.assertEqual(get("/runframes/r1/u000000.jpg")[:2], b"\xff\xd8")  # JPEG magic
+                for bad in ("/api/run/..%2f..%2fetc/history", "/api/run/nope/history", "/runframes/r1/evil.jpg"):
+                    with self.assertRaises(urllib.error.HTTPError):
+                        get(bad)
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
+class CloudSyncTests(unittest.TestCase):
+    def test_pull_commands_cover_live_runs_and_metrics(self):
+        from tools.cloud_train_deep import LOG_PULLS, build_pull_cmd
+
+        self.assertEqual({r for r, _ in LOG_PULLS}, {"logs/live/", "logs/runs/", "logs/training_metrics.jsonl"})
+        cmd = build_pull_cmd("ssh -p 1", "1.2.3.4", "logs/runs/", "logs/runs/")
+        self.assertEqual(cmd[:4], ["rsync", "-az", "-e", "ssh -p 1"])
+        self.assertEqual(cmd[4], "root@1.2.3.4:/workspace/tensormew/logs/runs/")
+        self.assertEqual(cmd[5], "./logs/runs/")
+
+
 class DashboardServerTests(unittest.TestCase):
     def test_read_metrics_filters_step_records_and_since(self):
         with tempfile.TemporaryDirectory() as tmp:

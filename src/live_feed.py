@@ -68,9 +68,21 @@ class LiveFeed:
         state_interval: float = 0.8,
         run_info: dict[str, Any] | None = None,
         clear: bool = True,
+        history_dir: str | Path | None = None,
+        frame_every: int = 5,
     ):
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        # Append-only per-run record (positions per update + frame montages) for replay after the run.
+        self.history_dir = Path(history_dir) if history_dir else None
+        self.frame_every = max(1, frame_every)
+        if self.history_dir is not None:
+            (self.history_dir / "frames").mkdir(parents=True, exist_ok=True)
+        self.run_id = self.history_dir.name if self.history_dir is not None else None
+        self._upd_heat: dict[str, dict[tuple[int, int], int]] = {}
+        self._upd_eps: list[dict[str, Any]] = []
+        self._upd_events: list[dict[str, Any]] = []
+        self._last_screens: np.ndarray | None = None
         self.num_envs = num_envs
         self.action_names = list(action_names)
         self.frame_interval = frame_interval
@@ -110,6 +122,7 @@ class LiveFeed:
         self._rate_t = self.started
         self._rate_steps = 0
         self._steps_per_sec = 0.0
+        self._write_meta()
 
     # ------------------------------------------------------------------ helpers
     @staticmethod
@@ -130,7 +143,27 @@ class LiveFeed:
         }
 
     def _event(self, kind: str, text: str, **extra: Any) -> None:
-        self._events.append({"t": round(time.time(), 2), "kind": kind, "text": text, **extra})
+        ev = {"t": round(time.time(), 2), "kind": kind, "text": text, **extra}
+        self._events.append(ev)
+        self._upd_events.append(ev)
+
+    def _write_meta(self) -> None:
+        if self.history_dir is None:
+            return
+        meta = {
+            "run_id": self.run_id,
+            "started": round(self.started, 2),
+            "finished": self.finished,
+            "updates_logged": self.update,
+            "num_envs": self.num_envs,
+            "action_names": self.action_names,
+            "run": self.run_info,
+            "map_names": {k: get_map_name(*(int(p) for p in k.split(","))) for k in self._seen_map_keys},
+        }
+        try:
+            _atomic_write(self.history_dir / "meta.json", json.dumps(meta, indent=1))
+        except Exception:
+            pass
 
     # --------------------------------------------------------------- ingestion
     def observe(
@@ -145,6 +178,8 @@ class LiveFeed:
         """Record one vectorized env step. ``screens`` is only needed when a frame is due."""
         self.steps += 1
         now = time.time()
+        if screens is not None:
+            self._last_screens = screens
 
         for i in range(self.num_envs):
             act = int(actions[i])
@@ -197,6 +232,8 @@ class LiveFeed:
             )
             heat = self._heat.setdefault(key, {})
             heat[(x, y)] = heat.get((x, y), 0) + 1
+            upd = self._upd_heat.setdefault(key, {})
+            upd[(x, y)] = upd.get((x, y), 0) + 1
             self._map_visits[key] = self._map_visits.get(key, 0) + 1
             self._trails[i].append((key, x, y))
             if key not in self._seen_map_keys:
@@ -219,6 +256,7 @@ class LiveFeed:
             "state": str(info.get("ended_state", self._envs[i]["state"])),
         }
         self._episodes.append(episode)
+        self._upd_eps.append(episode)
         if maps > self._best_maps:
             self._best_maps = maps
             self._event("record", f"new best map coverage: {maps} maps (env {i})", env=i)
@@ -230,16 +268,64 @@ class LiveFeed:
         self._ep_steps[i] = 0
         self._trails[i].clear()
 
-    def on_update(self, update: int, samples: int) -> None:
-        """Called once per PPO update; resets the 'recent' action window."""
+    def on_update(self, update: int, samples: int, metrics: dict[str, Any] | None = None) -> None:
+        """Called once per PPO update: persists the update's history and resets per-update windows."""
         self.update = update
         self.total_samples += samples
+        self._write_history(update, metrics)
         self._action_recent[:] = 0
+        self._upd_heat = {}
+        self._upd_eps = []
+        self._upd_events = []
         self.flush()
 
     def finish(self) -> None:
         self.finished = True
+        if self.history_dir is not None and self._last_screens is not None:
+            self._write_montage(self.update)  # always keep the final frame
+        self._write_meta()
         self.flush()
+
+    # ----------------------------------------------------------------- history
+    def _write_history(self, update: int, metrics: dict[str, Any] | None) -> None:
+        if self.history_dir is None:
+            return
+        record = {
+            "update": update,
+            "t": round(time.time(), 2),
+            "steps": self.steps,
+            "metrics": metrics or {},
+            "envs": [
+                [e["map"], e["x"], e["y"], e["ep_return"], e["ep_steps"], int(e["battle"])] for e in self._envs
+            ],
+            "heat": {k: [[x, y, c] for (x, y), c in cells.items()] for k, cells in self._upd_heat.items()},
+            "actions": self._action_recent.tolist(),
+            "episodes": self._upd_eps,
+            "events": self._upd_events,
+        }
+        try:
+            with open(self.history_dir / "history.jsonl", "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+            if update == 0 or update % self.frame_every == 0:
+                self._write_montage(update)
+        except Exception:
+            pass
+        self._write_meta()
+
+    def _write_montage(self, update: int) -> None:
+        """One JPEG contact sheet of every env's current screen (small enough to keep many)."""
+        if Image is None or self._last_screens is None or self.history_dir is None:
+            return
+        screens = self._last_screens
+        n = min(self.num_envs, len(screens))
+        cols = int(np.ceil(np.sqrt(n)))
+        rows = int(np.ceil(n / cols))
+        h, w = screens.shape[1], screens.shape[2]
+        sheet = np.zeros((rows * h, cols * w, 3), dtype=np.uint8)
+        for i in range(n):
+            r, c = divmod(i, cols)
+            sheet[r * h : (r + 1) * h, c * w : (c + 1) * w] = screens[i][:, :, :3]
+        Image.fromarray(sheet).save(self.history_dir / "frames" / f"u{update:06d}.jpg", format="JPEG", quality=72)
 
     # ---------------------------------------------------------------- snapshot
     def _write_frames(self, screens: np.ndarray) -> None:
@@ -290,6 +376,7 @@ class LiveFeed:
             "steps_per_sec": round(self._steps_per_sec, 1),
             "num_envs": self.num_envs,
             "run": self.run_info,
+            "run_id": self.run_id,
             "maps_seen": len(self._seen_map_keys),
             "best_maps": self._best_maps,
             "best_badges": self._best_badges,
