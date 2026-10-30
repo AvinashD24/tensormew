@@ -7,13 +7,14 @@ and syncs the trained 11.6M model checkpoint back to logs/deep_policy.pt.
 from __future__ import annotations
 
 import argparse
+import os
 import subprocess
 import sys
 import threading
 from pathlib import Path
 
-DEFAULT_POD_HOST = "69.145.85.83"
-DEFAULT_POD_PORT = "18602"
+DEFAULT_POD_HOST = os.environ.get("RUNPOD_SSH_HOST", "")
+DEFAULT_POD_PORT = os.environ.get("RUNPOD_SSH_PORT", "")
 DEFAULT_KEY = str(Path.home() / ".ssh" / "id_runpod")
 REMOTE_ROOT = "/workspace/tensormew"
 
@@ -56,8 +57,8 @@ def watch_loop(ssh_cmd: str, host: str, every: float, stop: threading.Event) -> 
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Cloud training of 11.6M Vision Policy on RTX 4090")
-    parser.add_argument("--host", default=DEFAULT_POD_HOST)
-    parser.add_argument("--port", default=DEFAULT_POD_PORT)
+    parser.add_argument("--host", default=DEFAULT_POD_HOST, help="pod SSH host (or set RUNPOD_SSH_HOST)")
+    parser.add_argument("--port", default=DEFAULT_POD_PORT, help="pod SSH port (or set RUNPOD_SSH_PORT)")
     parser.add_argument("--key", default=DEFAULT_KEY)
     parser.add_argument("--updates", type=int, default=50)
     parser.add_argument("--rollout", type=int, default=128)
@@ -77,7 +78,10 @@ def main(argv=None) -> int:
     parser.add_argument("--watch", action="store_true", help="sync pod telemetry down while training and open the live dashboard locally")
     parser.add_argument("--sync-every", type=float, default=5.0, help="seconds between telemetry syncs with --watch")
     parser.add_argument("--dashboard-port", type=int, default=8765)
+    parser.add_argument("--no-dashboard", action="store_true", help="with --watch: sync telemetry only; run tools.dashboard yourself")
     args = parser.parse_args(argv)
+    if not args.host or not args.port:
+        parser.error("pod address missing: pass --host/--port or set RUNPOD_SSH_HOST / RUNPOD_SSH_PORT (pods get a new address each start)")
 
     ssh_cmd = f"ssh -i {args.key} -p {args.port} -o StrictHostKeyChecking=no"
 
@@ -97,6 +101,10 @@ def main(argv=None) -> int:
         ".pytest_cache",
         "--exclude",
         ".DS_Store",
+        "--exclude",
+        "/logs/",  # old checkpoints/telemetry stay local; the pod trains from scratch unless --resume
+        "--exclude",
+        "/recordings/",
         "./",
         f"root@{args.host}:/workspace/tensormew",
     ]
@@ -144,7 +152,8 @@ def main(argv=None) -> int:
         print(f"Watching: syncing pod telemetry every {args.sync_every:g}s and serving the dashboard locally...", flush=True)
         pull_logs(ssh_cmd, args.host, quiet=True)
         threading.Thread(target=watch_loop, args=(ssh_cmd, args.host, args.sync_every, stop), daemon=True).start()
-        dashboard = subprocess.Popen([sys.executable, "-m", "tools.dashboard", "--port", str(args.dashboard_port)])
+        if not args.no_dashboard:
+            dashboard = subprocess.Popen([sys.executable, "-m", "tools.dashboard", "--port", str(args.dashboard_port)])
 
     def train_and_sync() -> int:
         try:
