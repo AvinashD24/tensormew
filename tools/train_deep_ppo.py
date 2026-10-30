@@ -23,6 +23,7 @@ import torch.optim as optim
 from src.battle import tactical_battle_step
 from src.deep_policy import SpatialVisionPolicy
 from src.emulator import Emulator
+from src.live_feed import LiveFeed
 from src.macros import Macros
 from src.mover import walkable
 from src.ram_parser import RamParser, dialogue_open
@@ -226,10 +227,22 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
 
                 steps += 1
                 done = steps >= max_steps or quest_complete
+                ended_maps = len(seen_maps)
+                ended_state = start_states[current_state_idx]
                 if done:
                     reset_environment()
 
-                screen, ram_vec, _ = get_obs()
+                screen, ram_vec, st_now = get_obs()
+                info_out = {
+                    "map": [st_now.map_group, st_now.map_number],
+                    "x": st_now.x,
+                    "y": st_now.y,
+                    "state": start_states[current_state_idx],
+                    "battle": st_now.battle_mode != 0,
+                    "badges": st_now.badges,
+                    "ended_maps": ended_maps,
+                    "ended_state": ended_state,
+                }
                 pipe.send(
                     (
                         screen,
@@ -238,6 +251,7 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int):
                         bool(done),
                         len(seen_maps),
                         after.badges,
+                        info_out,
                     )
                 )
 
@@ -262,6 +276,7 @@ class VectorEnv:
 
         self.pipes = []
         self.procs = []
+        self.last_infos: list[dict | None] = [None] * num_envs  # per-env telemetry from the latest step()
         for i in range(num_envs):
             parent_conn, child_conn = mp.Pipe()
             p = mp.Process(
@@ -289,8 +304,9 @@ class VectorEnv:
         for pipe, act in zip(self.pipes, actions):
             pipe.send(("STEP", act))
         screens, rams, rews, dones, maps, badges = [], [], [], [], [], []
-        for pipe in self.pipes:
-            s, r, rew, d, m, b = pipe.recv()
+        for i, pipe in enumerate(self.pipes):
+            s, r, rew, d, m, b, info = pipe.recv()
+            self.last_infos[i] = info
             screens.append(s)
             rams.append(r)
             rews.append(rew)
@@ -353,6 +369,8 @@ def train(
     states: list[str] | None = None,
     push_weights: bool = False,
     max_steps: int | None = None,
+    live: bool = True,
+    live_dir: str = "logs/live",
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru})...")
@@ -384,6 +402,25 @@ def train(
     best_reward = -float("inf")
     hx = torch.zeros(1, num_envs, 512, device=device) if policy.use_gru else None
     monitor = TerminalMonitor(total_updates=updates, jsonl_path="logs/training_metrics.jsonl")
+    feed = None
+    if live:
+        feed = LiveFeed(
+            live_dir,
+            num_envs=num_envs,
+            action_names=ACTIONS,
+            run_info={
+                "total_updates": updates,
+                "rollout_steps": rollout_steps,
+                "num_envs": num_envs,
+                "lr": lr,
+                "entropy_coef": entropy_coef,
+                "recurrent": policy.use_gru,
+                "resume": resume,
+                "curriculum_states": sorted(set(states_to_use)),
+                "device": str(device),
+            },
+        )
+        print(f"Live dashboard feed -> {live_dir}  (view with: python -m tools.dashboard)", flush=True)
 
     try:
         for update in range(updates):
@@ -418,6 +455,14 @@ def train(
 
                 actions_np = actions_t.cpu().numpy()
                 screens_next, rams_next, rews, dones, map_counts, badges = vec_env.step(actions_np)
+                if feed is not None:
+                    feed.observe(
+                        infos=vec_env.last_infos,
+                        actions=actions_np,
+                        rewards=rews,
+                        dones=dones,
+                        screens=screens_next,
+                    )
 
                 if policy.use_gru and next_hx is not None:
                     if any(dones):
@@ -564,6 +609,8 @@ def train(
                 duration_sec=dt,
                 samples=total_samples,
             )
+            if feed is not None:
+                feed.on_update(update, total_samples)
 
             if mean_rew > best_reward or (update + 1) % 10 == 0:
                 best_reward = max(best_reward, mean_rew)
@@ -577,10 +624,15 @@ def train(
             except Exception as e:
                 print(f"[Warning] Could not auto-push weights: {e}", flush=True)
     finally:
+        if feed is not None:
+            feed.finish()
         vec_env.close()
 
 
 def main(argv=None):
+    # The monitor prints π and status emoji; legacy Windows consoles (cp1252) would crash on them.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training on CUDA")
     parser.add_argument("--updates", type=int, default=50)
     parser.add_argument("--rollout", type=int, default=128)
@@ -599,6 +651,9 @@ def main(argv=None):
     parser.add_argument("--save", default="logs/deep_policy.pt")
     parser.add_argument("--resume", action="store_true", default=False, help="warm-start from --save if it exists (off by default: train from scratch)")
     parser.add_argument("--push-weights", action="store_true", default=False, help="commit and push updated weights to the current branch on completion (off by default)")
+    parser.add_argument("--live", action="store_true", default=True, help="write live telemetry for tools.dashboard (default on)")
+    parser.add_argument("--no-live", action="store_false", dest="live")
+    parser.add_argument("--live-dir", default="logs/live")
     args = parser.parse_args(argv)
 
     states_list = [s.strip() for s in args.states.split(",") if s.strip()] if args.states else None
@@ -617,6 +672,8 @@ def main(argv=None):
         states=states_list,
         push_weights=args.push_weights,
         max_steps=args.max_steps,
+        live=args.live,
+        live_dir=args.live_dir,
     )
 
 

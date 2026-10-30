@@ -13,7 +13,6 @@ import sys
 import time
 
 CANDIDATE_LOGS = [
-    Path("/Users/shrey/.gemini/antigravity-ide/brain/1369e291-1f53-4e41-b038-cda0fcd72bcd/.system_generated/tasks/task-7600.log"),
     Path("logs/training.log"),
 ]
 

@@ -1,0 +1,550 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TensorMew Live Training</title>
+<style>
+:root {
+  --bg: #0b1020; --panel: #121a33; --panel2: #18223f; --border: #26335c;
+  --text: #e6ebff; --muted: #8f9bc4; --accent: #ff5fa2; --accent2: #5ee6ff;
+  --good: #4ade80; --warn: #fbbf24; --bad: #f87171; --gold: #ffd166;
+  --shadow: 0 8px 28px rgba(0,0,0,.35);
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f5fb; --panel: #ffffff; --panel2: #f0f3fb; --border: #d7ddf0;
+    --text: #12183a; --muted: #5a6592; --accent: #d6247d; --accent2: #0a85a3;
+    --good: #15803d; --warn: #b45309; --bad: #b91c1c; --gold: #b8860b;
+    --shadow: 0 6px 20px rgba(20,30,80,.10);
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f3f5fb; --panel: #ffffff; --panel2: #f0f3fb; --border: #d7ddf0;
+  --text: #12183a; --muted: #5a6592; --accent: #d6247d; --accent2: #0a85a3;
+  --good: #15803d; --warn: #b45309; --bad: #b91c1c; --gold: #b8860b;
+  --shadow: 0 6px 20px rgba(20,30,80,.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 0 16px 48px; }
+.wrap { max-width: 1480px; margin: 0 auto; }
+h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: .01em; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* header */
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 18px 0 14px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: grid; place-items: center; color: #0b1020; font-weight: 800; box-shadow: var(--shadow); }
+.brand h1 { font-size: 18px; }
+.brand small { display: block; color: var(--muted); font-size: 12px; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); font-size: 12px; font-weight: 650; letter-spacing: .06em; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.pill.live .dot { background: var(--good); animation: pulse 1.4s ease-in-out infinite; }
+.pill.live { color: var(--good); } .pill.stale { color: var(--warn); } .pill.stale .dot { background: var(--warn); }
+.pill.done { color: var(--accent2); } .pill.done .dot { background: var(--accent2); }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.chip { padding: 3px 9px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.chip b { color: var(--text); font-weight: 600; }
+.theme { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+
+/* cards */
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+.card > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.card > h2 .sub { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 12px; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.kpi .value { font: 650 28px/1.15 var(--mono); margin-top: 2px; }
+.kpi .note { color: var(--muted); font-size: 12px; margin-top: 2px; min-height: 17px; }
+.kpi canvas { width: 100%; height: 34px; display: block; margin-top: 6px; }
+.bar { height: 8px; border-radius: 6px; background: var(--panel2); overflow: hidden; margin-top: 10px; position: relative; }
+.bar > i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 6px; transition: width .6s ease; }
+.zones { height: 8px; border-radius: 6px; margin-top: 10px; position: relative; background: linear-gradient(90deg, var(--bad) 0 22%, var(--warn) 22% 44%, var(--good) 44% 100%); opacity: .8; }
+.zones i { position: absolute; top: -4px; width: 3px; height: 16px; background: var(--text); border-radius: 2px; transition: left .5s ease; }
+.up { color: var(--good); } .down { color: var(--bad); } .flat { color: var(--muted); }
+
+.grid2 { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 14px; margin-bottom: 14px; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.chartbox { position: relative; }
+.chartbox canvas { width: 100%; height: 210px; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px; background: var(--c); margin-right: 6px; vertical-align: middle; }
+#tip { position: fixed; z-index: 20; pointer-events: none; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 12px; box-shadow: var(--shadow); display: none; white-space: nowrap; }
+#tip b { display: block; margin-bottom: 2px; }
+
+/* live agents */
+.envs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.env { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px; cursor: pointer; transition: border-color .3s, transform .15s; }
+.env:hover { transform: translateY(-2px); border-color: var(--accent2); }
+.env.top { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+.env.battle { border-color: var(--bad); }
+.screen { position: relative; aspect-ratio: 160 / 144; background: #000; border-radius: 6px; overflow: hidden; }
+.screen img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+.screen .id { position: absolute; left: 5px; top: 5px; background: rgba(0,0,0,.65); color: #fff; font: 600 11px var(--mono); padding: 1px 6px; border-radius: 5px; }
+.screen .tag { position: absolute; right: 5px; top: 5px; background: var(--bad); color: #fff; font: 700 10px var(--mono); padding: 1px 6px; border-radius: 5px; letter-spacing: .08em; }
+.env .m1 { font-weight: 600; font-size: 12px; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.env .m2 { font: 11px var(--mono); color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+.noimg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 11px; }
+
+/* health + events */
+.stack { display: grid; gap: 14px; align-content: start; }
+.diag { display: grid; gap: 8px; }
+.diag div { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 9px; background: var(--panel2); border-left: 4px solid var(--muted); font-size: 13px; }
+.diag .ic { font: 700 12px var(--mono); min-width: 38px; }
+.diag .ok { border-color: var(--good); } .diag .ok .ic { color: var(--good); }
+.diag .warn { border-color: var(--warn); } .diag .warn .ic { color: var(--warn); }
+.diag .bad { border-color: var(--bad); } .diag .bad .ic { color: var(--bad); }
+.diag .info { border-color: var(--accent2); } .diag .info .ic { color: var(--accent2); }
+.events { max-height: 250px; overflow: auto; display: grid; gap: 6px; }
+.events div { font-size: 13px; display: flex; gap: 8px; }
+.events time { color: var(--muted); font: 11px var(--mono); min-width: 52px; padding-top: 2px; }
+.events .k { font: 700 10px var(--mono); padding: 2px 6px; border-radius: 5px; background: var(--panel2); height: fit-content; letter-spacing: .06em; }
+.k.map { color: var(--accent2); } .k.badge { color: var(--gold); } .k.record { color: var(--accent); }
+
+/* strip */
+.strip { display: flex; height: 16px; gap: 1px; margin-top: 10px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
+.strip i { flex: 1 1 0; min-width: 2px; }
+.s-EXPLORING { background: #38bdf8; } .s-LEARNING { background: var(--good); } .s-ADVANCING { background: #a3e635; }
+.s-LOOPING { background: var(--warn); } .s-THRASHING { background: #fb923c; } .s-COLLAPSED { background: var(--bad); }
+.legend.status span::before { height: 8px; width: 8px; border-radius: 2px; }
+
+/* coverage */
+.cov { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 14px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.tab { border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; }
+.tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 650; }
+#heat { width: 100%; height: 360px; display: block; background: var(--panel2); border-radius: 10px; }
+.ramp { height: 8px; border-radius: 4px; margin-top: 8px; background: linear-gradient(90deg, #1b1040, #5a1e8c, #c4366c, #fb8c3c, #ffe86b); }
+.ramp + div { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.act { display: grid; gap: 7px; }
+.act .row { display: grid; grid-template-columns: 52px 1fr 46px; gap: 8px; align-items: center; font: 12px var(--mono); }
+.act .track { height: 12px; background: var(--panel2); border-radius: 6px; position: relative; overflow: hidden; }
+.act .track i { position: absolute; inset: 0 auto 0 0; border-radius: 6px; transition: width .5s ease; }
+.act .track .tot { background: color-mix(in srgb, var(--accent2) 35%, transparent); }
+.act .track .rec { background: var(--accent); height: 6px; top: 3px; bottom: 3px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+td { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); font-family: var(--mono); }
+td.num, th.num { text-align: right; }
+
+#empty { display: none; text-align: center; padding: 70px 20px; }
+#empty h2 { font-size: 20px; margin-bottom: 8px; }
+#empty code { background: var(--panel2); padding: 3px 8px; border-radius: 6px; font-family: var(--mono); }
+dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); padding: 12px; box-shadow: var(--shadow); max-width: min(92vw, 760px); }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog img { width: 100%; image-rendering: pixelated; border-radius: 8px; display: block; background: #000; }
+dialog .row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; }
+dialog button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
+
+@media (max-width: 1000px) { .grid2, .cov { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .kpi .value { font-size: 24px; } .envs { grid-template-columns: repeat(2, 1fr); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">TM</div>
+      <div><h1>TensorMew Live Training</h1><small id="subtitle">connecting…</small></div>
+    </div>
+    <span id="status" class="pill"><span class="dot"></span><span id="statusText">WAITING</span></span>
+    <div class="chips" id="chips"></div>
+    <button class="theme" id="themeBtn" type="button" aria-label="Toggle light and dark theme">Theme</button>
+  </header>
+
+  <div id="empty" class="card">
+    <h2>Waiting for a training run…</h2>
+    <p>Start one with <code>python -m tools.train_deep_ppo --updates 100</code> and this page fills in live.<br>
+    No GPU handy? Preview the dashboard with <code>python -m tools.dashboard --demo</code>.</p>
+  </div>
+
+  <main id="main">
+    <section class="kpis" aria-label="Key metrics">
+      <div class="card kpi"><div class="label">Progress</div><div class="value" id="kUpdate">–</div><div class="note" id="kEta"></div><div class="bar"><i id="kBar" style="width:0"></i></div></div>
+      <div class="card kpi"><div class="label">Reward (mean / rolling)</div><div class="value" id="kReward">–</div><div class="note" id="kRewardNote"></div><canvas id="spReward" aria-hidden="true"></canvas></div>
+      <div class="card kpi"><div class="label">Policy entropy</div><div class="value" id="kEntropy">–</div><div class="note" id="kEntropyNote"></div><div class="zones"><i id="kEntMark" style="left:0"></i></div></div>
+      <div class="card kpi"><div class="label">Maps discovered</div><div class="value" id="kMaps">–</div><div class="note" id="kMapsNote"></div><canvas id="spMaps" aria-hidden="true"></canvas></div>
+      <div class="card kpi"><div class="label">Approx KL / clip</div><div class="value" id="kKl">–</div><div class="note" id="kKlNote"></div><canvas id="spKl" aria-hidden="true"></canvas></div>
+      <div class="card kpi"><div class="label">Throughput</div><div class="value" id="kSps">–</div><div class="note" id="kSpsNote"></div><canvas id="spDur" aria-hidden="true"></canvas></div>
+    </section>
+
+    <section class="grid2">
+      <div class="card">
+        <h2>Live agents <span class="sub" id="envSub"></span></h2>
+        <div class="envs" id="envs"></div>
+      </div>
+      <div class="stack">
+        <div class="card"><h2>Run health</h2><div class="diag" id="diag"></div></div>
+        <div class="card"><h2>Milestones <span class="sub" id="evSub"></span></h2><div class="events" id="events"></div></div>
+      </div>
+    </section>
+
+    <section class="charts">
+      <div class="card"><h2>Reward <span class="sub">per update</span></h2><div class="chartbox"><canvas id="chReward" role="img" aria-label="Reward over updates"></canvas></div><div class="legend"><span style="--c:var(--accent2)">mean reward</span><span style="--c:var(--accent)">rolling avg</span><span style="--c:var(--gold)">best so far</span></div></div>
+      <div class="card"><h2>Policy entropy <span class="sub">exploration vs collapse</span></h2><div class="chartbox"><canvas id="chEntropy" role="img" aria-label="Entropy over updates"></canvas></div><div class="legend"><span style="--c:var(--accent2)">entropy</span><span style="--c:var(--bad)">collapse &lt; 0.35</span><span style="--c:var(--good)">healthy &gt; 0.7</span></div></div>
+      <div class="card"><h2>PPO stability <span class="sub">KL &amp; clip fraction</span></h2><div class="chartbox"><canvas id="chKl" role="img" aria-label="KL and clip fraction"></canvas></div><div class="legend"><span style="--c:var(--accent)">approx KL</span><span style="--c:var(--accent2)">clip fraction</span><span style="--c:var(--warn)">KL limit 0.08</span></div></div>
+      <div class="card"><h2>Critic loss <span class="sub">hover to see policy loss too</span></h2><div class="chartbox"><canvas id="chLoss" role="img" aria-label="Value loss over updates"></canvas></div><div class="legend"><span style="--c:var(--accent)">value loss</span></div></div>
+    </section>
+
+    <section class="card" style="margin-bottom:14px">
+      <h2>Training phase timeline <span class="sub" id="stripSub"></span></h2>
+      <div class="strip" id="strip"></div>
+      <div class="legend status" style="margin-top:8px">
+        <span style="--c:#38bdf8">exploring</span><span style="--c:var(--good)">learning</span><span style="--c:#a3e635">advancing</span>
+        <span style="--c:var(--warn)">looping</span><span style="--c:#fb923c">thrashing</span><span style="--c:var(--bad)">collapsed</span>
+      </div>
+    </section>
+
+    <section class="cov">
+      <div class="card">
+        <h2>Exploration coverage <span class="sub" id="covSub"></span></h2>
+        <div class="tabs" id="mapTabs" role="group" aria-label="Choose map"></div>
+        <canvas id="heat" role="img" aria-label="Heatmap of tiles visited by the agents on the selected map"></canvas>
+        <div class="ramp"></div><div><span>rarely visited</span><span>visited constantly</span></div>
+      </div>
+      <div class="stack">
+        <div class="card"><h2>Action mix <span class="sub">bar = all time, line = this update</span></h2><div class="act" id="actions"></div></div>
+        <div class="card"><h2>Recent episodes</h2>
+          <table><thead><tr><th>Env</th><th class="num">Return</th><th class="num">Steps</th><th class="num">Maps</th><th>Start</th></tr></thead><tbody id="eps"></tbody></table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="tip" role="tooltip"></div>
+<dialog id="zoom"><div class="row"><b id="zTitle"></b><button id="zClose" type="button">Close</button></div><img id="zImg" alt="Enlarged agent view"><div class="row" id="zMeta" style="margin:8px 0 0"></div></dialog>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v, d = 2) => (v == null || !isFinite(v)) ? "–" : Number(v).toFixed(d);
+const sgn = (v, d = 1) => (v == null || !isFinite(v)) ? "–" : (v >= 0 ? "+" : "") + Number(v).toFixed(d);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const dur = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`; };
+
+let metrics = [];          // per-update records
+let live = null;           // latest LiveFeed snapshot
+let selectedMap = null;
+let lastLiveT = 0, lastFetchOk = 0;
+
+/* ---------- theme ---------- */
+const root = document.documentElement;
+try { const t = localStorage.getItem("tm-theme"); if (t) root.dataset.theme = t; } catch (e) {}
+$("themeBtn").onclick = () => {
+  const dark = (root.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")) === "dark";
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("tm-theme", root.dataset.theme); } catch (e) {}
+  redrawAll();
+};
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => redrawAll());
+
+/* ---------- generic line chart ---------- */
+const tip = $("tip");
+function niceStep(range, ticks) {
+  const raw = range / Math.max(1, ticks), p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+}
+class Chart {
+  constructor(canvas, opts) { this.c = canvas; this.o = opts; this.cfg = null; this.hover = -1;
+    canvas.addEventListener("mousemove", (e) => this.onMove(e));
+    canvas.addEventListener("mouseleave", () => { this.hover = -1; tip.style.display = "none"; this.draw(); });
+    new ResizeObserver(() => this.draw()).observe(canvas);
+  }
+  set(cfg) { this.cfg = cfg; this.draw(); }
+  geom() { const r = this.c.getBoundingClientRect(); return { w: r.width, h: r.height, l: 46, r: 12, t: 10, b: 22 }; }
+  onMove(e) {
+    if (!this.cfg || !this.cfg.xs.length) return;
+    const g = this.geom(), rect = this.c.getBoundingClientRect(), n = this.cfg.xs.length;
+    const px = e.clientX - rect.left;
+    const i = clamp(Math.round((px - g.l) / (g.w - g.l - g.r) * (n - 1)), 0, n - 1);
+    this.hover = i; this.draw();
+    const rows = this.cfg.series.filter(s => s.ys[i] != null).map(s => `<span style="color:${s.color}">●</span> ${s.label}: <b style="display:inline">${(s.fmt || fmt)(s.ys[i])}</b>`);
+    tip.innerHTML = `<b>update ${this.cfg.xs[i]}</b>${rows.join("<br>")}`;
+    tip.style.display = "block";
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  }
+  draw() {
+    const cv = this.c, dpr = devicePixelRatio || 1, g = this.geom();
+    if (g.w < 10) return;
+    cv.width = Math.round(g.w * dpr); cv.height = Math.round(g.h * dpr);
+    const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, g.w, g.h);
+    const muted = css("--muted"), border = css("--border");
+    ctx.font = "11px " + css("--mono"); ctx.textBaseline = "middle";
+    const cfg = this.cfg;
+    if (!cfg || cfg.xs.length < 2) { ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.fillText("collecting data…", g.w / 2, g.h / 2); return; }
+    const n = cfg.xs.length; let lo = Infinity, hi = -Infinity;
+    for (const s of cfg.series) if (!s.hidden) for (const v of s.ys) if (v != null && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    if (cfg.yMin != null) lo = Math.min(lo, cfg.yMin); if (cfg.yMax != null) hi = Math.max(hi, cfg.yMax);
+    if (cfg.floor != null) lo = cfg.floor;
+    if (!isFinite(lo) || lo === hi) { lo = (lo || 0) - 1; hi = (hi || 0) + 1; }
+    const pad = (hi - lo) * 0.06; if (cfg.floor == null) lo -= pad; hi += pad;
+    const step = niceStep(hi - lo, 4), y0 = Math.floor(lo / step) * step, y1 = Math.ceil(hi / step) * step;
+    const X = (i) => g.l + (i / (n - 1)) * (g.w - g.l - g.r), Y = (v) => g.t + (1 - (v - y0) / (y1 - y0)) * (g.h - g.t - g.b);
+    for (const b of (cfg.bands || [])) { ctx.fillStyle = b.color; ctx.globalAlpha = .13; const ya = Y(clamp(b.y1, y0, y1)), yb = Y(clamp(b.y0, y0, y1)); ctx.fillRect(g.l, ya, g.w - g.l - g.r, yb - ya); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.fillStyle = muted; ctx.textAlign = "right";
+    for (let v = y0; v <= y1 + step / 2; v += step) { const y = Math.round(Y(v)) + .5; ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.w - g.r, y); ctx.stroke(); ctx.globalAlpha = 1; ctx.fillText(step < 1 ? v.toFixed(2) : v.toFixed(step < 10 ? 1 : 0), g.l - 6, y); }
+    ctx.textAlign = "center";
+    const xstep = Math.max(1, niceStep(cfg.xs[n - 1] - cfg.xs[0], 6));
+    for (let v = Math.ceil(cfg.xs[0] / xstep) * xstep; v <= cfg.xs[n - 1]; v += xstep) { const i = cfg.xs.indexOf(v); if (i >= 0) ctx.fillText(v, X(i), g.h - 8); }
+    for (const l of (cfg.lines || [])) { if (l.y < y0 || l.y > y1) continue; ctx.strokeStyle = l.color; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(g.l, Y(l.y)); ctx.lineTo(g.w - g.r, Y(l.y)); ctx.stroke(); ctx.setLineDash([]); }
+    for (const s of cfg.series) {
+      if (s.hidden) continue;
+      ctx.beginPath(); let started = false;
+      s.ys.forEach((v, i) => { if (v == null || !isFinite(v)) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); });
+      if (s.fill && started) { const last = s.ys.length - 1; ctx.save(); ctx.lineTo(X(last), Y(y0)); ctx.lineTo(X(0), Y(y0)); ctx.closePath(); ctx.globalAlpha = .12; ctx.fillStyle = s.color; ctx.fill(); ctx.restore(); ctx.beginPath(); started = false; s.ys.forEach((v, i) => { if (v == null) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); }); }
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.w || 2; ctx.lineJoin = "round"; ctx.setLineDash(s.dash || []); ctx.globalAlpha = s.alpha || 1; ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    if (this.hover >= 0) { const x = X(this.hover); ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.h - g.b); ctx.stroke();
+      for (const s of cfg.series) { const v = s.ys[this.hover]; if (v == null || s.hidden) continue; ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(x, Y(v), 3.5, 0, 7); ctx.fill(); } }
+  }
+}
+function spark(canvas, ys, color) {
+  const dpr = devicePixelRatio || 1, r = canvas.getBoundingClientRect(); if (r.width < 5) return;
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  const v = ys.filter(x => x != null && isFinite(x)); if (v.length < 2) return;
+  const lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
+  ctx.beginPath(); v.forEach((y, i) => { const px = i / (v.length - 1) * (r.width - 2) + 1, py = r.height - 3 - (y - lo) / span * (r.height - 6); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+  ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = "round"; ctx.stroke();
+}
+
+const charts = {
+  reward: new Chart($("chReward")), entropy: new Chart($("chEntropy")),
+  kl: new Chart($("chKl")), loss: new Chart($("chLoss")),
+};
+
+/* ---------- derived data ---------- */
+const col = (k) => metrics.map(m => m[k] ?? null);
+function slope(ys) {            // least-squares slope per update
+  const v = ys.map((y, i) => [i, y]).filter(p => p[1] != null); const n = v.length; if (n < 4) return 0;
+  const mx = v.reduce((a, p) => a + p[0], 0) / n, my = v.reduce((a, p) => a + p[1], 0) / n;
+  let num = 0, den = 0; for (const [x, y] of v) { num += (x - mx) * (y - my); den += (x - mx) ** 2; }
+  return den ? num / den : 0;
+}
+const median = (a) => { const s = a.filter(x => x != null).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : 0; };
+
+function diagnostics() {
+  const out = [], n = metrics.length, last = metrics[n - 1];
+  const add = (cls, ic, text) => out.push(`<div class="${cls}"><span class="ic">${ic}</span><span>${text}</span></div>`);
+  if (!last) { add("info", "WAIT", "No updates logged yet. The first PPO update appears after the first rollout."); return out.join(""); }
+  const maxEnt = live && live.actions ? Math.log(live.actions.names.length) : Math.log(5);
+  const ent = col("entropy").slice(-3);
+  if (ent.length >= 3 && ent.every(e => e != null && e < 0.35)) add("bad", "STOP", `Policy collapse: entropy ${fmt(last.entropy)} for 3 updates (max ${fmt(maxEnt)}). Raise <b>entropy_coef</b>, lower LR, or restart.`);
+  else if (last.entropy < 0.7) add("warn", "LOW", `Entropy ${fmt(last.entropy)} is below 0.70, so exploration is narrowing.`);
+  else add("ok", "OK", `Entropy ${fmt(last.entropy)} is healthy (${Math.round(last.entropy / maxEnt * 100)}% of max).`);
+  if (last.approx_kl > 0.08) add("warn", "KL", `Approx KL ${fmt(last.approx_kl, 3)} exceeds 0.08, so updates are overwriting the policy. Consider a lower LR or fewer epochs.`);
+  if (last.clip_frac > 0.3) add("warn", "CLIP", `${(last.clip_frac * 100).toFixed(0)}% of samples are clipped, so updates are too aggressive.`);
+  const rw = col("mean_reward"), recent = rw.slice(-12);
+  if (n >= 8) { const s = slope(recent), scale = Math.max(1, Math.abs(median(recent)));
+    if (s > 0.02 * scale) add("ok", "UP", `Reward trending up (${sgn(s, 2)} per update over the last ${recent.length}).`);
+    else if (s < -0.02 * scale) add("warn", "DOWN", `Reward trending down (${sgn(s, 2)} per update over the last ${recent.length}).`);
+    else add("info", "FLAT", `Reward is flat over the last ${recent.length} updates (${sgn(median(recent))} median).`); }
+  const maps = col("maps_discovered"); let since = 0; for (let i = n - 1; i > 0 && maps[i] <= maps[i - 1]; i--) since++;
+  if (since >= 15) add("warn", "STUCK", `No new maps in ${since} updates. The agent may be looping; check the heatmap for dense hotspots.`);
+  else if (n > 1) add("ok", "MAPS", `${last.maps_discovered} map(s) discovered; last gain ${since} update(s) ago.`);
+  const vl = col("value_loss"); const med = median(vl.slice(-30, -1));
+  if (n > 10 && med > 0 && last.value_loss > 3 * med) add("warn", "VAL", `Value loss spiked to ${fmt(last.value_loss)} (median ${fmt(med)}); the critic may be unsettled by a reward or state change.`);
+  if (live && !live.finished && Date.now() / 1000 - live.t > 20) add("bad", "STALE", `No telemetry for ${dur(Date.now() / 1000 - live.t)}. Training may have stopped or crashed.`);
+  return out.join("");
+}
+
+/* ---------- renderers ---------- */
+function renderKpis() {
+  const n = metrics.length, last = metrics[n - 1];
+  const total = live?.run?.total_updates || null;
+  if (last) {
+    $("kUpdate").textContent = total ? `${last.update + 1} / ${total}` : `${last.update + 1}`;
+    if (total) { $("kBar").style.width = clamp((last.update + 1) / total * 100, 0, 100) + "%";
+      const per = median(metrics.slice(-10).map(m => m.duration_sec)); $("kEta").textContent = per ? `~${dur((total - last.update - 1) * per)} remaining` : ""; }
+    $("kReward").textContent = sgn(last.mean_reward);
+    const best = Math.max(...col("mean_reward").filter(v => v != null));
+    $("kRewardNote").innerHTML = `rolling ${sgn(last.rolling_reward)} · best ${sgn(best)}`;
+    $("kEntropy").textContent = fmt(last.entropy);
+    const maxEnt = live?.actions ? Math.log(live.actions.names.length) : Math.log(5);
+    $("kEntropyNote").textContent = `${Math.round(last.entropy / maxEnt * 100)}% of max ${fmt(maxEnt)}`;
+    $("kEntMark").style.left = `calc(${clamp(last.entropy / maxEnt, 0, 1) * 100}% - 1px)`;
+    $("kMaps").textContent = last.maps_discovered;
+    $("kMapsNote").textContent = `${last.badges || 0} badge(s)` + (live ? ` · ${live.maps_seen} seen overall` : "");
+    $("kKl").textContent = fmt(last.approx_kl, 4);
+    $("kKlNote").textContent = `clip ${(last.clip_frac * 100).toFixed(1)}% · lr ${Number(last.lr).toExponential(1)}`;
+    const dEl = $("kSps"); $("kSpsNote").textContent = `${fmt(last.duration_sec, 1)}s per update`;
+    dEl.textContent = live ? `${Math.round(live.steps_per_sec)} st/s` : `${fmt(last.samples / Math.max(last.duration_sec, .01), 0)} st/s`;
+    spark($("spReward"), col("mean_reward").slice(-60), css("--accent2"));
+    spark($("spMaps"), col("maps_discovered").slice(-60), css("--good"));
+    spark($("spKl"), col("approx_kl").slice(-60), css("--accent"));
+    spark($("spDur"), col("duration_sec").slice(-60), css("--gold"));
+  }
+}
+function renderCharts() {
+  const xs = metrics.map(m => m.update);
+  let best = -Infinity; const bestSeries = col("mean_reward").map(v => (v != null && v > best) ? (best = v) : (isFinite(best) ? best : null));
+  charts.reward.set({ xs, series: [
+    { ys: col("mean_reward"), color: css("--accent2"), label: "mean", w: 1.6, alpha: .85, fmt: (v) => sgn(v, 2) },
+    { ys: col("rolling_reward"), color: css("--accent"), label: "rolling", w: 2.6, fmt: (v) => sgn(v, 2) },
+    { ys: bestSeries, color: css("--gold"), label: "best", w: 1.2, dash: [4, 4], fmt: (v) => sgn(v, 2) }] });
+  const maxEnt = live?.actions ? Math.log(live.actions.names.length) : Math.log(5);
+  charts.entropy.set({ xs, floor: 0, yMax: maxEnt, series: [{ ys: col("entropy"), color: css("--accent2"), label: "entropy", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) }],
+    bands: [{ y0: 0, y1: .35, color: css("--bad") }, { y0: .7, y1: maxEnt, color: css("--good") }] });
+  charts.kl.set({ xs, floor: 0, series: [
+    { ys: col("approx_kl"), color: css("--accent"), label: "KL", w: 2.2, fmt: (v) => fmt(v, 4) },
+    { ys: col("clip_frac"), color: css("--accent2"), label: "clip", w: 1.8, fmt: (v) => fmt(v, 3) }],
+    lines: [{ y: .08, color: css("--warn") }] });
+  charts.loss.set({ xs, series: [
+    { ys: col("value_loss"), color: css("--accent"), label: "value", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) },
+    { ys: col("policy_loss"), color: css("--accent2"), label: "policy", hidden: true, fmt: (v) => fmt(v, 4) }], floor: 0 });
+  const strip = $("strip"), recent = metrics.slice(-160);
+  strip.innerHTML = recent.map(m => `<i class="s-${m.status || "LEARNING"}" title="update ${m.update}: ${m.status}"></i>`).join("");
+  const counts = {}; recent.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  $("stripSub").textContent = top ? `last ${recent.length} updates · mostly ${top[0].toLowerCase()}` : "";
+}
+
+const envEls = [];
+function ensureEnvs(n) {
+  const box = $("envs");
+  while (envEls.length < n) {
+    const i = envEls.length, d = document.createElement("div");
+    d.className = "env"; d.tabIndex = 0; d.setAttribute("role", "button");
+    d.innerHTML = `<div class="screen"><img alt="Agent ${i} game view"><span class="id">E${i}</span><span class="tag" hidden>BATTLE</span><div class="noimg">no frame yet</div></div><div class="m1"></div><div class="m2"><span></span><span></span></div>`;
+    d.onclick = () => openZoom(i); d.onkeydown = (e) => { if (e.key === "Enter") openZoom(i); };
+    box.appendChild(d);
+    envEls.push({ d, img: d.querySelector("img"), noimg: d.querySelector(".noimg"), tag: d.querySelector(".tag"), m1: d.querySelector(".m1"), a: d.querySelectorAll(".m2 span")[0], b: d.querySelectorAll(".m2 span")[1] });
+  }
+}
+function loadFrame(img, i, noimg, big) {
+  const probe = new Image(), key = Math.floor(Date.now() / 500);
+  probe.onload = () => { img.src = probe.src; if (noimg) noimg.style.display = "none"; };
+  probe.src = `/frames/env_${i}.png?k=${key}`;
+}
+function renderEnvs() {
+  if (!live) return;
+  ensureEnvs(live.num_envs);
+  const rets = live.envs.map(e => e.ep_return), topRet = Math.max(...rets);
+  live.envs.forEach((e, i) => {
+    const el = envEls[i]; loadFrame(el.img, i, el.noimg);
+    el.m1.textContent = e.map_name || "…"; el.m1.title = e.state ? `started from ${e.state}` : "";
+    el.a.textContent = `(${e.x},${e.y})`;
+    el.b.textContent = `${sgn(e.ep_return, 1)} · ${e.ep_steps}`;
+    el.tag.hidden = !e.battle; el.d.classList.toggle("battle", !!e.battle);
+    el.d.classList.toggle("top", e.ep_return === topRet && topRet > 0);
+  });
+  $("envSub").textContent = `${live.num_envs} parallel emulators · gold = best return this episode`;
+}
+function renderEvents() {
+  if (!live) return;
+  const evs = live.events.slice(-30).reverse(), start = live.started;
+  $("events").innerHTML = evs.length ? evs.map(e => `<div><time>+${dur(e.t - start)}</time><span class="k ${e.kind}">${e.kind.toUpperCase()}</span><span>${e.text}</span></div>`).join("") : `<div><span class="flat">Nothing yet. Milestones appear as the agents find new maps, badges and records.</span></div>`;
+  $("evSub").textContent = `${live.events.length} total`;
+}
+function renderActions() {
+  if (!live) return;
+  const a = live.actions, tot = a.total.reduce((x, y) => x + y, 0) || 1, rec = a.recent.reduce((x, y) => x + y, 0) || 1;
+  $("actions").innerHTML = a.names.map((nm, i) => {
+    const pt = a.total[i] / tot * 100, pr = a.recent[i] / rec * 100;
+    return `<div class="row"><span>${nm}</span><div class="track"><i class="tot" style="width:${pt}%"></i><i class="rec" style="width:${pr}%"></i></div><span>${pt.toFixed(0)}%</span></div>`;
+  }).join("");
+  $("eps").innerHTML = live.episodes.slice(-10).reverse().map(e => `<tr><td>E${e.env}</td><td class="num ${e.return >= 0 ? "up" : "down"}">${sgn(e.return)}</td><td class="num">${e.steps}</td><td class="num">${e.maps}</td><td>${e.state}</td></tr>`).join("") || `<tr><td colspan="5" class="flat">No finished episodes yet.</td></tr>`;
+}
+
+/* heatmap */
+const RAMP = [[27, 16, 64], [90, 30, 140], [196, 54, 108], [251, 140, 60], [255, 232, 107]];
+function ramp(t) { const p = clamp(t, 0, 1) * (RAMP.length - 1), i = Math.min(RAMP.length - 2, Math.floor(p)), f = p - i; return RAMP[i].map((v, k) => Math.round(v + (RAMP[i + 1][k] - v) * f)); }
+function renderHeat() {
+  const cv = $("heat"), dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  const ctx = cv.getContext("2d"); cv.width = r.width * dpr; cv.height = r.height * dpr; ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (!live || !live.heat.length) { ctx.fillStyle = css("--muted"); ctx.font = "13px system-ui"; ctx.textAlign = "center"; ctx.fillText("Tile visits appear here once agents start moving.", r.width / 2, r.height / 2); $("mapTabs").innerHTML = ""; return; }
+  if (!live.heat.find(h => h.map === selectedMap)) selectedMap = live.heat[0].map;
+  $("mapTabs").innerHTML = live.heat.map(h => `<button class="tab" type="button" data-m="${h.map}" aria-pressed="${h.map === selectedMap}">${h.name} · ${h.visits.toLocaleString()}</button>`).join("");
+  const h = live.heat.find(x => x.map === selectedMap), cells = h.cells;
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, mx = 1;
+  for (const [x, y, c] of cells) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); mx = Math.max(mx, c); }
+  x0 -= 2; y0 -= 2; x1 += 2; y1 += 2;
+  const gw = x1 - x0 + 1, gh = y1 - y0 + 1, cell = Math.max(2, Math.min(r.width / gw, r.height / gh)), ox = (r.width - gw * cell) / 2, oy = (r.height - gh * cell) / 2;
+  ctx.fillStyle = "rgba(255,255,255,.04)"; ctx.fillRect(ox, oy, gw * cell, gh * cell);
+  const lmx = Math.log(1 + mx);
+  for (const [x, y, c] of cells) { const [R, G, B] = ramp(Math.log(1 + c) / lmx); ctx.fillStyle = `rgb(${R},${G},${B})`; ctx.fillRect(ox + (x - x0) * cell, oy + (y - y0) * cell, Math.ceil(cell), Math.ceil(cell)); }
+  live.trails.forEach((tr, i) => {
+    const pts = tr.filter(p => p[0] === selectedMap); if (pts.length < 1) return;
+    const hue = (i * 47) % 360; ctx.strokeStyle = `hsla(${hue},90%,70%,.85)`; ctx.lineWidth = 1.6; ctx.beginPath();
+    pts.forEach((p, k) => { const px = ox + (p[1] - x0 + .5) * cell, py = oy + (p[2] - y0 + .5) * cell; k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke();
+    const p = pts[pts.length - 1], px = ox + (p[1] - x0 + .5) * cell, py = oy + (p[2] - y0 + .5) * cell;
+    ctx.fillStyle = `hsl(${hue},90%,62%)`; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, Math.max(4, cell * .6), 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#0b1020"; ctx.font = `700 ${Math.max(8, Math.min(11, cell * .7))}px ${css("--mono")}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(i, px, py + .5);
+  });
+  $("covSub").textContent = `${h.name} · ${cells.length} unique tiles · peak ${mx.toLocaleString()} visits`;
+}
+$("mapTabs").addEventListener("click", (e) => { const b = e.target.closest(".tab"); if (b) { selectedMap = b.dataset.m; renderHeat(); } });
+
+/* zoom */
+const zoom = $("zoom"); let zoomEnv = -1, zoomTimer = null;
+function openZoom(i) { zoomEnv = i; zoom.showModal(); refreshZoom(); zoomTimer = setInterval(refreshZoom, 500); }
+function refreshZoom() { if (zoomEnv < 0 || !live) return; const e = live.envs[zoomEnv];
+  $("zTitle").textContent = `Agent E${zoomEnv} · ${e.map_name || ""}`;
+  $("zMeta").innerHTML = `<span>tile (${e.x}, ${e.y}) · start ${e.state}</span><span>return ${sgn(e.ep_return)} · ${e.ep_steps} steps · last ${e.last_action}</span>`;
+  const p = new Image(); p.onload = () => { $("zImg").src = p.src; }; p.src = `/frames/env_${zoomEnv}.png?k=${Date.now()}`; }
+zoom.addEventListener("close", () => { clearInterval(zoomTimer); zoomEnv = -1; });
+$("zClose").onclick = () => zoom.close();
+zoom.addEventListener("click", (e) => { if (e.target === zoom) zoom.close(); });
+
+/* header */
+function renderHeader() {
+  const el = $("status"), age = live ? Date.now() / 1000 - live.t : Infinity;
+  let cls = "", txt = "WAITING";
+  if (live && live.finished) { cls = "done"; txt = "FINISHED"; }
+  else if (live && age < 8) { cls = "live"; txt = "LIVE"; }
+  else if (live) { cls = "stale"; txt = "STALE " + dur(age); }
+  else if (metrics.length) { cls = "stale"; txt = "METRICS ONLY"; }
+  el.className = "pill " + cls; $("statusText").textContent = txt;
+  const run = live?.run || {};
+  const chips = [];
+  if (run.device) chips.push(`device <b>${run.device}</b>`);
+  if (live) chips.push(`envs <b>${live.num_envs}</b>`);
+  if (run.recurrent != null) chips.push(run.recurrent ? "<b>GRU</b>" : "<b>feed-forward</b>");
+  if (run.resume != null) chips.push(run.resume ? "<b>warm-start</b>" : "<b>from scratch</b>");
+  if (run.lr) chips.push(`lr <b>${Number(run.lr).toExponential(0)}</b>`);
+  if (live) chips.push(`<b>${live.steps.toLocaleString()}</b> env-steps`);
+  $("chips").innerHTML = chips.map(c => `<span class="chip">${c}</span>`).join("");
+  $("subtitle").textContent = live ? `running ${dur((live.finished ? live.t : Date.now() / 1000) - live.started)} · ${live.samples.toLocaleString()} samples trained` : "no live feed";
+}
+function renderAll() {
+  const has = metrics.length || live;
+  $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
+  renderHeader(); if (!has) return;
+  renderKpis(); renderCharts(); $("diag").innerHTML = diagnostics();
+  renderEnvs(); renderEvents(); renderActions(); renderHeat();
+}
+function redrawAll() { renderCharts(); renderKpis(); renderHeat(); }
+
+/* polling */
+async function pollMetrics() {
+  try {
+    const since = metrics.length ? metrics[metrics.length - 1].update : -1;
+    const r = await fetch(`/api/metrics?since=${since}`, { cache: "no-store" }); const fresh = await r.json();
+    if (since >= 0 && fresh.length === 0) return;
+    if (fresh.length && fresh[0].update <= since) metrics = fresh; else metrics = metrics.concat(fresh);
+    if (metrics.length > 6000) metrics = metrics.slice(-6000);
+    // a restarted run begins again at update 0: drop stale history
+    for (let i = 1; i < metrics.length; i++) if (metrics[i].update < metrics[i - 1].update) { metrics = metrics.slice(i); break; }
+    renderAll();
+  } catch (e) { $("subtitle").textContent = "dashboard server unreachable…"; }
+}
+async function pollLive() {
+  try {
+    const r = await fetch("/api/live", { cache: "no-store" }); const s = await r.json();
+    if (s && live && s.started !== live.started) { metrics = []; selectedMap = null; pollMetrics(); }   // new run began
+    if (s && s.t !== lastLiveT) { live = s; lastLiveT = s.t; renderAll(); } else renderHeader();
+  } catch (e) {}
+}
+pollMetrics(); pollLive();
+setInterval(pollMetrics, 2000); setInterval(pollLive, 1000);
+</script>
+</body>
+</html>

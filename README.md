@@ -29,3 +29,17 @@ python -m tools.train_deep_ppo --push-weights ...                         # opt 
 ```
 
 Resume and weight-push are both off by default. `tools/sync_weights.py` refuses to push from `main`.
+
+## Live training dashboard
+
+Training streams telemetry to `logs/live/` (disable with `--no-live`). Watch it in a browser while it runs:
+
+```bash
+python -m tools.dashboard          # http://127.0.0.1:8765, reads logs/live + logs/training_metrics.jsonl
+python -m tools.dashboard --demo   # preview the UI with a synthetic run, no training or ROM needed
+```
+
+It shows live game screens from every parallel emulator, reward / entropy / KL / loss charts with hover,
+a training-phase timeline, per-map exploration heatmaps with agent trails, the action mix, recent episodes,
+milestones (new maps, badges, records) and automatic health warnings (entropy collapse, KL spikes, stuck exploration, stale feed).
+On a remote GPU pod, forward the port: `ssh -L 8765:127.0.0.1:8765 root@<pod>` and run the dashboard on the pod.
