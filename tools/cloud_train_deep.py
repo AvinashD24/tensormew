@@ -150,16 +150,39 @@ def run_preflight(args) -> tuple[bool, int]:
     return not problems, envs
 
 
+def explicit_dests(parser: argparse.ArgumentParser, argv=None) -> set[str]:
+    """Dests of the options that were literally typed on the command line (not argparse defaults)."""
+    tokens = list(sys.argv[1:] if argv is None else argv)
+    typed = {t.split("=", 1)[0] for t in tokens if t.startswith("--")}
+    return {a.dest for a in parser._actions if typed & set(a.option_strings)}
+
+
 def build_remote_train_cmd(args, envs: int, config_path: str | None = None) -> str:
-    """The one place that builds the remote trainer command line. Adjust flags here."""
-    parts = [
-        "PYTHONUNBUFFERED=1", "python3", "-m", "tools.train_deep_ppo",
-        "--updates", str(args.updates), "--rollout", str(args.rollout), "--max-steps", str(args.max_steps),
-        "--envs", str(envs), "--batch-size", str(args.batch_size), "--lr", str(args.lr),
-        "--state", args.state, "--save", args.save,
-        "--curriculum" if args.curriculum else "--no-curriculum",
-        "--recurrent" if args.recurrent else "--no-recurrent",
-    ]
+    """The one place that builds the remote trainer command line. Adjust flags here.
+
+    With ``--config``, argparse defaults must not override the config on the pod, so only flags the user typed
+    (``args.explicit``, set by ``main``) are forwarded; ``--envs`` is also forwarded when the pod capped it.
+    Without ``--config`` (or without ``args.explicit``) every flag is forwarded as before.
+    """
+    explicit = getattr(args, "explicit", None) if config_path else None
+
+    def want(*dests: str) -> bool:
+        return explicit is None or any(d in explicit for d in dests)
+
+    parts = ["PYTHONUNBUFFERED=1", "python3", "-m", "tools.train_deep_ppo"]
+    for flag, dest, value in (
+        ("--updates", "updates", args.updates), ("--rollout", "rollout", args.rollout),
+        ("--max-steps", "max_steps", args.max_steps), ("--batch-size", "batch_size", args.batch_size),
+        ("--lr", "lr", args.lr), ("--state", "state", args.state), ("--save", "save", args.save),
+    ):
+        if want(dest):
+            parts += [flag, str(value)]
+    if want("envs") or envs != args.envs:
+        parts += ["--envs", str(envs)]
+    if want("curriculum", "no_curriculum"):
+        parts.append("--curriculum" if args.curriculum else "--no-curriculum")
+    if want("recurrent", "no_recurrent"):
+        parts.append("--recurrent" if args.recurrent else "--no-recurrent")
     if args.states:
         parts += ["--states", args.states]
     if args.resume:
@@ -336,6 +359,14 @@ def main(argv=None) -> int:
     parser.add_argument("--dashboard-port", type=int, default=8765)
     parser.add_argument("--no-dashboard", action="store_true", help="with --watch: sync telemetry only; run tools.dashboard yourself")
     args = parser.parse_args(argv)
+    args.explicit = explicit_dests(parser, argv)
+    if not args.attach:
+        if not args.run_id:
+            args.run_id = time.strftime("%Y%m%d-%H%M%S")
+        if "save" not in args.explicit and not args.resume:
+            # Never reuse the shared default: copying the checkpoint back would overwrite older local weights.
+            args.save = f"logs/{args.run_id}.pt"
+            args.explicit.add("save")
     if not args.host or not args.port:
         parser.error("pod address missing: pass --host/--port or set RUNPOD_SSH_HOST / RUNPOD_SSH_PORT (pods get a new address each start)")
     if args.attach and args.detach:

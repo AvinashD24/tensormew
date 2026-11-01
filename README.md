@@ -83,7 +83,7 @@ close the terminal, reconnect with the same pod address:
 
 ```bash
 python -m tools.cloud_train_deep --updates 400 --config blueprint_v1 --run-id v1 --detach --watch
-python -m tools.cloud_train_deep --attach --watch --save logs/deep_policy.pt   # later: resume syncing, pull the checkpoint
+python -m tools.cloud_train_deep --attach --watch --save logs/v1.pt   # later: resume syncing, pull the checkpoint (each run saves to logs/<run-id>.pt)
 ```
 
 Exit codes: 0 ok, 1 sync failure, 2 preflight/config error, 3 remote training failed, 4 job lost (died without a

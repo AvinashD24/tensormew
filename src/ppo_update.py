@@ -41,6 +41,7 @@ class RolloutBatch:
     returns: torch.Tensor  # (B, T)
     advantages: torch.Tensor  # (B, T)  raw (un-normalized) GAE advantages
     initial_hx: torch.Tensor | None = None  # (1, B, H) hidden state at the start of the rollout
+    dones: torch.Tensor | None = None  # (B, T) bool: episode ended after step t -> hidden state reset before t + 1
 
 
 class EntropySchedule:
@@ -206,7 +207,12 @@ def ppo_update(
                 old_lp = to_dev(batch.old_logps[idx])
                 mb_adv, mb_ret, mb_old_v = to_dev(adv[idx]), to_dev(returns[idx]), to_dev(old_values[idx])
                 hx = None if batch.initial_hx is None else to_dev(batch.initial_hx[:, idx, :])
-                new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx)
+                if batch.dones is None:
+                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx)
+                else:
+                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(
+                        s, r, a, hx, dones=to_dev(batch.dones[idx])
+                    )
             else:
                 s = to_dev(f_screens[idx], True)
                 r = to_dev(f_rams[idx])

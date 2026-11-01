@@ -314,6 +314,7 @@ if TORCH_AVAILABLE:
             ram_obs: torch.Tensor,
             actions: torch.Tensor,
             hx: torch.Tensor | None = None,
+            dones: torch.Tensor | None = None,
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
             """Evaluate sequential trajectory chunk for recurrent PPO loss updates.
 
@@ -322,6 +323,9 @@ if TORCH_AVAILABLE:
                 ram_obs: (B, T, obs_dim)
                 actions: (B, T)
                 hx: (1, B, gru_hidden_dim) initial hidden state for each chunk
+                dones: optional (B, T) bool; ``dones[b, t]`` means env b's episode ended after step t, so its hidden
+                    state is zeroed before step t + 1 (as the rollout does). None keeps the old behavior of
+                    carrying the hidden state across episode boundaries.
             """
             B, T = screens.shape[:2]
             screens_flat = screens.reshape(B * T, *screens.shape[2:])
@@ -331,7 +335,21 @@ if TORCH_AVAILABLE:
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1)).reshape(B, T, -1)
 
             if self.use_gru and self.gru is not None:
-                gru_out, _ = self.gru(fused, hx)
+                if dones is None:
+                    gru_out, _ = self.gru(fused, hx)
+                else:
+                    # Run the GRU in chunks cut where any env ended an episode; envs that ended get a zero state.
+                    dones = dones.to(fused.device).bool()
+                    cuts = [t + 1 for t in range(T - 1) if bool(dones[:, t].any())]
+                    outs, h, start = [], hx, 0
+                    for end in cuts + [T]:
+                        chunk, h = self.gru(fused[:, start:end], h)
+                        outs.append(chunk)
+                        if end < T:
+                            keep = (~dones[:, end - 1]).to(h.dtype).view(1, B, 1)
+                            h = h * keep
+                        start = end
+                    gru_out = torch.cat(outs, dim=1)
                 out = gru_out.reshape(B * T, -1)
             else:
                 out = fused.reshape(B * T, -1)

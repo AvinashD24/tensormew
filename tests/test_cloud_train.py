@@ -67,6 +67,31 @@ class BuilderTests(unittest.TestCase):
         self.assertIn("--no-curriculum", cmd)
         self.assertIn("--no-recurrent", cmd)
 
+    def test_config_forwards_only_explicit_flags(self):
+        args = make_args(updates=7, lr=1e-3)
+        args.explicit = {"updates", "config"}
+        cmd = c.build_remote_train_cmd(args, 16, "blueprint_v1")
+        self.assertIn("--updates 7", cmd)
+        self.assertIn("--config blueprint_v1", cmd)
+        for frag in ("--lr", "--rollout", "--envs", "--max-steps", "--batch-size", "--state ", "--save",
+                     "--curriculum", "--recurrent"):
+            self.assertNotIn(frag, cmd)
+        # a pod-capped env count must still be forwarded
+        self.assertIn("--envs 4", c.build_remote_train_cmd(args, 4, "blueprint_v1"))
+        # without --config every flag is forwarded even if `explicit` is set
+        self.assertIn("--lr", c.build_remote_train_cmd(args, 16, None))
+
+    def test_explicit_dests(self):
+        import argparse as ap
+
+        p = ap.ArgumentParser()
+        p.add_argument("--updates", type=int, default=1)
+        p.add_argument("--curriculum", action="store_true", default=True)
+        p.add_argument("--no-curriculum", action="store_false", dest="curriculum")
+        p.add_argument("--lr", type=float, default=1.0)
+        self.assertEqual(c.explicit_dests(p, ["--no-curriculum", "--lr=0.1"]), {"curriculum", "lr"})
+        self.assertEqual(c.explicit_dests(p, []), set())
+
     def test_runner_script(self):
         script = c.build_runner_script("echo hi")
         self.assertIn("train.log", script)
