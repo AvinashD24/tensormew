@@ -170,7 +170,11 @@ def build_remote_train_cmd(args, envs: int, config_path: str | None = None) -> s
     def want(*dests: str) -> bool:
         return explicit is None or any(d in explicit for d in dests)
 
-    parts = ["PYTHONUNBUFFERED=1", "python3", "-m", "tools.train_deep_ppo"]
+    # Pods report the host's core count (e.g. 256) but enforce a smaller CPU quota (e.g. 64 vCPUs). Unbounded torch/BLAS
+    # thread pools then oversubscribe the quota and starve the emulator workers (GPU sat at ~2% busy, load average
+    # ~60), so cap the threads. Measured on a 64-vCPU Secure 4090 pod.
+    parts = ["PYTHONUNBUFFERED=1", "OMP_NUM_THREADS=4", "MKL_NUM_THREADS=4", "OPENBLAS_NUM_THREADS=1",
+             "python3", "-m", "tools.train_deep_ppo"]
     for flag, dest, value in (
         ("--updates", "updates", args.updates), ("--rollout", "rollout", args.rollout),
         ("--max-steps", "max_steps", args.max_steps), ("--batch-size", "batch_size", args.batch_size),
@@ -192,7 +196,7 @@ def build_remote_train_cmd(args, envs: int, config_path: str | None = None) -> s
         parts += ["--run-id", args.run_id]
     if config_path:
         parts += ["--config", config_path]
-    return f"cd {REMOTE_ROOT} && " + " ".join(shlex.quote(p) if not p.startswith("PYTHONUNBUFFERED=") else p for p in parts)
+    return f"cd {REMOTE_ROOT} && " + " ".join(p if ("=" in p and p.split("=", 1)[0].isupper()) else shlex.quote(p) for p in parts)  # NAME=value env prefixes stay bare
 
 
 def build_runner_script(train_cmd: str, job_dir: str = JOB_DIR) -> str:
@@ -304,7 +308,7 @@ def checkpoint_files(save: str) -> list[Path]:
 def build_resume_upload_cmd(ssh_cmd: str, host: str, save: str, files: list[Path]) -> list[str]:
     """rsync that puts the resume checkpoint and its sidecars on the pod (the stock upload excludes /logs/)."""
     remote_dir = Path(save).parent.as_posix()
-    return ["rsync", "-avz", "-e", ssh_cmd, *[str(f) for f in files], f"root@{host}:{REMOTE_ROOT}/{remote_dir}/"]
+    return ["rsync", "-avz", "--no-owner", "--no-group", "-e", ssh_cmd, *[str(f) for f in files], f"root@{host}:{REMOTE_ROOT}/{remote_dir}/"]
 
 
 def upload_resume_checkpoint(args, ssh_cmd: str) -> int:
@@ -366,7 +370,8 @@ def resolve_config(args) -> tuple[str | None, bool]:
 
 def build_sync_up_cmd(ssh_cmd: str, host: str) -> list[str]:
     return [
-        "rsync", "-avz", "-e", ssh_cmd,
+        # --no-owner/--no-group: Secure Cloud pods refuse chown, which made rsync exit 23 and abort the run.
+        "rsync", "-avz", "--no-owner", "--no-group", "-e", ssh_cmd,
         "--exclude", ".venv", "--exclude", ".git", "--exclude", "__pycache__",
         "--exclude", ".pytest_cache", "--exclude", ".DS_Store",
         "--exclude", "/logs/",  # old checkpoints/telemetry stay local; the pod trains from scratch unless --resume
@@ -428,7 +433,7 @@ def main(argv=None) -> int:
             print("Failed to sync codebase to pod.", file=sys.stderr)
             return EXIT_FAIL
         if upload_config:
-            if run_cmd(["rsync", "-az", "-e", ssh_cmd, args.config, f"root@{args.host}:{REMOTE_CONFIG}"]) != 0:
+            if run_cmd(["rsync", "-az", "--no-owner", "--no-group", "-e", ssh_cmd, args.config, f"root@{args.host}:{REMOTE_CONFIG}"]) != 0:
                 print("Failed to upload the config file.", file=sys.stderr)
                 return EXIT_FAIL
         if args.resume:

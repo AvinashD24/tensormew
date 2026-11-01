@@ -290,7 +290,14 @@ def ppo_update(
         f_actions, f_logps = flat(batch.actions), flat(batch.old_logps)
         f_returns, f_adv, f_old_v = flat(returns), flat(adv), flat(old_values)
 
-    policy.train() if hp.bn_mode == "train" else policy.eval()
+    # cuDNN's GRU only runs its backward pass in training mode (a GPU-only error: "cudnn RNN backward can only be
+    # called in training mode"), so keep the module in train mode and freeze just BatchNorm for eval_refresh. There
+    # is no dropout, so this matches eval-mode numerics exactly.
+    policy.train()
+    if hp.bn_mode != "train":
+        for m in policy.modules():
+            if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
+                m.eval()
     pol_l, val_l, ent_l, kl_l, clip_l, gn_l = [], [], [], [], [], []
     n_steps = 0
     first_kl = None  # approx KL of the very first minibatch, before any optimizer step (0 when rollout and update agree)

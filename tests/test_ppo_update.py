@@ -367,6 +367,48 @@ class RealPolicyTests(unittest.TestCase):
         self.assertTrue(any(not torch.equal(b, p) for b, p in zip(before, policy.parameters())))
 
 
+class UpdateModeTests(unittest.TestCase):
+    """cuDNN's GRU backward only runs in training mode (a GPU-only crash), while BatchNorm must use running stats."""
+
+    def _seen_modes(self, bn_mode):
+        from src.deep_policy import SpatialVisionPolicy
+
+        torch.manual_seed(5)
+        B, T = 4, 3
+        policy = SpatialVisionPolicy(obs_dim=D, num_actions=A, ram_hidden_dim=16, fusion_dim=32,
+                                     use_gru=True, gru_hidden_dim=16)
+        seen = {}
+        original = policy.evaluate_actions_sequence
+
+        def spy(*args, **kwargs):
+            seen["policy_training"] = policy.training
+            seen["gru_training"] = policy.gru.training
+            bns = [m for m in policy.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+            seen["bn_training"] = [m.training for m in bns]
+            return original(*args, **kwargs)
+
+        policy.evaluate_actions_sequence = spy
+        g = torch.Generator().manual_seed(5)
+        batch = RolloutBatch(
+            screens=torch.rand(B, T, 3, 32, 32, generator=g), rams=torch.randn(B, T, D, generator=g),
+            actions=torch.randint(0, A, (B, T), generator=g), old_logps=torch.full((B, T), -math.log(A)),
+            returns=torch.randn(B, T, generator=g), advantages=torch.randn(B, T, generator=g),
+            initial_hx=torch.zeros(1, B, 16),
+        )
+        hp = PPOHParams(epochs=1, num_minibatches=2, target_kl=None, bn_mode=bn_mode)
+        ppo_update(policy, torch.optim.Adam(policy.parameters(), lr=1e-3), batch, hp)
+        return seen
+
+    def test_eval_refresh_keeps_gru_in_train_mode_and_batchnorm_frozen(self):
+        seen = self._seen_modes("eval_refresh")
+        self.assertTrue(seen["policy_training"] and seen["gru_training"])
+        self.assertTrue(seen["bn_training"] and not any(seen["bn_training"]))
+
+    def test_train_mode_uses_batch_statistics(self):
+        seen = self._seen_modes("train")
+        self.assertTrue(seen["bn_training"] and all(seen["bn_training"]))
+
+
 class BnModeTests(unittest.TestCase):
     """The rollout runs eval(); the update must too, or the ratio is not 1 before the first optimizer step."""
 

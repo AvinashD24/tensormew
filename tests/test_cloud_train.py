@@ -59,7 +59,11 @@ class BuilderTests(unittest.TestCase):
                      "--curriculum", "--recurrent", "--save logs/deep_policy.pt"):
             self.assertIn(frag, cmd)
         self.assertNotIn("--config", cmd)
-        self.assertTrue(cmd.startswith("cd /workspace/tensormew && PYTHONUNBUFFERED=1 python3"))
+        self.assertTrue(cmd.startswith("cd /workspace/tensormew && PYTHONUNBUFFERED=1 "))
+        # Pods advertise the host's cores but enforce a smaller quota; unbounded thread pools starve the emulators.
+        for cap in ("OMP_NUM_THREADS=4", "MKL_NUM_THREADS=4", "OPENBLAS_NUM_THREADS=1"):
+            self.assertIn(f" {cap} ", cmd)
+        self.assertIn(" python3 -m tools.train_deep_ppo", cmd)
 
     def test_train_cmd_config_and_negations(self):
         cmd = c.build_remote_train_cmd(make_args(curriculum=False, recurrent=False), 4, "blueprint_v1")
