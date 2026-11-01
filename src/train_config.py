@@ -30,8 +30,12 @@ class PPOConfig:
     num_minibatches: int = 4
     target_kl: float | None = 0.05
     norm_adv: bool = True
-    vf_clip: bool = True
+    # Off by default: a fixed +/-0.2 value clip slows the critic when returns are large. With reward_scale
+    # "running_std" returns have std ~1 and the clip (itself scaled by the return std) is mild, so it can be turned on.
+    vf_clip: bool = False
     adv_clip: float | None = None
+    bn_mode: str = "eval_refresh"  # "train" = old behaviour (BatchNorm batch stats in the update; legacy preset)
+    bn_refresh_frames: int = 256
 
 
 @dataclass
@@ -46,6 +50,7 @@ class TrainConfig:
     max_steps: int = 1024
     lr: float = 3e-4
     recurrent: bool = True
+    reward_scale: str = "running_std"  # divide rewards by the running std of the discounted return; "none" = raw
     # PPO
     ppo: PPOConfig = field(default_factory=PPOConfig)
     entropy_start: float = 0.03
@@ -78,11 +83,15 @@ class TrainConfig:
             errs.append(f"ppo.epochs must be >= 1 (got {p.epochs})")
         if p.num_minibatches < 1:
             errs.append(f"ppo.num_minibatches must be >= 1 (got {p.num_minibatches})")
-        elif self.envs % p.num_minibatches != 0:
+        elif self.recurrent and p.num_minibatches > self.envs:
             errs.append(
-                f"envs ({self.envs}) must be divisible by ppo.num_minibatches ({p.num_minibatches}); "
-                "minibatches are whole environments"
+                f"ppo.num_minibatches ({p.num_minibatches}) cannot exceed envs ({self.envs}); "
+                "minibatches are groups of whole environments (uneven groups are fine)"
             )
+        if p.bn_mode not in ("eval_refresh", "train"):
+            errs.append(f"ppo.bn_mode must be 'eval_refresh' or 'train' (got {p.bn_mode!r})")
+        if self.reward_scale not in ("running_std", "none"):
+            errs.append(f"reward_scale must be 'running_std' or 'none' (got {self.reward_scale!r})")
         if p.target_kl is not None and p.target_kl <= 0:
             errs.append(f"ppo.target_kl must be > 0 or null (got {p.target_kl})")
         if self.entropy_start < 0 or self.entropy_end < 0:
@@ -112,8 +121,9 @@ def legacy() -> TrainConfig:
         name="legacy",
         ppo=PPOConfig(
             gamma=0.99, gae_lambda=0.95, clip_ratio=0.2, entropy_coef=0.02, epochs=4, num_minibatches=1,
-            target_kl=None, vf_clip=False,
+            target_kl=None, vf_clip=False, bn_mode="train",
         ),
+        reward_scale="none",
         entropy_start=0.02,
         entropy_end=0.02,
         sticky_prob=0.0,

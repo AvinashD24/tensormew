@@ -48,10 +48,19 @@ class TrainConfigTests(unittest.TestCase):
         c = apply_overrides(load_config("blueprint_v1"), {"envs": None, "lr": 1e-4})
         self.assertEqual((c.envs, c.lr), (16, 1e-4))
 
-    def test_envs_not_divisible(self):
+    def test_uneven_env_groups_allowed_but_not_more_minibatches_than_envs(self):
+        self.assertEqual(apply_overrides(load_config("blueprint_v1"), {"envs": 10}).envs, 10)  # 4 uneven groups
         with self.assertRaises(ConfigError) as cm:
-            apply_overrides(load_config("blueprint_v1"), {"envs": 10})
-        self.assertIn("divisible", str(cm.exception))
+            apply_overrides(load_config("blueprint_v1"), {"envs": 3})  # 4 minibatches > 3 envs
+        self.assertIn("cannot exceed", str(cm.exception))
+
+    def test_preset_defaults_for_bn_and_reward_scale(self):
+        b, l = load_config("blueprint_v1"), load_config("legacy")
+        self.assertEqual((b.ppo.bn_mode, b.reward_scale, b.ppo.vf_clip), ("eval_refresh", "running_std", False))
+        self.assertEqual((l.ppo.bn_mode, l.reward_scale), ("train", "none"))
+        for bad in ({"bn_mode": "x"}, {"reward_scale": "x"}):
+            with self.assertRaises(ConfigError):
+                apply_overrides(b, bad)
 
     def test_unknown_key_and_preset(self):
         with self.assertRaises(ConfigError):

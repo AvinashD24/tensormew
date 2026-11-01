@@ -1,12 +1,15 @@
 import math
 import unittest
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
 
-from src.ppo_update import EntropySchedule, PPOHParams, RolloutBatch, compute_gae, ppo_update
+from src.ppo_update import (
+    EntropySchedule, PPOHParams, RolloutBatch, RunningReturnScaler, compute_gae, ppo_update, refresh_batchnorm,
+)
 
 A = 4  # actions
 H = 5  # hidden size of the stand-in recurrent policy
@@ -194,12 +197,12 @@ class PpoUpdateTests(unittest.TestCase):
         policy = SeqPolicy()
         batch = make_batch(B=B)
         batch.initial_hx = torch.arange(B, dtype=torch.float32).reshape(1, B, 1).repeat(1, 1, H)  # hx[:, b] == b
-        hp = PPOHParams(epochs=3, num_minibatches=4, target_kl=None)
+        hp = PPOHParams(epochs=3, num_minibatches=4, target_kl=None, bn_mode="train")
         stats = ppo_update(policy, torch.optim.SGD(policy.parameters(), lr=1e-3), batch, hp)
 
         self.assertEqual(stats["n_optimizer_steps"], 12)
         self.assertEqual(len(policy.calls), 12)
-        self.assertTrue(all(policy.modes), "policy must be in train mode during the update")
+        self.assertTrue(all(policy.modes), "bn_mode='train' keeps the policy in train mode during the update")
         for e in range(3):
             calls = policy.calls[e * 4:(e + 1) * 4]
             ids = [i for env_ids, _ in calls for i in env_ids]
@@ -362,6 +365,106 @@ class RealPolicyTests(unittest.TestCase):
         self.assertEqual(stats["n_optimizer_steps"], 4)
         self.assertTrue(math.isfinite(stats["policy_loss"]) and math.isfinite(stats["value_loss"]))
         self.assertTrue(any(not torch.equal(b, p) for b, p in zip(before, policy.parameters())))
+
+
+class BnModeTests(unittest.TestCase):
+    """The rollout runs eval(); the update must too, or the ratio is not 1 before the first optimizer step."""
+
+    def setUp(self):
+        from src.deep_policy import SpatialVisionPolicy
+
+        torch.manual_seed(0)
+        self.policy = SpatialVisionPolicy(obs_dim=5, num_actions=5, ram_hidden_dim=16, fusion_dim=32,
+                                          use_gru=True, gru_hidden_dim=16)
+        torch.nn.init.orthogonal_(self.policy.actor.weight, gain=1.0)
+        B, T = 4, 6
+        g = torch.Generator().manual_seed(1)
+        self.batch = RolloutBatch(
+            screens=torch.rand(B, T, 3, 32, 32, generator=g) * 255, rams=torch.randn(B, T, 5, generator=g),
+            actions=torch.randint(0, 5, (B, T), generator=g), old_logps=torch.zeros(B, T),
+            returns=torch.randn(B, T, generator=g), advantages=torch.randn(B, T, generator=g),
+            initial_hx=torch.zeros(1, B, 16),
+        )
+        self.batch.screens = self.batch.screens.to(torch.uint8)
+        # Cold running stats (never refreshed): batch-stat mode would disagree with them.
+        self.policy.eval()
+        with torch.no_grad():
+            lp, _, _ = self.policy.evaluate_actions_sequence(
+                self.batch.screens.float() / 255, self.batch.rams, self.batch.actions, self.batch.initial_hx)
+        self.batch.old_logps = lp.detach()
+
+    def run_update(self, bn_mode):
+        hp = PPOHParams(epochs=1, num_minibatches=2, target_kl=None, bn_mode=bn_mode, bn_refresh_chunk=8)
+        return ppo_update(self.policy, torch.optim.SGD(self.policy.parameters(), lr=0.0), self.batch, hp)
+
+    def test_first_step_ratio_is_one_in_eval_refresh(self):
+        stats = self.run_update("eval_refresh")
+        self.assertAlmostEqual(stats["approx_kl"], 0.0, places=7)
+        self.assertEqual(stats["clip_frac"], 0.0)
+        self.assertGreater(stats["bn_refresh_frames"], 0)
+        self.assertFalse(self.policy.training)
+
+    def test_train_mode_reproduces_the_old_mismatch(self):
+        stats = self.run_update("train")
+        self.assertGreater(stats["approx_kl"], 1e-4)
+
+    def test_running_stats_frozen_during_update_then_refreshed(self):
+        bn = self.policy.vision_trunk.bn1
+        before = bn.running_mean.clone()
+        hp = PPOHParams(epochs=1, num_minibatches=2, target_kl=None, bn_mode="eval_refresh")
+        # Run only the update part: statistics must not move until the refresh (which is the last thing ppo_update does)
+        stats = ppo_update(self.policy, torch.optim.SGD(self.policy.parameters(), lr=0.0), self.batch, hp)
+        self.assertFalse(torch.equal(before, bn.running_mean))  # refreshed after the update
+        self.assertEqual(stats["bn_refresh_frames"], 24)
+        self.assertEqual(bn.momentum, 0.1)  # momentum restored
+
+    def test_refresh_without_batchnorm_is_a_noop(self):
+        self.assertEqual(refresh_batchnorm(SeqPolicy(), make_batch(), PPOHParams()), 0)
+
+    def test_bad_bn_mode_rejected(self):
+        with self.assertRaises(ValueError):
+            self.run_update("bogus")
+
+
+class RewardScalerTests(unittest.TestCase):
+    def test_scales_returns_to_unit_std_without_shifting(self):
+        rng = np.random.default_rng(0)
+        sc = RunningReturnScaler(num_envs=4, gamma=0.99)
+        raw, scaled = [], []
+        for _ in range(3000):
+            r = rng.normal(0.5, 20.0, size=4)
+            raw.append(r)
+            scaled.append(sc.scale(r, np.zeros(4, bool)))
+        raw, scaled = np.array(raw), np.array(scaled)
+        self.assertGreater(sc.std, 20.0)  # discounted-return std is well above the per-step std
+        self.assertLess(np.abs(scaled[-1000:]).mean(), np.abs(raw[-1000:]).mean() / 10)
+        self.assertTrue((np.sign(scaled) == np.sign(raw)).all())  # scale only: signs untouched
+
+    def test_state_roundtrip_and_env_count_mismatch(self):
+        sc = RunningReturnScaler(3, 0.99)
+        for _ in range(10):
+            sc.scale(np.array([1.0, 2.0, 3.0]), np.array([False, False, True]))
+        other = RunningReturnScaler(3, 0.99)
+        other.load_state_dict(sc.state_dict())
+        self.assertEqual((other.mean, other.var, other.count), (sc.mean, sc.var, sc.count))
+        self.assertTrue(np.array_equal(other.ret, sc.ret))
+        resized = RunningReturnScaler(5, 0.99)
+        resized.load_state_dict(sc.state_dict())  # stats restored, per-env accumulator reset
+        self.assertEqual(resized.var, sc.var)
+        self.assertTrue((resized.ret == 0).all())
+
+    def test_value_clip_width_follows_return_scale(self):
+        """The clip half-width scales with the returns, so a 100x larger critic target is clipped just as hard."""
+        losses = []
+        for k in (1.0, 100.0):
+            torch.manual_seed(5)
+            pol = FFPolicy()
+            b = make_batch(with_hx=False)
+            b.returns, b.advantages = b.returns * k, b.advantages * k
+            hp = PPOHParams(epochs=1, num_minibatches=1, target_kl=None, vf_clip=True, norm_adv=False)
+            losses.append(ppo_update(pol, frozen_sgd(pol), b, hp)["value_loss"])
+        # With old_values = returns - adv the clipped max-loss keeps the same relative structure at both scales.
+        self.assertAlmostEqual(losses[1] / losses[0], 100.0 ** 2, delta=0.2 * 100.0 ** 2)
 
 
 if __name__ == "__main__":

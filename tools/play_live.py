@@ -452,8 +452,12 @@ def main(argv=None) -> int:
                     active_policy = chosen
                     recurrent_hx = None  # hidden state from the other model is meaningless here
                     print(f"[Step {step_idx}] Switched to {'post-egg' if chosen is post_egg_policy else 'base'} policy", flush=True)
-            use_goals = is_deep_policy and getattr(active_policy, "obs_dim", 17) == 21
-            obs = observe(state, visited, None if is_deep_policy else nav, include_goals=use_goals)
+            if is_deep_policy:
+                # Same layout the checkpoint was trained with (17 base, +4 goals, +route features), as the evaluator builds it.
+                from tools.evaluate_policy import obs_vector
+                obs = obs_vector(state, visited, int(getattr(active_policy, "obs_dim", 17)))
+            else:
+                obs = observe(state, visited, nav)
             probs = None
             if active_policy is not None:
                 if is_deep_policy:

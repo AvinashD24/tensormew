@@ -208,7 +208,7 @@ class RouteGraphTests(unittest.TestCase):
                     s = _at(node, stage)
                     f = rg.route_features(s)
                     rem = rg.goal_remaining(s)
-                    self.assertAlmostEqual(float(f[8]), min(1.0, rem / 100.0), places=6)
+                    self.assertAlmostEqual(float(f[8]), min(1.0, rem / rg.DIST_SCALE), places=6)
                     if rem == 0:
                         self.assertEqual(float(f[4:8].sum()), 0.0)
                         break
@@ -224,10 +224,15 @@ class RouteGraphTests(unittest.TestCase):
         self.assertEqual(f.dtype, np.float32)
         np.testing.assert_array_equal(f[:4], [1, 0, 0, 0])
         self.assertEqual(float(f[4:8].sum()), 1.0)
-        self.assertAlmostEqual(float(f[8]), rg.goal_remaining(_state((26, 1), 17, 6, 0)) / 100.0, places=6)
-        # far away the distance saturates at 1
-        far = rg.route_features(_state((10, 5), 20, 20, 0))
-        self.assertEqual(float(far[8]), 1.0)
+        self.assertAlmostEqual(float(f[8]), rg.goal_remaining(_state((26, 1), 17, 6, 0)) / rg.DIST_SCALE, places=6)
+        # far away (> 100 steps) the distance no longer saturates: scale is 400
+        self.assertEqual(rg.DIST_SCALE, 400.0)
+        far_state = _state((10, 5), 20, 20, 0)
+        far = rg.route_features(far_state)
+        d = rg.goal_remaining(far_state)
+        self.assertGreater(d, 100.0)
+        self.assertAlmostEqual(float(far[8]), min(1.0, d / 400.0), places=6)
+        self.assertLess(float(far[8]), 1.0)
 
     def test_goal_tile_has_zero_remaining_and_no_step(self):
         for stage, goal in enumerate(self.g.goals):

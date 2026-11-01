@@ -38,8 +38,8 @@ from src.mover import walkable
 from src.return_nav import ROM_PATH, SYM_PATH, _DIRS, _Rom, _signed
 
 STAGE_COUNT = 4
-ROUTE_FEATURE_DIM = 9   # stage one-hot (4) + next step up/down/left/right (4) + remaining distance / 100 (1)
-DIST_SCALE = 100.0
+ROUTE_FEATURE_DIM = 9   # stage one-hot (4) + next step up/down/left/right (4) + remaining distance / 400 (1)
+DIST_SCALE = 400.0       # about 2/3 of graph nodes are >= 100 steps from the goal, so /100 saturated
 UNREACHABLE_EXTRA = 5   # tiles on the graph with no path to the goal sit this far past the farthest reachable one
 
 STAGE_GET_EGG, STAGE_RETURN_EGG, STAGE_TO_GYM, STAGE_POST_GYM = range(4)
@@ -356,7 +356,7 @@ def goal_remaining(state) -> float | None:
 
 
 def route_features(state) -> np.ndarray:
-    """Stage one-hot, first step of the shortest path to the current goal, remaining distance / 100."""
+    """Stage one-hot, first step of the shortest path to the current goal, remaining distance / DIST_SCALE (400), clipped to [0, 1]."""
     f = np.zeros(ROUTE_FEATURE_DIM, dtype=np.float32)
     stage = current_stage(state)
     f[stage] = 1.0

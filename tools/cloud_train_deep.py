@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import threading
@@ -294,12 +295,56 @@ def poll_detached(args, ssh_cmd: str, max_failures: int = 120) -> int:
         time.sleep(max(args.sync_every, 1.0))
 
 
+def checkpoint_files(save: str) -> list[Path]:
+    """The checkpoint and every side file next to it (``<stem>.optim.pt``, a scaler sidecar, ...): ``<stem>.*``."""
+    p = Path(save)
+    return sorted(f for f in p.parent.glob(p.stem + ".*") if f.is_file())
+
+
+def build_resume_upload_cmd(ssh_cmd: str, host: str, save: str, files: list[Path]) -> list[str]:
+    """rsync that puts the resume checkpoint and its sidecars on the pod (the stock upload excludes /logs/)."""
+    remote_dir = Path(save).parent.as_posix()
+    return ["rsync", "-avz", "-e", ssh_cmd, *[str(f) for f in files], f"root@{host}:{REMOTE_ROOT}/{remote_dir}/"]
+
+
+def upload_resume_checkpoint(args, ssh_cmd: str) -> int:
+    """With --resume: ship the local checkpoint + sidecars before training, or refuse (never train from scratch)."""
+    local = Path(args.save)
+    if not local.exists():
+        rc, _ = remote_capture(args.key, args.port, args.host, f"test -f {shlex.quote(REMOTE_ROOT + '/' + local.as_posix())}")
+        if rc == 0:
+            print(f"--resume: {args.save} is not local but already exists on the pod; using that copy.", flush=True)
+            return EXIT_OK
+        print(f"--resume: checkpoint {args.save} not found locally or on the pod. Refusing to start a from-scratch run "
+              "that would be reported as a resume; pass --save <existing checkpoint> or drop --resume.", file=sys.stderr)
+        return EXIT_PREFLIGHT
+    files = checkpoint_files(args.save)
+    print(f"--resume: uploading {', '.join(f.name for f in files)} to the pod...", flush=True)
+    remote_dir = f"{REMOTE_ROOT}/{local.parent.as_posix()}"
+    rc, _ = remote_capture(args.key, args.port, args.host, f"mkdir -p {shlex.quote(remote_dir)}")
+    if rc != 0 or run_cmd(build_resume_upload_cmd(ssh_cmd, args.host, args.save, files)) != 0:
+        print("Failed to upload the resume checkpoint; not starting (it would train from scratch).", file=sys.stderr)
+        return EXIT_FAIL
+    return EXIT_OK
+
+
 def pull_checkpoint(args, ssh_cmd: str) -> int:
     print("Syncing trained checkpoint back to local machine...", flush=True)
-    sync_down = ["rsync", "-avz", "-e", ssh_cmd, f"root@{args.host}:{REMOTE_ROOT}/{args.save}", f"./{args.save}"]
+    local = Path(args.save)
+    local.parent.mkdir(parents=True, exist_ok=True)
+    if getattr(args, "resume", False) and local.exists():
+        # Keep the weights we resumed from: a failed warm start trains from scratch and must not replace them.
+        backup = local.with_name(local.name + ".pre-resume")
+        shutil.copy2(local, backup)
+        print(f"  resume: previous weights kept at {backup}", flush=True)
+    sync_down = ["rsync", "-avz", "-e", ssh_cmd, f"root@{args.host}:{REMOTE_ROOT}/{args.save}", f"./{local.as_posix()}"]
     if run_cmd(sync_down) != 0:
         print("Failed to sync checkpoint back to local machine.", file=sys.stderr)
         return EXIT_FAIL
+    # Sidecars (optimizer state, scaler, ...): every <stem>.* next to the checkpoint. Best effort.
+    side_glob = f"root@{args.host}:{REMOTE_ROOT}/{local.parent.as_posix()}/{local.stem}.*"
+    if run_cmd(["rsync", "-avz", "-e", ssh_cmd, side_glob, f"./{local.parent.as_posix()}/"]) != 0:
+        print("  warning: could not sync the checkpoint's sidecar files (resume will restart Adam moments).", file=sys.stderr)
     return EXIT_OK
 
 
@@ -331,7 +376,8 @@ def build_sync_up_cmd(ssh_cmd: str, host: str) -> list[str]:
 
 
 def main(argv=None) -> int:
-    parser = argparse.ArgumentParser(description="Cloud training of the Spatial Vision Policy on a RunPod GPU")
+    # allow_abbrev=False: explicit_dests() compares the typed tokens literally, so an abbreviation must be an error.
+    parser = argparse.ArgumentParser(description="Cloud training of the Spatial Vision Policy on a RunPod GPU", allow_abbrev=False)
     parser.add_argument("--host", default=DEFAULT_POD_HOST, help="pod SSH host (or set RUNPOD_SSH_HOST)")
     parser.add_argument("--port", default=DEFAULT_POD_PORT, help="pod SSH port (or set RUNPOD_SSH_PORT)")
     parser.add_argument("--key", default=DEFAULT_KEY)
@@ -385,6 +431,11 @@ def main(argv=None) -> int:
             if run_cmd(["rsync", "-az", "-e", ssh_cmd, args.config, f"root@{args.host}:{REMOTE_CONFIG}"]) != 0:
                 print("Failed to upload the config file.", file=sys.stderr)
                 return EXIT_FAIL
+        if args.resume:
+            args.explicit.add("save")  # the pod must resume from exactly the file we upload (and pull back)
+            rc_up = upload_resume_checkpoint(args, ssh_cmd)
+            if rc_up != EXIT_OK:
+                return rc_up
         if not args.skip_preflight:
             ok, envs = run_preflight(args)
             if not ok:

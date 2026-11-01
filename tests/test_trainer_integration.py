@@ -155,8 +155,9 @@ class ConfigCliTests(unittest.TestCase):
         self.assertEqual(cfg.ppo.num_minibatches, 1)  # legacy preset untouched
 
     def test_minibatches_adapt_to_env_count_unless_typed(self):
-        self.assertEqual(self.cfg("--envs", "6").ppo.num_minibatches, 3)
-        self.assertEqual(self.cfg("--envs", "5").ppo.num_minibatches, 1)
+        self.assertEqual(self.cfg("--envs", "6").ppo.num_minibatches, 4)  # uneven groups (2/2/1/1) are allowed
+        self.assertEqual(self.cfg("--envs", "5").ppo.num_minibatches, 4)
+        self.assertEqual(self.cfg("--envs", "3").ppo.num_minibatches, 3)  # capped at the env count
         self.assertEqual(self.cfg("--envs", "6", "--minibatches", "2").ppo.num_minibatches, 2)
         self.assertEqual(t.fit_minibatches(16, 4), 4)
 
@@ -384,8 +385,9 @@ class EnvWorkerEmulatorTests(unittest.TestCase):
             _, _, rew, _, _, _, info = w.step(a)
             comps = info["reward_components"]
             self.assertAlmostEqual(sum(comps.values()), rew, places=5)
-            for key in ("curiosity", "loop", "momentum", "quest"):
+            for key in ("curiosity", "loop", "momentum"):
                 self.assertIn(key, comps)
+            self.assertNotIn("quest", comps)
             self.assertIn(info["stage"], (0, 1, 2, 3))
             self.assertIn("route_phi", info)
             self.assertIn("ep_start_phi", info)
@@ -472,6 +474,198 @@ class EnvWorkerEmulatorTests(unittest.TestCase):
                 self.assertTrue(w.state_name.startswith("swarm:"))
                 *_, info = w.step(4)
                 self.assertTrue(info["state"].startswith("swarm:"))
+            finally:
+                w.close()
+
+
+def _exit_worker(pipe, *args):
+    """Worker that answers nothing and dies hard, like an emulator segfault / OOM kill."""
+    import os
+    pipe.recv()
+    os._exit(1)
+
+
+def _raising_worker(pipe, *args):
+    from tools import train_deep_ppo as tt
+    try:
+        pipe.recv()
+        raise ValueError("boom in worker")
+    except ValueError:
+        import traceback
+        pipe.send(tt.WorkerFailure(traceback.format_exc()))
+
+
+def _stuck_worker(pipe, *args):
+    import time
+    while True:
+        time.sleep(0.2)  # ignores every command, including CLOSE
+
+
+class WorkerCrashTests(unittest.TestCase):
+    def make(self, target, n=2):
+        ven = t.VectorEnv(n, ["a"], 4, worker_target=target)
+        self.addCleanup(ven.close)
+        return ven
+
+    def test_hard_exit_raises_instead_of_hanging(self):
+        import time
+        ven = self.make(_exit_worker)
+        t0 = time.time()
+        with self.assertRaises(t.WorkerCrashed) as ctx:
+            ven.reset()
+        self.assertLess(time.time() - t0, 20)
+        self.assertIn("exit code 1", str(ctx.exception))
+        ven.close()
+        ven.close()  # idempotent
+        self.assertFalse(any(p.is_alive() for p in ven.procs))
+
+    def test_worker_exception_reports_traceback(self):
+        ven = self.make(_raising_worker, n=1)
+        with self.assertRaises(t.WorkerCrashed) as ctx:
+            ven.reset()
+        self.assertIn("boom in worker", str(ctx.exception))
+
+    def test_close_terminates_stuck_workers(self):
+        ven = t.VectorEnv(2, ["a"], 4, worker_target=_stuck_worker)
+        self.assertTrue(all(p.is_alive() for p in ven.procs))
+        ven.close()
+        self.assertFalse(any(p.is_alive() for p in ven.procs))
+        ven.close()
+
+    def test_parent_does_not_hold_child_end(self):
+        ven = self.make(_exit_worker, n=1)
+        # the child end is closed in the parent: a dead worker must surface as EOF, not block forever
+        ven.pipes[0].send(("RESET", None))
+        ven.procs[0].join(10)
+        with self.assertRaises((EOFError, BrokenPipeError)):  # Windows raises BrokenPipeError from poll
+            ven.pipes[0].poll(5)
+            ven.pipes[0].recv()
+
+
+class SwarmSnapshotTests(unittest.TestCase):
+    def test_rotating_slots_fill_then_replace_oldest(self):
+        import os
+        with tempfile.TemporaryDirectory() as d:
+            a = t.SwarmArchive(d)
+            for k in range(3):
+                self.assertTrue(a.save_rotating("stage2", bytes([k]), slots=3))
+                os.utime(a.dir / f"stage2_{k}.state", (100 + k, 100 + k))
+            self.assertEqual(a.keys(), ["stage2_0", "stage2_1", "stage2_2"])
+            self.assertTrue(a.save_rotating("stage2", b"new", slots=3))
+            self.assertEqual(a.keys(), ["stage2_0", "stage2_1", "stage2_2"])
+            self.assertEqual(a.load("stage2_0"), b"new")  # the oldest slot was replaced
+
+    def test_sample_is_uniform_over_groups_then_slots(self):
+        with tempfile.TemporaryDirectory() as d:
+            a = t.SwarmArchive(d)
+            for k in range(4):
+                a.save(f"stage2_{k}", b"x")
+            a.save("event5", b"x")
+            rng = np.random.default_rng(0)
+            picks = [a.sample(rng) for _ in range(400)]
+            share = sum(p == "event5" for p in picks) / len(picks)
+            self.assertGreater(share, 0.35)  # one group of two, not 1 of 5 files
+            self.assertEqual({p for p in picks if p != "event5"}, {f"stage2_{k}" for k in range(4)})
+
+
+class WorkerInteractionRewardTests(unittest.TestCase):
+    class S:
+        def __init__(self, map_id=(26, 3), x=3, y=3, facing=0, dialogue=False, battle=0):
+            self.map_group, self.map_number = map_id
+            self.x, self.y, self.facing, self.battle_mode = x, y, facing, battle
+            self.party_hp = ()
+            self.dlg = dialogue
+
+    def run_one(self, before, after, action, ints, warps):
+        from unittest import mock
+        with mock.patch.object(t, "dialogue_open", lambda s: s.dlg), \
+                mock.patch.object(t, "_route_covered", lambda s: s.map_group == 24):
+            comps = {}
+            return t.worker_interaction_reward(before, after, action, ints, warps, comps), comps
+
+    def test_first_a_press_opening_text_pays_once(self):
+        ints, warps = set(), set()
+        r, c = self.run_one(self.S(), self.S(dialogue=True), 4, ints, warps)
+        self.assertEqual(r, 0.5)
+        self.assertEqual(c["interaction"], 0.5)
+        r2, _ = self.run_one(self.S(), self.S(dialogue=True), 4, ints, warps)
+        self.assertEqual(r2, 0.0)
+        r3, _ = self.run_one(self.S(), self.S(dialogue=True), 2, set(), set())  # not an A press
+        self.assertEqual(r3, 0.0)
+
+    def test_new_warp_pays_only_when_a_map_is_uncovered(self):
+        ints, warps = set(), set()
+        r, c = self.run_one(self.S((26, 3)), self.S((26, 4)), 0, ints, warps)
+        self.assertEqual(r, 1.0)
+        self.assertEqual(c["warp"], 1.0)
+        r, _ = self.run_one(self.S((26, 3)), self.S((26, 4)), 0, ints, warps)
+        self.assertEqual(r, 0.0)  # same edge again
+        r, _ = self.run_one(self.S((24, 4)), self.S((24, 5)), 0, set(), set())
+        self.assertEqual(r, 0.0)  # both maps covered by the route graph
+
+
+class RestoredStageStatesTests(unittest.TestCase):
+    EXPECTED = {"stage2_violet": 2, "stage2_gym_entered": 2, "stage3_falkner_beaten": 3}
+
+    def test_files_exist_and_curriculum_lists_them(self):
+        from src.states import StateRegistry
+        reg = StateRegistry()
+        for name in self.EXPECTED:
+            self.assertGreater(len(reg.load_bytes(name)), 1000)  # loadable by name without a manifest entry
+            self.assertIn(name, t.CURRICULUM_STATES)
+
+    @unittest.skipUnless(HAVE_ROM, "needs the ROM")
+    def test_route_graph_reports_stages_2_2_3(self):
+        w = t.EnvWorker(0, list(self.EXPECTED), 10, {"stage_balanced": True})
+        try:
+            self.assertEqual(w._stage_of_states(sorted(self.EXPECTED)), self.EXPECTED)
+            self.assertEqual(sorted(w.selector.by_stage), [2, 3])
+        finally:
+            w.close()
+
+
+@unittest.skipUnless(HAVE_ROM, "needs the ROM")
+class EnvWorkerQuestAndBumpTests(unittest.TestCase):
+    def test_no_quest_bonus_or_termination_after_delivery(self):
+        w = t.EnvWorker(0, ["stage2_violet"], 50, {})
+        try:
+            w.reset()
+            self.assertGreaterEqual(t.route_graph.current_stage(w.reader.parse(w.emu.frame)), 2)
+            for a in (0, 0):
+                *_, rew, done, _, _, info = w.step(a)
+                self.assertFalse(done)
+                self.assertNotIn("quest", info["reward_components"])
+                self.assertLess(rew, 5.0)  # was +49.99 / +59.91 with the quest block
+        finally:
+            w.close()
+
+    def test_a_press_is_not_a_bump(self):
+        w = t.EnvWorker(0, ["new_bark_outside"], 50, {})
+        try:
+            w.reset()
+            for _ in range(3):
+                w.step(4)
+                self.assertEqual(w.consecutive_bumps, 0)
+        finally:
+            w.close()
+
+    def test_stage_snapshot_at_entry_not_mid_cutscene(self):
+        with tempfile.TemporaryDirectory() as d:
+            w = t.EnvWorker(0, ["new_bark_outside"], 50, {"swarm_dir": d})
+            try:
+                w.reset()
+                st = w.reader.parse(w.emu.frame)
+                w._last_stage = 0
+                from unittest import mock
+                with mock.patch.object(t.route_graph, "current_stage", lambda s: 2), \
+                        mock.patch.object(t, "dialogue_open", lambda s: True):
+                    w._maybe_archive(st)
+                    self.assertEqual(w.archive.keys(), [])  # deferred while the dialogue is open
+                self.assertEqual(w._pending_stage, 2)
+                with mock.patch.object(t.route_graph, "current_stage", lambda s: 2):
+                    w._maybe_archive(st)
+                    w._maybe_archive(st)  # staying in stage 2 does not save again
+                self.assertEqual(w.archive.keys(), ["stage2_0"])
             finally:
                 w.close()
 

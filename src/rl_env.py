@@ -59,6 +59,45 @@ ROUTE_PROGRESS_WEIGHT = 0.08
 COVERED_NEW_TILE_REWARD = 0.05
 COVERED_NEIGHBOR_BONUS = 0.0
 
+# Per-episode caps on the shaping sources that are not the route or the story events. A perfect run earns
+# about 60 from the route and 100-150 from events; each source below is held to a quarter of that or less,
+# so none of them can outbid the route. They apply only when ``progress_reward`` gets a ``budget`` dict
+# (fresh per episode); the first payments are full-size, later ones zero.
+BATTLE_BUDGET = 10.0    # trainer wins and wild wins
+LEVEL_BUDGET = 15.0     # level-ups
+CATCH_BUDGET = 10.0     # new Pokemon
+HEAL_BUDGET = 15.0      # Pokecenter heals, Nurse Joy, healing items
+EXPLORE_BUDGET = 20.0   # new tiles, unvisited neighbours, new maps and warps, curiosity-like terms
+BUDGET_CAPS: dict[str, float] = {
+    "battle": BATTLE_BUDGET,
+    "level": LEVEL_BUDGET,
+    "catch": CATCH_BUDGET,
+    "heal": HEAL_BUDGET,
+    "explore": EXPLORE_BUDGET,
+}
+WILD_WIN_FULL = 3.0        # reward for each of the first WILD_WIN_FULL_COUNT genuine wild wins in an episode
+WILD_WIN_FULL_COUNT = 3
+WILD_WIN_LATE = 0.2
+PC_HEAL_BASE = 15.0        # Pokecenter heal pays (PC_HEAL_BASE + PC_HEAL_FRAC) x the fraction of max HP healed
+PC_HEAL_FRAC = 10.0
+KEY_EVENT_DEFAULT_NAMED = 2.0  # named flags that are not story milestones, so incidental flags cannot swamp them
+UNNAMED_EVENT_REWARD = 2.0
+
+
+def budget_pay(budget: dict | None, key: str, value: float) -> float:
+    """Amount of ``value`` that fits under BUDGET_CAPS[key] given what ``budget`` already paid; records it.
+
+    No budget (or a non-positive value, or an unknown key) returns ``value`` unchanged. Callers that add their
+    own exploration terms (curiosity, momentum) should route them through ``budget_pay(budget, "explore", v)``.
+    """
+    cap = BUDGET_CAPS.get(key)
+    if budget is None or cap is None or value <= 0:
+        return value
+    paid = budget.get(key, 0.0)
+    pay = max(0.0, min(value, cap - paid))
+    budget[key] = paid + pay
+    return pay
+
 # Key Transit Maps along the path to the First Gym (Falkner in Violet City)
 GYM_PATH_WAYPOINTS: dict[tuple[int, int], float] = {
     (24, 3): 3.0,   # Route 29
@@ -466,6 +505,9 @@ def initial_seen_events(state) -> set[int]:
 def behind_map_penalty_applies(before, after, seen_maps_done, state=None) -> bool:
     """Whether stepping from ``before`` into ``after`` is a forbidden step back into a finished map.
 
+    DO NOT wire this into training (episode end plus a -2 penalty): ending an episode at -2 beats about -10
+    of step costs, so it is an escape hatch. Only the legacy ``CrystalEnv`` (with ``ignore_maps`` set) uses it.
+
     ``seen_maps_done`` is the set of finished (group, number) maps (``CrystalEnv.ignore_maps``).
     ``before``/``after`` are parsed states or (group, number) tuples. Stepping back is allowed when the
     current stage requires it: the egg return (egg held, not yet given to Elm) and the post-gym Togepi
@@ -488,6 +530,16 @@ def behind_map_penalty_applies(before, after, seen_maps_done, state=None) -> boo
     return True
 
 
+def _party_level_gain(before, after) -> int:
+    """Level-ups only: positive change per party slot present in both states (a catch adds a slot, not levels)."""
+    lb = tuple(getattr(before, "party_levels", ()) or ())
+    la = tuple(getattr(after, "party_levels", ()) or ())
+    if len(lb) == len(la):
+        return max(0, sum(la) - sum(lb))
+    n = min(len(lb), len(la))
+    return sum(max(0, la[i] - lb[i]) for i in range(n))
+
+
 def progress_reward(
     before,
     after,
@@ -503,6 +555,7 @@ def progress_reward(
     legacy_potential: bool | None = None,
     components: dict[str, float] | None = None,
     use_route: bool = True,
+    budget: dict | None = None,
 ) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map.
 
@@ -511,27 +564,41 @@ def progress_reward(
     behind_map, other); the values sum exactly to the returned reward.
 
     Where the route graph covers both maps, route progress replaces the hand-coded stage potentials
-    and the per-map waypoint payments, and exploration shrinks. ``use_route=False`` restores the old
-    behavior everywhere (legacy navigation potential, waypoints, full exploration).
+    and the per-map waypoint payments, and exploration shrinks. With ``use_route`` the legacy potentials
+    and waypoints are off everywhere (uncovered maps get exploration instead); ``use_route=False``
+    restores the old behavior (legacy navigation potential, waypoints, full exploration).
+
+    ``budget`` is a per-episode counter dict (fresh at every reset). With it, battle, level-up, catch,
+    heal and exploration payments stop at the BUDGET_CAPS totals, and the map bonus pays nothing on
+    route-covered maps. Without it behavior is uncapped. A non-moving step whose
+    ``info.consecutive_bumps`` is 0 is not a bump (an A press), so it pays no bump cost.
     """
     new_tile = False
     new_map = False
     terms: dict[str, float] = {}
 
-    def add(key: str, value: float) -> None:
+    def add(key: str, value: float, budget_key: str | None = None) -> None:
+        if budget_key is not None:
+            value = budget_pay(budget, budget_key, value)
         terms[key] = terms.get(key, 0.0) + value
 
     add("step", -0.01)
     covered_pair = use_route and _route_covers(before, after)
     covered_here = use_route and _route_covers(after)
+    faint_ctx = bool(getattr(after, "fainted", False) or getattr(before, "fainted", False))
 
     # Potential-based shaping (Ng et al., 1999). ``shaping`` is the env's frontier-distance delta.
-    # The hand-coded per-map potential runs when no shaping is given, or when asked for (hybrid).
+    # The hand-coded per-map potential runs only without the route graph (use_route=False): with it, the
+    # route covers the maps it knows and budgeted exploration covers the rest.
     use_legacy = (shaping is None) if legacy_potential is None else legacy_potential
+    use_legacy = use_legacy and not use_route
     if shaping is not None:
         add("other", shaping)
     if covered_pair:
-        add("route", ROUTE_PROGRESS_WEIGHT * (route_potential(after) - route_potential(before)))
+        route_term = ROUTE_PROGRESS_WEIGHT * (route_potential(after) - route_potential(before))
+        if faint_ctx:
+            route_term = min(0.0, route_term)  # the white-out teleport must not pay for "progress"
+        add("route", route_term)
     elif use_legacy and moved:
         phi_before = navigation_potential(before)
         phi_after = navigation_potential(after)
@@ -540,8 +607,8 @@ def progress_reward(
     # Non-movement check: do not penalize wall-bump if in battle or dialogue
     if not moved:
         is_busy = getattr(before, "battle_mode", 0) != 0 or dialogue_open(before)
-        if not is_busy:
-            bump_count = getattr(info, "consecutive_bumps", 1) if info else 1
+        bump_count = getattr(info, "consecutive_bumps", 1) if info else 1
+        if not is_busy and not (info is not None and bump_count == 0):
             add("bump", -0.05 * min(4, max(1, bump_count)))
     else:
         tile = (after.map_group, after.map_number, after.x, after.y)
@@ -549,22 +616,23 @@ def progress_reward(
             seen_tiles.add(tile)
             on_objective = (after.map_group, after.map_number) in story_objective_maps(after)
             if covered_here:
-                add("tile", COVERED_NEW_TILE_REWARD)
+                add("tile", COVERED_NEW_TILE_REWARD, "explore")
             else:
-                add("tile", OBJECTIVE_TILE_BOOST if on_objective else 1.0)
+                add("tile", OBJECTIVE_TILE_BOOST if on_objective else 1.0, "explore")
             new_tile = True
         # Chosen neighbor was unseen at the start of the step, including the discovery itself.
         if unvisited_neighbor:
-            add("neighbor", COVERED_NEIGHBOR_BONUS if covered_here else UNVISITED_NEIGHBOR_BONUS)
+            add("neighbor", COVERED_NEIGHBOR_BONUS if covered_here else UNVISITED_NEIGHBOR_BONUS, "explore")
 
     map_id = (after.map_group, after.map_number)
     if map_id not in seen_maps:
         seen_maps.add(map_id)
-        add("map", 10.0)
+        # The route already pays for moving between covered maps; with a budget the flat bonus is 0 there.
+        add("map", 0.0 if (budget is not None and covered_here) else 10.0, "explore")
         new_map = True
 
-    # Waypoints towards Gym & Quest Delivery (replaced by route progress where the route graph covers the map)
-    if seen_waypoints is not None and not covered_here:
+    # Waypoints towards Gym & Quest Delivery: legacy only (route progress replaces them)
+    if seen_waypoints is not None and not use_route:
         if map_id in GYM_PATH_WAYPOINTS and map_id not in seen_waypoints:
             seen_waypoints.add(map_id)
             add("other", GYM_PATH_WAYPOINTS[map_id])
@@ -601,14 +669,15 @@ def progress_reward(
                 species_id = species_list[idx]
                 if caught_counts is not None and species_id not in (0, 255):
                     caught_counts[species_id] = caught_counts.get(species_id, 0) + 1
-                    add("catch", catch_reward_for_species(caught_counts[species_id]))
+                    add("catch", catch_reward_for_species(caught_counts[species_id]), "catch")
                 else:
-                    add("catch", 10.0)
+                    add("catch", 10.0, "catch")
 
     # Also check if party was full and caught straight to PC box
     before_dex = getattr(before, "pokedex_caught_count", 0)
     after_dex = getattr(after, "pokedex_caught_count", 0)
     if not caught_any and after_dex > before_dex:
+        caught_any = True
         if info is not None:
             info.caught_pokemon = True
         has_ev = getattr(after, "has_event", None)
@@ -618,9 +687,9 @@ def progress_reward(
             add("catch", 0.0)
         elif caught_counts is not None:
             caught_counts[0] = caught_counts.get(0, 0) + 1
-            add("catch", catch_reward_for_species(caught_counts[0]))
+            add("catch", catch_reward_for_species(caught_counts[0]), "catch")
         else:
-            add("catch", 10.0)
+            add("catch", 10.0, "catch")
 
     # Story Milestones & Event Flags
     if seen_events is not None and getattr(after, "event_flags", None):
@@ -634,43 +703,57 @@ def progress_reward(
                         seen_events.add(flag_id)
                         flag_name = REVERSE_EVENT_FLAGS.get(flag_id)
                         if flag_name:
-                            add("event", KEY_EVENT_REWARDS.get(flag_name, 10.0))
+                            add("event", KEY_EVENT_REWARDS.get(flag_name, KEY_EVENT_DEFAULT_NAMED))
                             if info is not None:
                                 info.story_progress = True
                         else:
-                            add("event", 2.0)
+                            add("event", UNNAMED_EVENT_REWARD)
 
-    # Combat & Growth: Pokémon Level-Ups
-    before_levels = sum(getattr(before, "party_levels", ()) or [0])
-    after_levels = sum(getattr(after, "party_levels", ()) or [0])
-    if after_levels > before_levels:
-        add("level", LEVEL_REWARD_SCALE * (level_reward_value(after_levels) - level_reward_value(before_levels)))
+    # Combat & Growth: Pokémon Level-Ups (a caught Pokémon's own level is not a level-up)
+    level_gain = _party_level_gain(before, after)
+    if level_gain > 0:
+        before_levels = sum(getattr(before, "party_levels", ()) or [0])
+        add(
+            "level",
+            LEVEL_REWARD_SCALE * (level_reward_value(before_levels + level_gain) - level_reward_value(before_levels)),
+            "level",
+        )
         if info is not None:
             info.level_up = True
 
-    # Combat: Battle Won (with diminishing returns on early wild battles)
+    # Combat: Battle Won. Fleeing and catching are not wins; wild wins pay a few times, then almost nothing.
     if getattr(before, "battle_mode", 0) != 0 and getattr(after, "battle_mode", 0) == 0:
-        if not getattr(after, "fainted", False):
-            lead_lvl = max(getattr(before, "party_levels", (0,)) or [0])
+        if not getattr(after, "fainted", False) and not caught_any:
             has_ev = getattr(after, "has_event", None)
             has_egg_now = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
             gave_egg_now = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
             if getattr(before, "battle_mode", 0) == 2:
                 # Trainer battles are key milestones towards the gym (Rival Cherrygrove = 15.0)
-                add("battle", 5.0)
-            elif has_egg_now and not gave_egg_now:
-                # Urgent egg delivery errand: wild fights are time sinks, not rewarded
-                add("battle", 0.0)
-            elif lead_lvl < 7:
-                # Early wild battle victory provides initial EXP
-                add("battle", 3.0)
+                add("battle", 5.0, "battle")
             else:
-                # Diminishing returns: blind wild grinding yields no incentive over progressing
-                add("battle", 0.2)
+                # A genuine win leaves the wild Pokémon fainted (its HP stays in RAM after the battle);
+                # a flee leaves it alive. Unknown enemy HP (no max) counts as a win.
+                e_max = max(getattr(after, "enemy_max_hp", 0), getattr(before, "enemy_max_hp", 0))
+                won = e_max <= 0 or getattr(after, "enemy_hp", 0) == 0
+                if not won:
+                    add("battle", 0.0)
+                elif has_egg_now and not gave_egg_now:
+                    # Urgent egg delivery errand: wild fights are time sinks, not rewarded
+                    add("battle", 0.0)
+                else:
+                    if budget is not None:
+                        # The early-wild rule keys off the episode's own win count (the party level stays put).
+                        wins = budget.get("wild_wins", 0)
+                        budget["wild_wins"] = wins + 1
+                        early = wins < WILD_WIN_FULL_COUNT
+                    else:
+                        early = max(getattr(before, "party_levels", (0,)) or [0]) < 7
+                    add("battle", WILD_WIN_FULL if early else WILD_WIN_LATE, "battle")
 
     # HP Dynamics: Damage Taken, Healing, and Pokémon Center Interaction
     is_pc = map_id in ((26, 5), (10, 10), (10, 13))
-    hp_b = getattr(before, "party_hp", ())
+    same_map = (getattr(before, "map_group", None), getattr(before, "map_number", None)) == map_id
+    hp_b =getattr(before, "party_hp", ())
     hp_a = getattr(after, "party_hp", ())
     if hp_b and hp_a:
         cur_b = sum(p[0] for p in hp_b)
@@ -683,21 +766,24 @@ def progress_reward(
             add("damage", -dmg_frac * 2.0)
         elif max_a > 0 and cur_a > cur_b:
             heal_frac = (cur_a - cur_b) / max_a
-            if is_pc:
+            if faint_ctx or cur_b == 0 or not same_map:
+                pass  # white-out recovery (the teleport to a Pokécenter) is not a heal to pay for
+            elif is_pc:
                 # Paid once per Pokémon Center per episode, so taking damage to heal again earns nothing.
+                # Proportional to the fraction healed: one missing HP pays almost nothing.
                 heal_key = (map_id[0], map_id[1] + 2000)
                 if seen_waypoints is None or heal_key not in seen_waypoints:
-                    if seen_waypoints is not None:
+                    if seen_waypoints is not None and heal_frac >= 0.25:
                         seen_waypoints.add(heal_key)
-                    add("heal", 15.0 + heal_frac * 10.0)
+                    add("heal", heal_frac * (PC_HEAL_BASE + PC_HEAL_FRAC), "heal")
                     if info is not None:
                         info.healed_party = True
             else:
-                add("heal", heal_frac * 3.0)
-        elif is_pc and cur_b < max_b:
+                add("heal", heal_frac * 3.0, "heal")
+        elif is_pc and cur_b < max_b and same_map and not faint_ctx:
             # Low HP in Pokémon Center: reward choosing to interact with Nurse Joy
             if dialogue_open(after) and not dialogue_open(before):
-                add("heal", 2.0)
+                add("heal", 2.0, "heal")
 
         # Critical danger penalty when active Pokémon is below 25% HP
         lead_cur, lead_max = hp_a[0]
@@ -838,6 +924,7 @@ class CrystalEnv:
         self.seen_interactions: set[tuple] = set()
         self.seen_warps: set[tuple] = set()
         self._phi = 0.0
+        self.budget: dict = {}
 
     def reset(self, start: bytes | None = None) -> np.ndarray:
         if start is not None:
@@ -859,6 +946,7 @@ class CrystalEnv:
         self.caught_counts = {}
         self.seen_events = set()
         self.seen_waypoints = set()
+        self.budget = {}
         state = self.reader.parse(self.machine.frame)
         self.seen_maps.add((state.map_group, state.map_number))
         tile = (state.map_group, state.map_number, state.x, state.y)
@@ -900,9 +988,11 @@ class CrystalEnv:
             edge = (before_map, after_map)
             if edge not in self.seen_warps:
                 self.seen_warps.add(edge)
-                bonus += NEW_WARP_REWARD
+                # The route pays for moving between covered maps; elsewhere the warp bonus is explore budget.
+                warp = 0.0 if _route_covers(before, after) and self.shaping != "legacy" else budget_pay(self.budget, "explore", NEW_WARP_REWARD)
+                bonus += warp
                 if components is not None:
-                    components["warp"] = components.get("warp", 0.0) + NEW_WARP_REWARD
+                    components["warp"] = components.get("warp", 0.0) + warp
         return bonus
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, StepInfo]:
@@ -921,8 +1011,8 @@ class CrystalEnv:
             moved = False
         else:
             moved = self.stepper.step(ACTIONS[action]).moved
-        if not moved and not before.battle_mode and not dialogue_open(before):
-            self.consecutive_bumps += 1
+        if not moved and action != 4 and not before.battle_mode and not dialogue_open(before):
+            self.consecutive_bumps += 1  # an A press is not a bump
         else:
             self.consecutive_bumps = 0
         info.consecutive_bumps = self.consecutive_bumps
@@ -964,6 +1054,7 @@ class CrystalEnv:
             legacy_potential=self.shaping in ("legacy", "hybrid"),
             components=components,
             use_route=self.shaping != "legacy",
+            budget=self.budget,
         )
         reward += self._interaction_reward(before, after, action, busy, components)
         tile = (after.map_group, after.map_number, after.x, after.y)

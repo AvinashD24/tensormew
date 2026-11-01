@@ -55,7 +55,7 @@ Shared brief for the parallel implementation agents. Worktree: `C:\Users\arcku\t
 ```python
 STAGE_COUNT = 4          # 0 GET_EGG (to Mr. Pokemon's house), 1 RETURN_EGG (deliver to Elm),
                          # 2 TO_GYM (walk to Falkner), 3 POST_GYM (Togepi egg at the Violet Pokecenter)
-ROUTE_FEATURE_DIM = 9    # stage one-hot (4) + next-step one-hot over up/down/left/right (4) + remaining distance/100 clipped to [0,1] (1)
+ROUTE_FEATURE_DIM = 9    # stage one-hot (4) + next-step one-hot over up/down/left/right (4) + remaining distance/400 clipped to [0,1] (1)  (was /100; changed after review: it saturated on most of the route)
 
 def current_stage(state) -> int                      # from event flags via state.has_event(name)
 def covers_map(map_id: tuple[int, int]) -> bool      # True if the route graph has this map (exploration bonuses shrink there)

@@ -186,6 +186,68 @@ class MainTests(unittest.TestCase):
         with mock.patch.object(c, "remote_capture", return_value=(0, "none")):
             self.assertEqual(c.main(["--host", "h", "--port", "1", "--attach"]), c.EXIT_FAIL)
 
+    def test_abbreviated_flags_are_rejected(self):
+        with self.assertRaises(SystemExit):
+            c.main(["--host", "h", "--port", "1", "--res"])  # would silently become --resume / --resume-less
+
+    def test_resume_without_any_checkpoint_refuses_before_training(self):
+        calls = []
+        with mock.patch.object(c, "run_cmd", side_effect=lambda cmd: calls.append(cmd) or 0), \
+                mock.patch.object(c, "remote_capture", return_value=(1, "")):
+            rc = c.main(["--host", "h", "--port", "1", "--resume", "--save", "logs/nope_does_not_exist.pt",
+                         "--skip-preflight"])
+        self.assertEqual(rc, c.EXIT_PREFLIGHT)
+        self.assertFalse(any("tools.train_deep_ppo" in " ".join(x) for x in calls))
+
+
+class ResumeUploadTests(unittest.TestCase):
+    def test_checkpoint_files_include_every_sidecar(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("run.pt", "run.optim.pt", "run.scaler.pt", "run2.pt", "other.pt"):
+                (Path(d) / name).write_bytes(b"x")
+            got = [f.name for f in c.checkpoint_files(str(Path(d) / "run.pt"))]
+            self.assertEqual(got, ["run.optim.pt", "run.pt", "run.scaler.pt"])
+
+    def test_resume_uploads_checkpoint_and_sidecars_then_forces_save(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            save = str(Path(d) / "run.pt")
+            for name in ("run.pt", "run.optim.pt"):
+                (Path(d) / name).write_bytes(b"x")
+            cmds = []
+            with mock.patch.object(c, "run_cmd", side_effect=lambda cmd: cmds.append(cmd) or 0), \
+                    mock.patch.object(c, "remote_capture", return_value=(0, "")):
+                self.assertEqual(c.upload_resume_checkpoint(make_args(save=save, resume=True), "ssh"), c.EXIT_OK)
+            up = " ".join(cmds[0])
+            self.assertIn("run.optim.pt", up)
+            self.assertIn("run.pt", up)
+            self.assertIn("root@1.2.3.4:", up)
+
+    def test_resume_upload_failure_blocks_training(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            save = Path(d) / "run.pt"
+            save.write_bytes(b"x")
+            with mock.patch.object(c, "run_cmd", return_value=23), mock.patch.object(c, "remote_capture", return_value=(0, "")):
+                self.assertEqual(c.upload_resume_checkpoint(make_args(save=str(save), resume=True), "ssh"), c.EXIT_FAIL)
+
+    def test_pull_keeps_previous_weights_on_resume_and_pulls_sidecars(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            save = Path(d) / "run.pt"
+            save.write_bytes(b"old")
+            cmds = []
+            with mock.patch.object(c, "run_cmd", side_effect=lambda cmd: cmds.append(cmd) or 0):
+                self.assertEqual(c.pull_checkpoint(make_args(save=str(save), resume=True), "ssh"), c.EXIT_OK)
+            self.assertEqual((Path(d) / "run.pt.pre-resume").read_bytes(), b"old")
+            self.assertEqual(len(cmds), 2)
+            self.assertTrue(cmds[1][-2].endswith("/run.*"))  # sidecar glob on the pod
+
 
 if __name__ == "__main__":
     unittest.main()

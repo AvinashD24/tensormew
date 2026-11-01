@@ -11,6 +11,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
+import numpy as np
 import torch
 import torch.nn.functional as F
 
@@ -29,7 +30,14 @@ class PPOHParams:
     norm_adv: bool = True
     vf_clip: bool = True
     adv_clip: float | None = None  # clamp normalized advantages to [-adv_clip, adv_clip]
-    vf_clip_range: float | None = None  # value clip half-width; None -> clip_ratio
+    vf_clip_range: float | None = None  # value clip half-width (in units of the return scale); None -> clip_ratio
+    # BatchNorm handling: rollouts run in eval mode (running statistics), so the update must too or the ratio is not 1
+    # before the first step ("eval_refresh": update in eval mode, then refresh running stats with a no-grad train-mode
+    # pass over a frame subsample).  "train" reproduces the old behaviour (batch statistics during the update).
+    bn_mode: str = "eval_refresh"
+    bn_refresh_frames: int = 256  # frames (subsample of the rollout) used to refresh the running statistics
+    bn_refresh_chunk: int = 64  # frames per refresh forward pass (bounds memory)
+    bn_refresh_momentum: float = 0.3  # running-stat momentum per refresh chunk
 
 
 @dataclass
@@ -54,6 +62,92 @@ class EntropySchedule:
     def value(self, progress: float) -> float:
         p = min(1.0, max(0.0, float(progress)))
         return self.start + (self.end - self.start) * p
+
+
+class RunningReturnScaler:
+    """VecNormalize-style reward scaling: divide rewards by the running std of the per-env discounted return.
+
+    Scale only (no mean shift), so the sign and zero point of the reward are untouched.  ``scale(rewards, dones)``
+    updates the statistics with this step's raw rewards and returns ``rewards / std``.  ``state_dict`` /
+    ``load_state_dict`` make it resumable; the per-env return accumulator is saved only if the env count matches.
+    """
+
+    def __init__(self, num_envs: int, gamma: float, epsilon: float = 1e-8):
+        self.gamma = float(gamma)
+        self.epsilon = float(epsilon)
+        self.ret = np.zeros(num_envs, dtype=np.float64)
+        self.mean = 0.0
+        self.var = 1.0
+        self.count = 1e-4
+
+    @property
+    def std(self) -> float:
+        return math.sqrt(self.var + self.epsilon)
+
+    def update(self, rewards, dones) -> None:
+        rewards = np.asarray(rewards, dtype=np.float64)
+        self.ret = self.ret * self.gamma + rewards
+        batch_mean, batch_var, n = float(self.ret.mean()), float(self.ret.var()), self.ret.size
+        delta = batch_mean - self.mean
+        total = self.count + n
+        self.mean += delta * n / total
+        m2 = self.var * self.count + batch_var * n + delta * delta * self.count * n / total
+        self.var, self.count = m2 / total, total
+        self.ret[np.asarray(dones, dtype=bool)] = 0.0
+
+    def scale(self, rewards, dones) -> np.ndarray:
+        """Update with the raw ``rewards`` and return them divided by the running return std."""
+        self.update(rewards, dones)
+        return (np.asarray(rewards, dtype=np.float64) / self.std).astype(np.float32)
+
+    def state_dict(self) -> dict:
+        return {"mean": self.mean, "var": self.var, "count": self.count, "ret": self.ret.tolist(), "gamma": self.gamma}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.mean, self.var, self.count = float(state["mean"]), float(state["var"]), float(state["count"])
+        ret = np.asarray(state.get("ret", []), dtype=np.float64)
+        if ret.shape == self.ret.shape:
+            self.ret = ret
+
+
+def refresh_batchnorm(policy, batch: RolloutBatch, hp: PPOHParams, generator: torch.Generator | None = None) -> int:
+    """Refresh BatchNorm running statistics with a no-grad train-mode pass over a subsample of the rollout frames.
+
+    Chunked so peak memory is ``bn_refresh_chunk`` frames.  Leaves the policy in eval mode.  Returns the number of
+    frames used (0 when the policy has no BatchNorm layers).
+    """
+    bns = [m for m in policy.modules() if isinstance(m, torch.nn.modules.batchnorm._BatchNorm)]
+    policy.eval()
+    if not bns:
+        return 0
+    B, T = batch.actions.shape[:2]
+    n_total = B * T
+    n_use = min(n_total, max(1, int(hp.bn_refresh_frames)))
+    pick = torch.randperm(n_total, generator=generator)[:n_use]
+    screens = batch.screens.reshape(n_total, *batch.screens.shape[2:])
+    device = next(policy.parameters()).device
+    trunk = getattr(policy, "vision_trunk", None)
+    rams = batch.rams.reshape(n_total, *batch.rams.shape[2:])
+    old_momentum = [m.momentum for m in bns]
+    for m in bns:
+        m.train()
+        m.momentum = float(hp.bn_refresh_momentum)
+    try:
+        with torch.no_grad():
+            for chunk in torch.split(pick, max(1, int(hp.bn_refresh_chunk))):
+                if chunk.numel() < 2:
+                    continue  # a single frame would give degenerate batch statistics
+                x = screens[chunk].to(device)
+                x = x.float().div_(255.0) if x.dtype == torch.uint8 else x.float()
+                if trunk is not None:
+                    trunk(x)
+                else:
+                    policy.evaluate_actions(x, rams[chunk].to(device), batch.actions.reshape(n_total)[chunk].to(device))
+    finally:
+        for m, mom in zip(bns, old_momentum):
+            m.momentum = mom
+        policy.eval()
+    return n_use
 
 
 def compute_gae(
@@ -130,6 +224,7 @@ def ppo_update(
     entropy_coef: float | None = None,
     *,
     generator: torch.Generator | None = None,
+    value_scale: float | None = None,
 ) -> dict:
     """Run PPO epochs over ``batch`` and return per-update statistics.
 
@@ -139,9 +234,18 @@ def ppo_update(
     minibatch, so ``n_optimizer_steps = epochs * num_minibatches`` (fewer if ``target_kl`` stops the update).
 
     Advantages are normalized over the whole batch before minibatching.  Gradient norms are pre-clip.  The
-    ``value_loss`` stat is the plain MSE (the loss uses ``vf_coef * MSE``).  Note that the policy runs in train mode
-    here (BatchNorm batch statistics) while rollouts use eval mode, so the first minibatch's ratio is not exactly 1.
+    ``value_loss`` stat is the plain MSE (the loss uses ``vf_coef * MSE``).
+
+    BatchNorm: with ``hp.bn_mode == "eval_refresh"`` (default) the update runs in eval mode like the rollouts, so the
+    first minibatch's ratio is exactly 1, and the running statistics are refreshed afterwards by ``refresh_batchnorm``.
+    ``"train"`` keeps the old behaviour (batch statistics, ratio != 1 before the first step).
+
+    Value clipping is scale-aware: the half-width is ``vf_clip_range`` (default ``clip_ratio``) times ``value_scale``,
+    the typical magnitude of the returns (default: their std over the batch, floored at 1e-3).  With reward scaling
+    the returns have std ~1, so this matches the old absolute 0.2; with raw rewards it widens with the return scale.
     """
+    if hp.bn_mode not in ("eval_refresh", "train"):
+        raise ValueError(f"bn_mode must be 'eval_refresh' or 'train' (got {hp.bn_mode!r})")
     ent_coef = hp.entropy_coef if entropy_coef is None else float(entropy_coef)
     params = [p for p in policy.parameters() if p.requires_grad]
     device = params[0].device
@@ -161,7 +265,9 @@ def ppo_update(
         adv = (adv - adv.mean()) / (adv.std(unbiased=False) + 1e-8)
     if hp.adv_clip is not None:
         adv = adv.clamp(-hp.adv_clip, hp.adv_clip)
-    vf_range = hp.clip_ratio if hp.vf_clip_range is None else hp.vf_clip_range
+    if value_scale is None:
+        value_scale = max(float(returns.std(unbiased=False)), 1e-3)
+    vf_range = (hp.clip_ratio if hp.vf_clip_range is None else hp.vf_clip_range) * float(value_scale)
 
     def to_dev(x: torch.Tensor, is_screen: bool = False) -> torch.Tensor:
         x = x.to(device)
@@ -184,9 +290,10 @@ def ppo_update(
         f_actions, f_logps = flat(batch.actions), flat(batch.old_logps)
         f_returns, f_adv, f_old_v = flat(returns), flat(adv), flat(old_values)
 
-    policy.train()
+    policy.train() if hp.bn_mode == "train" else policy.eval()
     pol_l, val_l, ent_l, kl_l, clip_l, gn_l = [], [], [], [], [], []
     n_steps = 0
+    first_kl = None  # approx KL of the very first minibatch, before any optimizer step (0 when rollout and update agree)
     early_stopped = False
     # noise scale accumulators (epoch 0 only)
     g_sum = None
@@ -258,6 +365,8 @@ def ppo_update(
             optimizer.step()
             n_steps += 1
 
+            if first_kl is None:
+                first_kl = approx_kl
             pol_l.append(policy_loss.item())
             val_l.append(value_loss.item())
             ent_l.append(ent_mean.item())
@@ -266,6 +375,10 @@ def ppo_update(
             gn_l.append(float(grad_norm.detach()))
         if early_stopped:
             break
+
+    bn_frames = 0
+    if hp.bn_mode == "eval_refresh":
+        bn_frames = refresh_batchnorm(policy, batch, hp, generator)
 
     noise = float("nan")
     if g_sum is not None and g_n > 0 and len(mb_sizes) > 1:
@@ -285,4 +398,6 @@ def ppo_update(
         "explained_variance": explained_var,
         "noise_scale": noise,
         "early_stopped": early_stopped,
+        "bn_refresh_frames": bn_frames,
+        "approx_kl_first": float("nan") if first_kl is None else first_kl,
     }
