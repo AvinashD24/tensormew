@@ -1,16 +1,20 @@
 import unittest
+import unittest.mock
 from types import SimpleNamespace
 
 import numpy as np
 
+from src import rl_env
 from src.collision import COLL_WALL
 from src.local_nav import NAV_DIM, LocalNav
 from src.ppo import MlpPolicy, Policy, mask_logits
 from src.rl_env import (
     BASE_OBS_DIM,
+    COVERED_NEW_TILE_REWARD,
     MASK_START,
     OBJECTIVE_TILE_BOOST,
     OBS_DIM,
+    ROUTE_FEATURE_DIM,
     OBS_EVENT_FLAGS,
     observe,
     progress_reward,
@@ -32,7 +36,7 @@ def _state(x, y, up=FLOOR, down=FLOOR, left=FLOOR, right=FLOOR):
 
 class LocalNavTests(unittest.TestCase):
     def test_obs_dim_includes_nav_block(self):
-        self.assertEqual(OBS_DIM, BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS))
+        self.assertEqual(OBS_DIM, BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS) + ROUTE_FEATURE_DIM)
         self.assertEqual(len(LocalNav().features(_state(5, 5))), NAV_DIM)
 
     def test_wall_is_flagged_blocked(self):
@@ -142,20 +146,35 @@ class StoryTests(unittest.TestCase):
         self.assertIn((10, 7), story_objective_maps(_Story(done)))  # Violet gym
 
     def test_new_tile_on_objective_map_pays_the_boost(self):
+        # The doubled objective-map bonus is the fallback used when no route graph covers the map.
+        with unittest.mock.patch.object(rl_env, "route_graph", None):
+            before = _Story(map_id=(26, 1), x=5, y=5)
+            after = _Story(map_id=(26, 1), x=5, y=4)
+            boosted, _, _ = progress_reward(before, after, True, set(), {(26, 1)}, shaping=0.0, legacy_potential=False)
+            before = _Story(map_id=(99, 1), x=5, y=5)
+            after = _Story(map_id=(99, 1), x=5, y=4)
+            plain, _, _ = progress_reward(before, after, True, set(), {(99, 1)}, shaping=0.0, legacy_potential=False)
+        self.assertAlmostEqual(boosted - plain, OBJECTIVE_TILE_BOOST - 1.0)
+
+    def test_new_tile_on_a_route_graph_map_pays_almost_nothing(self):
+        # With a route graph the progress term carries the signal; exploration is a small tie-breaker.
+        if not (rl_env.route_graph and rl_env.route_graph.covers_map((26, 1))):
+            self.skipTest("route graph unavailable (ROM missing)")
         before = _Story(map_id=(26, 1), x=5, y=5)
         after = _Story(map_id=(26, 1), x=5, y=4)
-        boosted, _, _ = progress_reward(before, after, True, set(), {(26, 1)}, shaping=0.0, legacy_potential=False)
-        before = _Story(map_id=(99, 1), x=5, y=5)
-        after = _Story(map_id=(99, 1), x=5, y=4)
-        plain, _, _ = progress_reward(before, after, True, set(), {(99, 1)}, shaping=0.0, legacy_potential=False)
-        self.assertAlmostEqual(boosted - plain, OBJECTIVE_TILE_BOOST - 1.0)
+        covered, _, _ = progress_reward(before, after, True, set(), {(26, 1)}, shaping=0.0, legacy_potential=False)
+        plain_before = _Story(map_id=(99, 1), x=5, y=5)
+        plain_after = _Story(map_id=(99, 1), x=5, y=4)
+        plain, _, _ = progress_reward(plain_before, plain_after, True, set(), {(99, 1)}, shaping=0.0, legacy_potential=False)
+        self.assertLess(covered, plain)
+        self.assertLess(abs(covered - COVERED_NEW_TILE_REWARD), 1.0)  # no 1.0 / 2.0 tile payment
 
     def test_event_vector_is_in_the_observation(self):
         nav = LocalNav()
         flags = {"EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"}
         obs = observe(_Story(flags), set(), nav)
         self.assertEqual(len(obs), OBS_DIM)
-        events = obs[-len(OBS_EVENT_FLAGS) :]
+        events = obs[-len(OBS_EVENT_FLAGS) - ROUTE_FEATURE_DIM : -ROUTE_FEATURE_DIM]
         index = OBS_EVENT_FLAGS.index("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
         self.assertEqual(events[index], 1.0)
         self.assertEqual(float(events.sum()), 1.0)

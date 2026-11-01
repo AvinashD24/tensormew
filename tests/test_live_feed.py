@@ -77,6 +77,69 @@ class LiveFeedTests(unittest.TestCase):
             self.assertTrue(json.loads((Path(tmp) / "state.json").read_text())["finished"])
 
 
+class RewardComponentTests(unittest.TestCase):
+    def _step(self, feed, comps):
+        feed.observe(
+            infos=[_info(1, 1, reward_components=comps[0]), _info(2, 2, reward_components=comps[1])],
+            actions=np.array([0, 1]),
+            rewards=np.array([0.0, 0.0], dtype=np.float32),
+            dones=np.array([False, False]),
+        )
+
+    def test_components_accumulate_per_update_and_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            feed = LiveFeed(
+                Path(tmp) / "live", num_envs=2, action_names=ACTIONS, state_interval=0.0,
+                history_dir=Path(tmp) / "runs" / "r",
+            )
+            self._step(feed, [{"step": -0.01, "route": 0.16, "other": 0.0}, {"step": -0.01, "bump": -0.1, "tile": 0.5}])
+            self._step(feed, [{"route": 0.08}, {"event": 15.0, "weird": "x"}])
+            snap = feed.snapshot()["components"]
+            self.assertAlmostEqual(snap["update"]["pos"]["route"], 0.24)
+            self.assertAlmostEqual(snap["update"]["neg"]["step"], -0.02)
+            self.assertNotIn("other", snap["update"]["pos"])  # zero terms are dropped
+            self.assertNotIn("weird", snap["update"]["pos"])  # non-numeric values are ignored
+            feed.on_update(0, 4, metrics={"update": 0})
+            self._step(feed, [{"route": 1.0}, {}])
+            feed.on_update(1, 4, metrics={"update": 1})
+            snap = json.loads((Path(tmp) / "live" / "state.json").read_text())["components"]
+            self.assertAlmostEqual(snap["update"]["pos"].get("route", 0.0), 0.0)
+            self.assertAlmostEqual(snap["last_update"]["pos"]["route"], 1.0)
+            self.assertAlmostEqual(snap["run"]["pos"]["route"], 1.24)
+            self.assertAlmostEqual(snap["run"]["pos"]["event"], 15.0)
+            records = [json.loads(l) for l in (Path(tmp) / "runs" / "r" / "history.jsonl").read_text().splitlines()]
+            self.assertAlmostEqual(records[0]["components"]["pos"]["event"], 15.0)
+            self.assertAlmostEqual(records[1]["components"]["pos"]["route"], 1.0)
+            self.assertNotIn("event", records[1]["components"]["pos"])
+
+    def test_infos_without_components_are_backward_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            feed = LiveFeed(Path(tmp), num_envs=2, action_names=ACTIONS, state_interval=0.0)
+            feed.observe(
+                infos=[_info(1, 1), None], actions=np.array([0, 1]),
+                rewards=np.array([0.1, 0.1]), dones=np.array([False, False]),
+            )
+            feed.on_update(0, 2)
+            comp = feed.snapshot()["components"]
+            self.assertEqual(comp["run"], {"pos": {}, "neg": {}})
+
+
+class DashboardDemoTests(unittest.TestCase):
+    def test_demo_components_are_plausible(self):
+        import random
+
+        from tools.dashboard import _demo_components
+
+        rng = random.Random(1)
+        total = {}
+        for _ in range(3000):
+            for k, v in _demo_components(rng, rng.randrange(5), 0.1).items():
+                total[k] = total.get(k, 0.0) + v
+        self.assertLess(total["step"], 0)
+        self.assertGreater(total["route"], 0)
+        self.assertGreater(total["tile"], 0)
+
+
 class RunHistoryTests(unittest.TestCase):
     def _run(self, tmp, updates=3):
         feed = LiveFeed(

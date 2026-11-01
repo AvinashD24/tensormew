@@ -268,8 +268,9 @@ class ExtendedRewardTests(unittest.TestCase):
         # Step into Violet Gym (10, 7)
         s0 = _S(10, 5, 5, 5)
         s1 = _S(10, 7, 5, 5)
+        # use_route=False keeps the legacy per-map waypoint payments; the route graph replaces them.
         r_gym, _, _ = progress_reward(
-            s0, s1, True, seen_tiles, seen_maps, seen_waypoints=seen_waypoints
+            s0, s1, True, seen_tiles, seen_maps, seen_waypoints=seen_waypoints, use_route=False
         )
         # 10.0 new map + 20.0 Violet Gym waypoint + 1.0 new tile - 0.01
         self.assertAlmostEqual(r_gym, -0.01 + 1.0 + 10.0 + 20.0)

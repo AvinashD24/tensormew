@@ -187,6 +187,32 @@ def _demo_frame(env: int, map_idx: int, x: int, y: int, battle: bool, t: float):
     return img
 
 
+def _demo_components(rng: random.Random, act: int, progress: float) -> dict:
+    """Plausible per-step reward terms: exploration dominates early, route progress later."""
+    c = {"step": -0.01}
+    if act < 4 and rng.random() < 0.18:
+        c["bump"] = -0.05 * rng.randint(1, 3)
+    elif act < 4 and rng.random() < 0.8:
+        c["route"] = 0.08 * rng.randint(1, 2) * (0.3 + progress)
+    if act < 4 and rng.random() < 0.3 * (1 - 0.8 * progress):
+        c["tile"] = 0.5 * (1 - 0.8 * progress)
+    if act < 4 and rng.random() < 0.15 * (1 - 0.8 * progress):
+        c["neighbor"] = 0.2
+    if rng.random() < 0.0015:
+        c["warp"] = 1.0
+    if act == 4 and rng.random() < 0.1:
+        c["interaction"] = 0.5
+    if rng.random() < 0.0008 + 0.0008 * progress:
+        c["event"] = rng.choice((10.0, 15.0, 20.0))
+    if rng.random() < 0.002:
+        c["damage"] = -2.0 * rng.random()
+    if rng.random() < 0.0015:
+        c["battle"] = 3.0
+    if rng.random() < 0.0004:
+        c["heal"] = 15.0
+    return c
+
+
 def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event, runs_dir: Path | None = None) -> None:
     """Drive the real LiveFeed + TerminalMonitor with a synthetic training run."""
     import numpy as np
@@ -226,7 +252,9 @@ def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event, runs_dir
     seen = 1
     while not stop.is_set():
         acts = np.array([rng.choices(range(5), weights=[3, 3, 3, 3, 1])[0] for _ in range(n_envs)])
-        rews = np.array([rng.gauss(0.08, 0.5) for _ in range(n_envs)], dtype=np.float32)
+        prog = 1 - math.exp(-update / 90)
+        comps = [_demo_components(rng, int(acts[i]), prog) for i in range(n_envs)]
+        rews = np.array([sum(c.values()) for c in comps], dtype=np.float32)
         dones = np.zeros(n_envs, dtype=bool)
         infos = []
         screens = []
@@ -239,6 +267,7 @@ def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event, runs_dir
                 midx[i] += 1
                 pos[i] = [rng.randint(3, 20), rng.randint(3, 16)]
                 rews[i] += 6.0
+                comps[i]["map"] = comps[i].get("map", 0.0) + 6.0
             if ep_steps[i] >= 300:
                 dones[i] = True
             battle = rng.random() < 0.02
@@ -252,6 +281,7 @@ def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event, runs_dir
                     "badges": 0,
                     "ended_maps": midx[i] + 1,
                     "ended_state": "route29_entry",
+                    "reward_components": comps[i],
                 }
             )
             screens.append(_demo_frame(i, midx[i], pos[i][0], pos[i][1], battle, time.time() - t0))

@@ -112,6 +112,19 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .events .k { font: 700 10px var(--mono); padding: 2px 6px; border-radius: 5px; background: var(--panel2); height: fit-content; letter-spacing: .06em; }
 .k.map { color: var(--accent2); } .k.badge { color: var(--gold); } .k.record { color: var(--accent); }
 
+/* reward components */
+.comp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 28px; }
+.comp h3 { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.comp .crow { display: grid; grid-template-columns: 84px 1fr 70px; gap: 8px; align-items: center; margin-bottom: 7px; font: 12px var(--mono); }
+.comp .cbar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; background: var(--panel2); gap: 1px; }
+.comp .cbar i { display: block; min-width: 1px; font: 600 10px/22px var(--mono); color: #0b1020; text-align: center; overflow: hidden; white-space: nowrap; cursor: default; }
+.comp .cbar i:hover { filter: brightness(1.25); }
+.comp .ctot { text-align: right; color: var(--muted); }
+.comp .none { color: var(--muted); font-size: 12px; }
+.clegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.clegend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--c); margin-right: 6px; vertical-align: middle; }
+@media (max-width: 1000px) { .comp { grid-template-columns: 1fr; } }
+
 /* strip */
 .strip { display: flex; height: 16px; gap: 1px; margin-top: 10px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
 .strip i { flex: 1 1 0; min-width: 2px; }
@@ -206,6 +219,12 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
       <div class="card"><h2>Policy entropy <span class="sub">exploration vs collapse</span></h2><div class="chartbox"><canvas id="chEntropy" role="img" aria-label="Entropy over updates"></canvas></div><div class="legend"><span style="--c:var(--accent2)">entropy</span><span style="--c:var(--bad)">collapse &lt; 0.35</span><span style="--c:var(--good)">healthy &gt; 0.7</span></div></div>
       <div class="card"><h2>PPO stability <span class="sub">KL &amp; clip fraction</span></h2><div class="chartbox"><canvas id="chKl" role="img" aria-label="KL and clip fraction"></canvas></div><div class="legend"><span style="--c:var(--accent)">approx KL</span><span style="--c:var(--accent2)">clip fraction</span><span style="--c:var(--warn)">KL limit 0.08</span></div></div>
       <div class="card"><h2>Critic loss <span class="sub">hover to see policy loss too</span></h2><div class="chartbox"><canvas id="chLoss" role="img" aria-label="Value loss over updates"></canvas></div><div class="legend"><span style="--c:var(--accent)">value loss</span></div></div>
+    </section>
+
+    <section class="card" id="compCard" style="margin-bottom:14px">
+      <h2>Where the reward comes from <span class="sub" id="compSub"></span></h2>
+      <div class="comp" id="comp"></div>
+      <div class="clegend" id="compLegend"></div>
     </section>
 
     <section class="card" style="margin-bottom:14px">
@@ -370,8 +389,85 @@ function diagnostics() {
   else if (n > 1) add("ok", "MAPS", `${last.maps_discovered} map(s) discovered; last gain ${since} update(s) ago.`);
   const vl = col("value_loss"); const med = median(vl.slice(-30, -1));
   if (n > 10 && med > 0 && last.value_loss > 3 * med) add("warn", "VAL", `Value loss spiked to ${fmt(last.value_loss)} (median ${fmt(med)}); the critic may be unsettled by a reward or state change.`);
+  out.push(rewardDiagnostics());
   if (live && !live.finished && Date.now() / 1000 - live.t > 20) add("bad", "STALE", `No telemetry for ${dur(Date.now() / 1000 - live.t)}. Training may have stopped or crashed.`);
   return out.join("");
+}
+
+/* ---------- reward components ---------- */
+const COMP = {
+  step: ["step cost", "#94a3b8"], bump: ["wall bumps", "#f97316"], route: ["route progress", "#22c55e"],
+  tile: ["new tiles", "#38bdf8"], neighbor: ["unvisited neighbor", "#0ea5e9"], map: ["new maps", "#6366f1"], warp: ["new warps", "#a78bfa"],
+  interaction: ["talking", "#ec4899"], event: ["story events", "#eab308"], badge: ["badges", "#f59e0b"], catch: ["catches", "#14b8a6"],
+  level: ["level-ups", "#84cc16"], battle: ["battles won", "#ef4444"], damage: ["damage taken", "#be123c"], heal: ["healing", "#10b981"],
+  whiteout: ["white-outs", "#c026d3"], behind_map: ["finished-map penalty", "#78716c"], other: ["other", "#64748b"],
+};
+const EXPLORE = ["tile", "neighbor", "map", "warp"];
+const cName = (k) => (COMP[k] || [k])[0], cColor = (k) => (COMP[k] || [0, "#64748b"])[1];
+const sumVals = (o) => Object.values(o || {}).reduce((a, v) => a + Math.abs(v), 0);
+function compBar(o, tag) {
+  const tot = sumVals(o);
+  if (tot <= 0) return `<div class="cbar"></div>`;
+  const items = Object.entries(o).filter(([, v]) => v !== 0).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return `<div class="cbar">` + items.map(([k, v]) => {
+    const pct = Math.abs(v) / tot * 100;
+    return `<i style="width:${pct}%;background:${cColor(k)}" data-tip="<b>${cName(k)}</b>${sgn(v, 1)} (${pct.toFixed(1)}% of ${tag} reward)">${pct >= 9 ? Math.round(pct) + "%" : ""}</i>`;
+  }).join("") + `</div>`;
+}
+function renderComponents() {
+  const c = live && live.components, box = $("comp");
+  if (!c || !(sumVals(c.run?.pos) + sumVals(c.run?.neg))) {
+    box.innerHTML = `<div class="none">No per-component reward data yet. The trainer reports it once it passes <code>reward_components</code> to the live feed.</div>`;
+    $("compLegend").innerHTML = ""; $("compSub").textContent = ""; return;
+  }
+  const upd = (sumVals(c.last_update?.pos) + sumVals(c.last_update?.neg)) ? c.last_update : c.update;
+  const total = (o) => Object.values(o || {}).reduce((a, v) => a + v, 0);
+  const col = (side, tag) => `<div><h3>${side === "pos" ? "Positive reward" : "Negative reward"} (share by source)</h3>` +
+    `<div class="crow"><span>${mode === "replay" ? "this update" : "last update"}</span>${compBar(upd[side], tag)}<span class="ctot">${sgn(total(upd[side]), 0)}</span></div>` +
+    `<div class="crow"><span>run so far</span>${compBar(c.run[side], tag)}<span class="ctot">${sgn(total(c.run[side]), 0)}</span></div></div>`;
+  box.innerHTML = col("pos", "positive") + col("neg", "negative");
+  const keys = new Set([...Object.keys(c.run.pos || {}), ...Object.keys(c.run.neg || {}), ...Object.keys(upd.pos || {}), ...Object.keys(upd.neg || {})]);
+  const order = Object.keys(COMP).filter(k => keys.has(k)).concat([...keys].filter(k => !(k in COMP)));
+  $("compLegend").innerHTML = order.map(k => `<span style="--c:${cColor(k)}">${cName(k)}</span>`).join("");
+  $("compSub").textContent = "summed over all env steps; hover a segment for values";
+}
+$("compCard").addEventListener("mousemove", (e) => {
+  const t = e.target.closest("[data-tip]"); if (!t) { tip.style.display = "none"; return; }
+  tip.innerHTML = t.dataset.tip; tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px"; tip.style.top = (e.clientY + 14) + "px";
+});
+$("compCard").addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+/* reward-mix and outlier diagnostics (HTML rows) */
+function rewardDiagnostics() {
+  const out = [], c = live && live.components;
+  const scopes = c ? [["run so far", c.run], ["the last update", (sumVals(c.last_update?.pos) ? c.last_update : null)]] : [];
+  const hot = [], exp = [];
+  let topInfo = null;
+  for (const [label, comp] of scopes) {
+    const pos = comp && comp.pos, tot = pos ? Object.values(pos).reduce((a, v) => a + v, 0) : 0;
+    if (!pos || tot < 20) continue;
+    const [k, v] = Object.entries(pos).sort((a, b) => b[1] - a[1])[0];
+    if (!topInfo) topInfo = `${cName(k)} is ${Math.round(v / tot * 100)}% of positive reward`;
+    if (v / tot > 0.6) hot.push(`${label}: ${cName(k)} is ${Math.round(v / tot * 100)}% of positive reward (${sgn(v, 0)} of ${sgn(tot, 0)})`);
+    const ex = EXPLORE.reduce((a, q) => a + (pos[q] || 0), 0);
+    if (ex / tot > 0.5) exp.push(`${label}: ${Math.round(ex / tot * 100)}% (${sgn(ex, 0)} of ${sgn(tot, 0)})`);
+  }
+  if (hot.length) out.push(["warn", "MIX", `One reward source dominates, so the agent may be chasing it instead of the goal. ${hot.join("; ")}.`]);
+  if (exp.length) out.push(["warn", "EXPL", `Most positive reward comes from exploration terms (new tiles, neighbors, maps, warps), not progress toward the goal. ${exp.join("; ")}. The agent can profit from wandering.`]);
+  if (c && !hot.length && !exp.length && topInfo) out.push(["ok", "MIX", `Reward mix looks balanced (${topInfo}).`]);
+  // outlier update: robust distance of the mean reward from the 30 updates before it
+  const rw = col("mean_reward"); let found = null;
+  for (let i = rw.length - 1; i >= Math.max(10, rw.length - 10); i--) {
+    if (rw[i] == null) continue;
+    const base = rw.slice(Math.max(0, i - 30), i).filter(v => v != null);
+    if (base.length < 10) continue;
+    const med = median(base), mad = median(base.map(v => Math.abs(v - med)));
+    const spread = Math.max(mad, 0.02 * Math.abs(med), 0.05);
+    if (Math.abs(rw[i] - med) > 6 * spread) { found = { u: metrics[i].update, v: rw[i], med, spread, k: Math.abs(rw[i] - med) / spread }; break; }
+  }
+  if (found) out.push(["warn", "SPIKE", `Update ${found.u} had mean reward ${sgn(found.v)} while the 30 updates before it had a median of ${sgn(found.med)} and a typical spread of ${fmt(found.spread, 1)}. That is ${found.k.toFixed(0)}x the usual spread, which points to a rare lucky event or a reward bug, and can distort learning.`]);
+  return out.map(([cls, ic, text]) => `<div class="${cls}"><span class="ic">${ic}</span><span>${text}</span></div>`).join("");
 }
 
 /* ---------- renderers ---------- */
@@ -539,9 +635,9 @@ function renderAll() {
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
   renderKpis(); renderCharts(); $("diag").innerHTML = diagnostics();
-  renderEnvs(); renderEvents(); renderActions(); renderHeat();
+  renderEnvs(); renderEvents(); renderActions(); renderHeat(); renderComponents();
 }
-function redrawAll() { renderCharts(); renderKpis(); renderHeat(); }
+function redrawAll() { renderCharts(); renderKpis(); renderHeat(); renderComponents(); }
 
 /* ---------- replay of a saved run ---------- */
 let mode = "live";
@@ -562,6 +658,13 @@ function heatAt(idx) {          // cumulative per-map visit counts after record 
   }
   return heat;
 }
+function componentsAt(idx) {    // per-update components from history; older runs have none
+  const run = { pos: {}, neg: {} };
+  for (let i = 0; i <= idx; i++) { const c = rep.records[i].components; if (!c) continue;
+    for (const side of ["pos", "neg"]) for (const [k, v] of Object.entries(c[side] || {})) run[side][k] = (run[side][k] || 0) + v; }
+  const cur = rep.records[idx].components || { pos: {}, neg: {} };
+  return { update: cur, last_update: cur, run };
+}
 function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from history so every panel renders unchanged
   const recs = rep.records, r = recs[idx], meta = rep.meta, names = meta.action_names || ["up", "down", "left", "right", "a"];
   const heat = heatAt(idx), total = names.map(() => 0);
@@ -573,7 +676,7 @@ function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from histo
   const mm = r.metrics || {};
   return { t: r.t, started: meta.started, finished: true, update: r.update, steps: r.steps, samples: mm.samples ? recs.slice(0, idx + 1).reduce((a, q) => a + ((q.metrics || {}).samples || 0), 0) : 0,
     steps_per_sec: mm.samples && mm.duration_sec ? mm.samples / mm.duration_sec : 0, num_envs: meta.num_envs, run: meta.run || {}, run_id: rep.id, maps_seen: maps.size,
-    actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
+    components: componentsAt(idx), actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
 }
 function nearestFrame(update) { let lo = 0, hi = rep.frames.length - 1, best = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (rep.frames[mid] <= update) { best = mid; lo = mid + 1; } else hi = mid - 1; } return best < 0 ? null : rep.frames[best]; }
 function replayRender() {

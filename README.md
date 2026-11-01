@@ -63,3 +63,29 @@ python -m tools.cloud_train_deep --updates 200 --run-id baseline-1 --watch
 pulled at the end, even if training fails or you Ctrl+C, so a destroyed pod no longer takes the data with it.
 Manual alternative: run `python3 -m tools.dashboard --no-open` on the pod and tunnel with
 `ssh -L 8765:127.0.0.1:8765 root@<pod>`.
+
+**Pod address.** A pod gets a new SSH host/port every time it starts, so set `RUNPOD_SSH_HOST` / `RUNPOD_SSH_PORT`
+(or pass `--host/--port`) per session. Community Cloud stock for 4090-class GPUs is often empty; if a pod will not
+start, try Secure Cloud or another GPU type rather than waiting.
+
+**Preflight.** Before training, the script SSHes in and checks the GPU (`nvidia-smi`), core count (`nproc`),
+free disk and python deps. The stock PyTorch image lacks `pyboy` and Ubuntu 24.04 blocks plain pip, so it runs
+`pip install --break-system-packages pyboy==2.8.1` automatically (`tools/pod_bootstrap.sh` does the same by hand).
+`--envs` above the core count is capped with a warning. Skip with `--skip-preflight`.
+
+**Config.** `--config blueprint_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
+uploads a JSON file to the pod, and passes `--config` to the remote trainer.
+
+**Detached runs.** For multi-hour runs use `--detach`: the job runs under tmux (or `setsid nohup`) on the pod, logging
+to `/workspace/tensormew_job/train.log` and writing an exit code to `/workspace/tensormew_job/done`, so a dropped SSH
+session or a sleeping laptop does not kill it. The script then polls and syncs telemetry. If it is interrupted or you
+close the terminal, reconnect with the same pod address:
+
+```bash
+python -m tools.cloud_train_deep --updates 400 --config blueprint_v1 --run-id v1 --detach --watch
+python -m tools.cloud_train_deep --attach --watch --save logs/deep_policy.pt   # later: resume syncing, pull the checkpoint
+```
+
+Exit codes: 0 ok, 1 sync failure, 2 preflight/config error, 3 remote training failed, 4 job lost (died without a
+done marker, or pod unreachable), 130 interrupted. Telemetry and the checkpoint are always pulled on completion.
+If the pod itself is deleted, the checkpoint and `/workspace` go with it unless you use a network volume.

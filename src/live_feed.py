@@ -38,6 +38,11 @@ MAX_HEAT_MAPS = 12
 MAX_CELLS_PER_MAP = 4000
 MAX_EPISODES = 60
 MAX_EVENTS = 80
+# Per-step reward terms reported by ``rl_env.progress_reward(components=...)``; unknown keys are kept too.
+COMPONENT_KEYS = (
+    "step", "bump", "route", "tile", "neighbor", "map", "warp", "interaction", "event",
+    "badge", "catch", "level", "battle", "damage", "heal", "whiteout", "behind_map", "other",
+)
 
 
 def _map_key(map_id: Sequence[int]) -> str:
@@ -82,6 +87,10 @@ class LiveFeed:
         self._upd_heat: dict[str, dict[tuple[int, int], int]] = {}
         self._upd_eps: list[dict[str, Any]] = []
         self._upd_events: list[dict[str, Any]] = []
+        # Reward by component: {"pos": {name: sum of positive terms}, "neg": {name: sum of negative terms}}.
+        self._upd_comp = self._blank_comp()
+        self._run_comp = self._blank_comp()
+        self._last_comp = self._blank_comp()
         self._last_screens: np.ndarray | None = None
         self.num_envs = num_envs
         self.action_names = list(action_names)
@@ -142,6 +151,29 @@ class LiveFeed:
             "last_reward": 0.0,
         }
 
+    @staticmethod
+    def _blank_comp() -> dict[str, dict[str, float]]:
+        return {"pos": {}, "neg": {}}
+
+    def _add_components(self, comps: Any) -> None:
+        if not isinstance(comps, dict):
+            return
+        for name, val in comps.items():
+            try:
+                v = float(val)
+            except (TypeError, ValueError):
+                continue
+            if v == 0.0 or v != v or v in (float("inf"), float("-inf")):
+                continue
+            side = "pos" if v > 0 else "neg"
+            key = str(name)
+            for acc in (self._upd_comp, self._run_comp):
+                acc[side][key] = acc[side].get(key, 0.0) + v
+
+    @staticmethod
+    def _comp_payload(comp: dict[str, dict[str, float]]) -> dict[str, dict[str, float]]:
+        return {side: {k: round(v, 3) for k, v in comp[side].items()} for side in ("pos", "neg")}
+
     def _event(self, kind: str, text: str, **extra: Any) -> None:
         ev = {"t": round(time.time(), 2), "kind": kind, "text": text, **extra}
         self._events.append(ev)
@@ -197,6 +229,7 @@ class LiveFeed:
             info = infos[i] if infos is not None and i < len(infos) else None
             if info:
                 self._ingest_info(i, info)
+                self._add_components(info.get("reward_components"))
 
             if bool(dones[i]):
                 self._finish_episode(i, info or {})
@@ -273,6 +306,8 @@ class LiveFeed:
         self.update = update
         self.total_samples += samples
         self._write_history(update, metrics)
+        self._last_comp = self._upd_comp
+        self._upd_comp = self._blank_comp()
         self._action_recent[:] = 0
         self._upd_heat = {}
         self._upd_eps = []
@@ -300,6 +335,7 @@ class LiveFeed:
             ],
             "heat": {k: [[x, y, c] for (x, y), c in cells.items()] for k, cells in self._upd_heat.items()},
             "actions": self._action_recent.tolist(),
+            "components": self._comp_payload(self._upd_comp),
             "episodes": self._upd_eps,
             "events": self._upd_events,
         }
@@ -385,6 +421,11 @@ class LiveFeed:
                 "names": self.action_names,
                 "total": self._action_total.tolist(),
                 "recent": self._action_recent.tolist(),
+            },
+            "components": {
+                "update": self._comp_payload(self._upd_comp),
+                "last_update": self._comp_payload(self._last_comp),
+                "run": self._comp_payload(self._run_comp),
             },
             "envs": self._envs,
             "trails": trails,
