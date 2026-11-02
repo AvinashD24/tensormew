@@ -128,7 +128,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 
 /* strip */
 .strip { display: flex; height: 16px; gap: 1px; margin-top: 10px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
-.strip i { flex: 1 1 0; min-width: 2px; }
+.strip i { flex: 1 1 0; min-width: 0; }
+.strip i.resumed { box-shadow: inset 2px 0 0 var(--text); }
 .s-EXPLORING { background: #38bdf8; } .s-LEARNING { background: var(--good); } .s-ADVANCING { background: #a3e635; }
 .s-LOOPING { background: var(--warn); } .s-THRASHING { background: #fb923c; } .s-COLLAPSED { background: var(--bad); }
 .legend.status span::before { height: 8px; width: 8px; border-radius: 2px; }
@@ -138,7 +139,27 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .tab { border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; }
 .tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 650; }
-#heat { width: 100%; height: 600px; display: block; background: var(--panel2); border-radius: 10px; }
+#heat { width: 100%; height: 600px; display: block; background: var(--panel2); border-radius: 10px; cursor: grab; touch-action: pan-y; user-select: none; }
+#heat.grab { cursor: grabbing; }
+#heat:focus-visible, .zbtns button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
+.zbtns { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; }
+.zbtns button { min-width: 28px; height: 26px; padding: 0 8px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 7px; font: 600 13px var(--mono); cursor: pointer; }
+.zbtns button:hover { border-color: var(--accent2); }
+.zbtns .zl { min-width: 40px; text-align: center; font: 12px var(--mono); }
+.maphover { min-height: 20px; margin-top: 6px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.story { margin-bottom: 10px; }
+.goals { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.goal { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); font-size: 12px; cursor: help; }
+.goal .gl { font-weight: 800; }
+.goal .gn { font: 700 10px var(--mono); width: 17px; height: 17px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--gold); color: #0b1020; }
+.goal.reached { border-color: var(--good); color: var(--text); background: color-mix(in srgb, var(--good) 14%, var(--panel2)); }
+.goal.reached .gl { color: var(--good); }
+.goal.reached .gn { background: var(--good); }
+.goals .arrow { color: var(--muted); font-size: 14px; }
+.furthest { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.furthest b { color: var(--text); }
+@media (max-width: 520px) { #heat { height: 440px; } .goals { flex-direction: column; align-items: stretch; gap: 2px; } .goals .arrow { text-align: center; line-height: 1; transform: rotate(90deg); } .goal { border-radius: 10px; } }
 .ramp { height: 8px; border-radius: 4px; margin-top: 8px; background: linear-gradient(90deg, #1b1040, #5a1e8c, #c4366c, #fb8c3c, #ffe86b); }
 .ramp + div { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
 .act { display: grid; gap: 7px; }
@@ -237,8 +258,14 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 
     <section class="cov">
       <div class="card">
-        <h2>Exploration coverage <span class="sub" id="covSub"></span></h2>
-        <canvas id="heat" role="img" aria-label="Heatmap of tiles visited by the agents, drawn on the whole route from New Bark to Violet City"></canvas>
+        <h2>Exploration coverage
+          <span class="zbtns" role="group" aria-label="Map zoom">
+            <button id="zOut" type="button" aria-label="Zoom out">−</button><span id="zLevel" class="zl" aria-live="polite">1.0×</span><button id="zIn" type="button" aria-label="Zoom in">+</button><button id="zReset" type="button" aria-label="Reset map zoom">Reset</button>
+          </span>
+          <span class="sub" id="covSub"></span></h2>
+        <div id="story" class="story" role="region" aria-label="Story progress"></div>
+        <canvas id="heat" tabindex="0" role="img" aria-label="Heatmap of tiles visited by the agents, drawn on the whole route from New Bark to Violet City. Mouse wheel or plus and minus keys zoom, drag or arrow keys pan, double-click or 0 resets."></canvas>
+        <div id="mapHover" class="maphover mono" aria-live="off">Hover the map for tile details.</div>
         <div class="ramp"></div><div><span>rarely visited</span><span>visited constantly</span></div>
       </div>
       <div class="stack">
@@ -335,6 +362,13 @@ class Chart {
       s.ys.forEach((v, i) => { if (v == null || !isFinite(v)) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); });
       if (s.fill && started) { const last = s.ys.length - 1; ctx.save(); ctx.lineTo(X(last), Y(y0)); ctx.lineTo(X(0), Y(y0)); ctx.closePath(); ctx.globalAlpha = .12; ctx.fillStyle = s.color; ctx.fill(); ctx.restore(); ctx.beginPath(); started = false; s.ys.forEach((v, i) => { if (v == null) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); }); }
       ctx.strokeStyle = s.color; ctx.lineWidth = s.w || 2; ctx.lineJoin = "round"; ctx.setLineDash(s.dash || []); ctx.globalAlpha = s.alpha || 1; ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    for (const ri of (cfg.resumes || [])) {                 // a resumed run took over here
+      if (ri <= 0 || ri >= n) continue;
+      const rx = Math.round(X(ri)) + .5, t = "resumed from checkpoint"; ctx.save();
+      ctx.strokeStyle = muted; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(rx, g.t); ctx.lineTo(rx, g.h - g.b); ctx.stroke(); ctx.setLineDash([]);
+      ctx.font = "10px " + css("--mono"); ctx.fillStyle = muted; ctx.textBaseline = "top";
+      const right = rx + 6 + ctx.measureText(t).width > g.w - g.r; ctx.textAlign = right ? "right" : "left"; ctx.fillText(t, right ? rx - 4 : rx + 4, g.t + 1); ctx.restore();
     }
     if (cfg.marker != null && cfg.marker >= 0 && cfg.marker < n) { const mx = X(cfg.marker); ctx.strokeStyle = css("--gold"); ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(mx, g.t); ctx.lineTo(mx, g.h - g.b); ctx.stroke(); ctx.setLineDash([]); }
     if (this.hover >= 0) { const x = X(this.hover); ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.h - g.b); ctx.stroke();
@@ -489,34 +523,36 @@ function renderKpis() {
     $("kKlNote").textContent = `clip ${(last.clip_frac * 100).toFixed(1)}% · lr ${Number(last.lr).toExponential(1)}`;
     const dEl = $("kSps"); $("kSpsNote").textContent = `${fmt(last.duration_sec, 1)}s per update`;
     dEl.textContent = live ? `${Math.round(live.steps_per_sec)} st/s` : `${fmt(last.samples / Math.max(last.duration_sec, .01), 0)} st/s`;
-    spark($("spReward"), col("mean_reward").slice(-60), css("--accent2"));
-    spark($("spMaps"), col("maps_discovered").slice(-60), css("--good"));
-    spark($("spKl"), col("approx_kl").slice(-60), css("--accent"));
-    spark($("spDur"), col("duration_sec").slice(-60), css("--gold"));
+    spark($("spReward"), col("mean_reward"), css("--accent2"));
+    spark($("spMaps"), col("maps_discovered"), css("--good"));
+    spark($("spKl"), col("approx_kl"), css("--accent"));
+    spark($("spDur"), col("duration_sec"), css("--gold"));
   }
 }
 function renderCharts() {
   const xs = metrics.map(m => m.update);
+  const resumes = metrics.map((m, i) => m.resumed ? i : -1).filter(i => i > 0);
   let best = -Infinity; const bestSeries = col("mean_reward").map(v => (v != null && v > best) ? (best = v) : (isFinite(best) ? best : null));
-  charts.reward.set({ xs, series: [
+  charts.reward.set({ xs, resumes, series: [
     { ys: col("mean_reward"), color: css("--accent2"), label: "mean", w: 1.6, alpha: .85, fmt: (v) => sgn(v, 2) },
     { ys: col("rolling_reward"), color: css("--accent"), label: "rolling", w: 2.6, fmt: (v) => sgn(v, 2) },
     { ys: bestSeries, color: css("--gold"), label: "best", w: 1.2, dash: [4, 4], fmt: (v) => sgn(v, 2) }] });
   const maxEnt = live?.actions ? Math.log(live.actions.names.length) : Math.log(5);
-  charts.entropy.set({ xs, floor: 0, yMax: maxEnt, series: [{ ys: col("entropy"), color: css("--accent2"), label: "entropy", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) }],
+  charts.entropy.set({ xs, resumes, floor: 0, yMax: maxEnt, series: [{ ys: col("entropy"), color: css("--accent2"), label: "entropy", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) }],
     bands: [{ y0: 0, y1: .35, color: css("--bad") }, { y0: .7, y1: maxEnt, color: css("--good") }] });
-  charts.kl.set({ xs, floor: 0, series: [
+  charts.kl.set({ xs, resumes, floor: 0, series: [
     { ys: col("approx_kl"), color: css("--accent"), label: "KL", w: 2.2, fmt: (v) => fmt(v, 4) },
     { ys: col("clip_frac"), color: css("--accent2"), label: "clip", w: 1.8, fmt: (v) => fmt(v, 3) }],
     lines: [{ y: .08, color: css("--warn") }] });
-  charts.loss.set({ xs, series: [
+  charts.loss.set({ xs, resumes, series: [
     { ys: col("value_loss"), color: css("--accent"), label: "value", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) },
     { ys: col("policy_loss"), color: css("--accent2"), label: "policy", hidden: true, fmt: (v) => fmt(v, 4) }], floor: 0 });
-  const strip = $("strip"), recent = metrics.slice(-160);
-  strip.innerHTML = recent.map(m => `<i class="s-${m.status || "LEARNING"}" title="update ${m.update}: ${m.status}"></i>`).join("");
-  const counts = {}; recent.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
+  const strip = $("strip"), all = metrics, stride = Math.max(1, Math.ceil(all.length / 400));   // whole history, thinned to at most ~400 cells
+  const recent = all.filter((m, i) => i % stride === 0 || m.resumed);
+  strip.innerHTML = recent.map(m => `<i class="s-${m.status || "LEARNING"}${m.resumed ? " resumed" : ""}" title="update ${m.update}: ${m.status}${m.resumed ? " (resumed from checkpoint)" : ""}"></i>`).join("");
+  const counts = {}; all.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
   const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
-  $("stripSub").textContent = top ? `last ${recent.length} updates · mostly ${top[0].toLowerCase()}` : "";
+  $("stripSub").textContent = top ? `updates ${all[0].update}–${all[all.length - 1].update} · mostly ${top[0].toLowerCase()}${all.some(m => m.resumed) ? " · white tick = resumed" : ""}` : "";
 }
 
 const envEls = [];
@@ -640,6 +676,83 @@ let world = null;
 fetch("/api/world").then((r) => r.json()).then((w) => { world = w; renderWorld(); }).catch(() => {});
 const TERRAIN = { a: "rgba(70,130,220,.30)", g: "rgba(70,170,90,.22)", l: "rgba(205,170,90,.22)", t: "rgba(120,210,130,.30)", d: "rgba(255,255,255,.38)", f: "rgba(255,255,255,.08)", p: "rgba(0,0,0,.35)" };
 const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,10", "Mr. Pokémon's house"], ["26,2", "Route 31"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
+const GOAL_SHORT = ["Elm's Lab", "Mr. Pokémon", "Rival", "Deliver egg", "Falkner"];
+const GOAL_CHIP = ["Elm's Lab", "Mr. Pokémon / the egg", "Rival in Cherrygrove", "Deliver the egg", "Falkner / Violet Gym"];
+const ZMAX = 14, GRID_AT = 12;
+const view = { k: 1, tx: 0, ty: 0 };      // zoom and pan on top of the fit-to-view layout (CSS pixels)
+let WL = null;                            // last drawn layout, used by the hover readout
+let worldRaf = 0;
+const scheduleWorld = () => { if (!worldRaf) worldRaf = requestAnimationFrame(() => { worldRaf = 0; renderWorld(); }); };
+
+/* A goal counts as reached once any agent has stood within 1 tile (8-neighbourhood) of its goal tile on that map,
+   judged from the visit heat of the run (live: the current run; replay: the selected run up to the slider).
+   Goal 4 is the SECOND visit to Elm's lab, which the same tile as goal 1 cannot tell apart, so it also needs goals 2 and 3. */
+function goalState() {
+  const heat = {}; for (const h of (live ? live.heat : [])) heat[h.map] = h.cells;
+  const got = {};
+  for (const s of (world ? world.stars || [] : [])) {
+    const cells = heat[String(s.map).replace("_", ",")] || [];
+    let ok = cells.some(([x, y]) => Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1);
+    if (s.n === 4) ok = ok && !!got[2] && !!got[3];
+    got[s.n] = ok;
+  }
+  return got;
+}
+let storyKey = "";
+function renderStory(got, furthest) {
+  const stars = world ? world.stars || [] : [], done = stars.filter((s) => got[s.n]).length;
+  const key = JSON.stringify([stars.map((s) => got[s.n]), furthest]);
+  if (key === storyKey) return; storyKey = key;
+  const chips = stars.map((s) => {
+    const ok = !!got[s.n], nm = GOAL_CHIP[s.n - 1] || s.name;
+    return `<li class="goal ${ok ? "reached" : ""}" title="${String(s.desc || "").replace(/"/g, "&quot;")}"><span class="gl" aria-hidden="true">${ok ? "✓" : "○"}</span><span class="gn">${s.n}</span> ${nm}<span class="sr"> – ${ok ? "reached" : "not reached"}</span></li>`;
+  });
+  $("story").innerHTML = `<ol class="goals" aria-label="Story goals in order">${chips.join(`<li class="arrow" aria-hidden="true">→</li>`)}</ol>` +
+    `<div class="furthest">Furthest place reached: <b>${furthest}</b> · ${done} of ${stars.length} goals reached</div>`;
+}
+
+function clampView(r) {
+  view.k = clamp(view.k, 1, ZMAX);
+  view.tx = clamp(view.tx, r.width * (1 - view.k), 0); view.ty = clamp(view.ty, r.height * (1 - view.k), 0);
+  $("heat").style.touchAction = view.k > 1 ? "none" : "pan-y";
+  $("zLevel").textContent = view.k.toFixed(view.k < 10 ? 1 : 0) + "×";
+}
+function zoomAt(f, cx, cy) {
+  const r = $("heat").getBoundingClientRect(); if (cx == null) { cx = r.width / 2; cy = r.height / 2; }
+  const k2 = clamp(view.k * f, 1, ZMAX), q = k2 / view.k;
+  view.tx = cx - (cx - view.tx) * q; view.ty = cy - (cy - view.ty) * q; view.k = k2; clampView(r); scheduleWorld();
+}
+function resetView() { view.k = 1; view.tx = 0; view.ty = 0; clampView($("heat").getBoundingClientRect()); scheduleWorld(); }
+function hoverAt(e) {
+  const out = $("mapHover"); if (!WL) return;
+  const r = $("heat").getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  for (const q of WL.rects) {
+    if (px < q.bx || py < q.by || px >= q.bx + q.m.w * WL.s || py >= q.by + q.m.h * WL.s) continue;
+    const x = Math.floor((px - q.bx) / WL.s), y = Math.floor((py - q.by) / WL.s), n = (WL.heat[q.m.id] || new Map()).get(x + "," + y) || 0;
+    const pc = (world.heals || []).some((h) => String(h.map).replace("_", ",") === q.m.id && h.x === x && h.y === y);
+    out.textContent = `${q.m.name} · tile (${x}, ${y}) · ${n.toLocaleString()} visit${n === 1 ? "" : "s"}${pc ? " · Pokécenter" : ""}`; return;
+  }
+  out.textContent = "Hover the map for tile details.";
+}
+(function wireMap() {
+  const cv = $("heat"); let drag = null;
+  cv.addEventListener("wheel", (e) => { e.preventDefault(); const r = cv.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  cv.addEventListener("pointerdown", (e) => { if (e.button) return; drag = { x: e.clientX, y: e.clientY }; try { cv.setPointerCapture(e.pointerId); } catch (_) {} cv.classList.add("grab"); });
+  cv.addEventListener("pointermove", (e) => {
+    if (drag && view.k > 1) { view.tx += e.clientX - drag.x; view.ty += e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; clampView(cv.getBoundingClientRect()); scheduleWorld(); }
+    hoverAt(e);
+  });
+  const up = () => { drag = null; cv.classList.remove("grab"); };
+  cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+  cv.addEventListener("dblclick", resetView);
+  cv.addEventListener("keydown", (e) => {
+    const step = 40, K = { "+": () => zoomAt(1.5), "=": () => zoomAt(1.5), "-": () => zoomAt(1 / 1.5), "0": resetView,
+      ArrowLeft: () => { view.tx += step; }, ArrowRight: () => { view.tx -= step; }, ArrowUp: () => { view.ty += step; }, ArrowDown: () => { view.ty -= step; } };
+    if (!K[e.key]) return; e.preventDefault(); K[e.key](); clampView(cv.getBoundingClientRect()); scheduleWorld();
+  });
+  $("zIn").onclick = () => zoomAt(1.5); $("zOut").onclick = () => zoomAt(1 / 1.5); $("zReset").onclick = resetView;
+})();
+
 function renderWorld() {
   const cv = $("heat"), dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
   if (r.width < 10) return;
@@ -647,46 +760,85 @@ function renderWorld() {
   const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, r.width, r.height);
   ctx.textBaseline = "alphabetic";
   if (!world) { ctx.fillStyle = css("--muted"); ctx.font = "13px system-ui"; ctx.textAlign = "center"; ctx.fillText("loading map…", r.width / 2, r.height / 2); return; }
+  clampView(r);
   const outdoor = world.maps.filter((m) => m.outdoor), inside = world.maps.filter((m) => !m.outdoor);
   let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
   for (const m of outdoor) { x0 = Math.min(x0, m.ox); y0 = Math.min(y0, m.oy); x1 = Math.max(x1, m.ox + m.w); y1 = Math.max(y1, m.oy + m.h); }
   let cx = x0, rowH = 0; const sy = y1 + 7;               // interiors sit in a strip under the overworld
   for (const m of inside) { if (cx + m.w > x1) { cx = x0; } m.px = cx; m.py = sy; cx += m.w + 4; rowH = Math.max(rowH, m.h); }
   const W = x1 - x0, H = sy + rowH - y0, pad = 8, sc = Math.min((r.width - 2 * pad) / W, (r.height - 2 * pad) / H);
-  const ax = (r.width - W * sc) / 2, ay = (r.height - H * sc) / 2;
-  const P = (m, x, y) => { const wx = m.outdoor ? m.ox + x : m.px + x, wy = m.outdoor ? m.oy + y : m.py + y; return [ax + (wx - x0) * sc, ay + (wy - y0) * sc]; };
+  const ax = (r.width - W * sc) / 2, ay = (r.height - H * sc) / 2, k = view.k, s = sc * k;
+  const P = (m, x, y) => { const wx = m.outdoor ? m.ox + x : m.px + x, wy = m.outdoor ? m.oy + y : m.py + y; return [(ax + (wx - x0) * sc) * k + view.tx, (ay + (wy - y0) * sc) * k + view.ty]; };
   const byId = Object.fromEntries(world.maps.map((m) => [m.id, m]));
-  const edge = css("--border");
-  for (const m of world.maps) {                             // terrain, then outline and name
-    const [bx, by] = P(m, 0, 0);
-    ctx.fillStyle = "rgba(255,255,255,.035)"; ctx.fillRect(bx, by, m.w * sc, m.h * sc);
-    m.rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) { const c = TERRAIN[row[x]]; if (c) { ctx.fillStyle = c; ctx.fillRect(bx + x * sc, by + y * sc, Math.ceil(sc), Math.ceil(sc)); } } });
-    ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.strokeRect(bx + .5, by + .5, m.w * sc, m.h * sc);
+  const edge = css("--border"), tileW = Math.ceil(s);
+  const rects = []; WL = { rects, s, heat: {} };
+  const visible = (bx, by, m) => bx + m.w * s >= 0 && by + m.h * s >= 0 && bx <= r.width && by <= r.height;
+  for (const m of world.maps) {                             // terrain, then outline
+    const [bx, by] = P(m, 0, 0); rects.push({ m, bx, by });
+    if (!visible(bx, by, m)) continue;
+    ctx.fillStyle = "rgba(255,255,255,.035)"; ctx.fillRect(bx, by, m.w * s, m.h * s);
+    m.rows.forEach((row, y) => { const py = by + y * s; if (py + s < 0 || py > r.height) return;
+      for (let x = 0; x < row.length; x++) { const c = TERRAIN[row[x]], px = bx + x * s; if (c && px + s >= 0 && px <= r.width) { ctx.fillStyle = c; ctx.fillRect(px, py, tileW, tileW); } } });
   }
-  let mx = 1, tiles = 0, seenMaps = new Set();
+  let mx = 1, tiles = 0; const seenMaps = new Set();
   for (const h of (live ? live.heat : [])) { for (const c of h.cells) mx = Math.max(mx, c[2]); }
   const lmx = Math.log(1 + mx);
   for (const h of (live ? live.heat : [])) {                // visit heat on top, same colour ramp as before
     const m = byId[h.map]; if (!m) continue;
     seenMaps.add(h.map); tiles += h.cells.length;
-    const [bx, by] = P(m, 0, 0);
-    for (const [x, y, c] of h.cells) { const [R, G, B] = ramp(Math.log(1 + c) / lmx); ctx.fillStyle = `rgb(${R},${G},${B})`; ctx.fillRect(bx + x * sc, by + y * sc, Math.ceil(sc), Math.ceil(sc)); }
+    const [bx, by] = P(m, 0, 0), idx = (WL.heat[h.map] = new Map());
+    for (const [x, y, c] of h.cells) {
+      idx.set(x + "," + y, c); const px = bx + x * s, py = by + y * s; if (px + s < 0 || py + s < 0 || px > r.width || py > r.height) continue;
+      const [R, G, B] = ramp(Math.log(1 + c) / lmx); ctx.fillStyle = `rgb(${R},${G},${B})`; ctx.fillRect(px, py, tileW, tileW);
+    }
   }
-  ctx.font = "600 11px system-ui"; ctx.textAlign = "left";
-  for (const m of world.maps) { const [bx, by] = P(m, 0, 0), t = m.name; const w = ctx.measureText(t).width + 8;
-    ctx.fillStyle = "rgba(11,16,32,.72)"; ctx.fillRect(bx + 2, by - 15 < 0 ? by + 2 : by - 15, w, 14); ctx.fillStyle = "#e6ebff"; ctx.fillText(t, bx + 6, (by - 15 < 0 ? by + 2 : by - 15) + 11); }
-  for (const s of (world.stars || [])) {                    // numbered story goals: where the agents have to get to
-    const m = byId[String(s.wmap).replace("_", ",")]; if (!m) continue;
-    const [px, py] = P(m, s.wx, s.wy); ctx.fillStyle = css("--gold"); ctx.strokeStyle = "#0b1020"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.arc(px, py, 8, 0, 7); ctx.stroke(); ctx.fill(); ctx.fillStyle = "#0b1020"; ctx.font = "700 10px system-ui"; ctx.textAlign = "center"; ctx.fillText(s.n, px, py + 3.5);
+  if (s >= GRID_AT) {                                       // tile grid, only when zoomed in far enough to be useful
+    ctx.save(); ctx.strokeStyle = css("--text"); ctx.globalAlpha = .13; ctx.lineWidth = 1; ctx.beginPath();
+    for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue;
+      for (let x = 0; x <= m.w; x++) { const px = Math.round(bx + x * s) + .5; if (px < 0 || px > r.width) continue; ctx.moveTo(px, Math.max(by, 0)); ctx.lineTo(px, Math.min(by + m.h * s, r.height)); }
+      for (let y = 0; y <= m.h; y++) { const py = Math.round(by + y * s) + .5; if (py < 0 || py > r.height) continue; ctx.moveTo(Math.max(bx, 0), py); ctx.lineTo(Math.min(bx + m.w * s, r.width), py); } }
+    ctx.stroke(); ctx.restore();
+  }
+  for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue; ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.strokeRect(bx + .5, by + .5, m.w * s, m.h * s); }
+  /* the ideal story route: a faint dashed line over the overworld legs */
+  ctx.save(); ctx.strokeStyle = css("--gold"); ctx.globalAlpha = .55; ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]); ctx.lineJoin = "round";
+  const drawn = new Set();
+  for (const leg of (world.legs || [])) for (const sg of leg.segments) {
+    const key = sg.map + JSON.stringify(sg.pts), m = byId[sg.map.replace("_", ",")]; if (!m || drawn.has(key)) continue; drawn.add(key);
+    ctx.beginPath(); sg.pts.forEach((p, i) => { const [px, py] = P(m, p[0] + .5, p[1] + .5); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke();
+  }
+  ctx.restore();
+  ctx.font = "600 11px system-ui"; ctx.textAlign = "left";   // map names: constant size, kept inside their map while it is partly off-screen
+  for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue; const w = ctx.measureText(m.name).width + 8, mw = m.w * s;
+    const lx = clamp(bx + 2, 2, Math.max(2, bx + mw - w - 2)), ly = by - 15 < 0 ? Math.max(by + 2, 2) : by - 15;
+    ctx.fillStyle = "rgba(11,16,32,.72)"; ctx.fillRect(lx, ly, w, 14); ctx.fillStyle = "#e6ebff"; ctx.fillText(m.name, lx + 4, ly + 11); }
+  for (const h of (world.heals || [])) {                    // Pokécenters
+    const m = byId[String(h.map).replace("_", ",")]; if (!m) continue; const [px, py] = P(m, h.x + .5, h.y + .5);
+    if (px < -10 || py < -10 || px > r.width + 10 || py > r.height + 10) continue;
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#e11d48"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(px - 5, py - 5, 10, 10, 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = "#e11d48"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px - 2.5, py); ctx.lineTo(px + 2.5, py); ctx.moveTo(px, py - 2.5); ctx.lineTo(px, py + 2.5); ctx.stroke();
+    if (k >= 3) { ctx.font = "600 10px system-ui"; ctx.textAlign = "left"; ctx.fillStyle = "rgba(11,16,32,.8)"; const t = h.name.replace(/Pok.center/, "Pokécenter"), w = ctx.measureText(t).width + 6; ctx.fillRect(px + 8, py - 7, w, 13); ctx.fillStyle = "#fff"; ctx.fillText(t, px + 11, py + 3); }
+  }
+  const got = goalState(), slot = {};                       // numbered story goals: gold until reached, then green with a check
+  for (const g of (world.stars || [])) {
+    const m = byId[String(g.wmap).replace("_", ",")]; if (!m) continue;
+    const key = g.wmap + g.wx + "," + g.wy, i = (slot[key] = (slot[key] ?? -1) + 1);   // goals sharing a door stack downwards
+    const [px0, py0] = P(m, g.wx + .5, g.wy + .5), px = px0, py = py0 + i * 20, ok = !!got[g.n];
+    ctx.fillStyle = ok ? css("--good") : css("--gold"); ctx.strokeStyle = "#0b1020"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 8, 0, 7); ctx.stroke(); ctx.fill();
+    ctx.fillStyle = "#0b1020"; ctx.font = "700 10px system-ui"; ctx.textAlign = "center"; ctx.fillText(ok ? "✓" : g.n, px, py + 3.5);
+    const t = (ok ? "✓ " : "") + g.n + " " + (GOAL_SHORT[g.n - 1] || g.name); ctx.font = "700 11px system-ui"; ctx.textAlign = "left";
+    const w = ctx.measureText(t).width + 8, lx = px + 11 + w > r.width ? px - 11 - w : px + 11;   // flip to the left near the right edge
+    ctx.fillStyle = "rgba(11,16,32,.82)"; ctx.fillRect(lx, py - 8, w, 16);
+    ctx.fillStyle = ok ? "#6ee7a0" : "#ffd166"; ctx.fillText(t, lx + 4, py + 4);
   }
   if (live) live.trails.forEach((tr, i) => {                // where each agent is right now
     const p = tr[tr.length - 1]; if (!p) return; const m = byId[p[0]]; if (!m) return; const [px, py] = P(m, p[1] + .5, p[2] + .5);
     ctx.fillStyle = `hsl(${(i * 47) % 360},90%,62%)`; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, 4, 0, 7); ctx.fill(); ctx.stroke();
   });
   let furthest = "nowhere yet"; for (const [id, name] of FURTHEST) if (seenMaps.has(id)) furthest = name;
-  const goals = (world.stars || []).map((s) => `${s.n} ${s.name}`).join(" · ");
-  $("covSub").textContent = live ? `furthest: ${furthest} · ${tiles.toLocaleString()} tiles visited · peak ${mx.toLocaleString()} visits · goals: ${goals}` : "";
+  renderStory(got, furthest);
+  $("covSub").textContent = live ? `${tiles.toLocaleString()} tiles visited · peak ${mx.toLocaleString()} visits` : "";
 }
 function redrawAll() { renderCharts(); renderKpis(); renderWorld(); renderComponents(); }
 
@@ -722,7 +874,7 @@ function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from histo
   const episodes = [], events = []; let maps = new Set();
   for (let i = 0; i <= idx; i++) { recs[i].actions.forEach((c, k) => total[k] += c); if (episodes.length < 400) episodes.push(...recs[i].episodes); events.push(...recs[i].events); }
   for (const m of Object.keys(heat)) maps.add(m);
-  const heatList = Object.entries(heat).map(([m, cells]) => { let v = 0; const arr = []; for (const [k, c] of cells) { const [x, y] = k.split(",").map(Number); arr.push([x, y, c]); v += c; } return { map: m, name: mapName(m), visits: v, cells: arr }; }).sort((a, b) => b.visits - a.visits).slice(0, 12);
+  const heatList = Object.entries(heat).map(([m, cells]) => { let v = 0; const arr = []; for (const [k, c] of cells) { const [x, y] = k.split(",").map(Number); arr.push([x, y, c]); v += c; } return { map: m, name: mapName(m), visits: v, cells: arr }; }).sort((a, b) => b.visits - a.visits).slice(0, 40);
   const envs = r.envs.map(([m, x, y, ret, st, bt], i) => ({ id: i, map: m, map_name: m ? mapName(m) : "", x, y, state: "", battle: !!bt, ep_return: ret, ep_steps: st, last_action: "", last_reward: 0 }));
   const mm = r.metrics || {};
   return { t: r.t, started: meta.started, finished: true, update: r.update, steps: r.steps, samples: mm.samples ? recs.slice(0, idx + 1).reduce((a, q) => a + ((q.metrics || {}).samples || 0), 0) : 0,
@@ -732,7 +884,7 @@ function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from histo
 function nearestFrame(update) { let lo = 0, hi = rep.frames.length - 1, best = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (rep.frames[mid] <= update) { best = mid; lo = mid + 1; } else hi = mid - 1; } return best < 0 ? null : rep.frames[best]; }
 function replayRender() {
   const idx = rep.idx;
-  metrics = rep.metricsAll.slice(0, idx + 1);
+  metrics = rep.prior.concat(rep.metricsAll.slice(0, idx + 1));   // earlier runs this one was resumed from, then the selected run up to the slider
   live = snapshotAt(idx);
   const fu = nearestFrame(live.update);
   $("repSlider").value = idx;
@@ -752,7 +904,8 @@ async function enterReplay(id) {
   const r = await fetch(`/api/run/${encodeURIComponent(id)}/history`, { cache: "no-store" }); if (!r.ok) { $("subtitle").textContent = "could not load that run"; $("runSel").value = ""; return; }
   const h = await r.json(); if (!h.records.length) { $("subtitle").textContent = "that run has no saved updates yet"; $("runSel").value = ""; return; }
   replayStop(); mode = "replay"; selectedMap = null; $("runSel").value = id;
-  rep = { id, meta: h.meta, records: h.records, frames: h.frames, metricsAll: h.records.map(x => x.metrics || {}).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
+  rep = { id, meta: h.meta, records: h.records, frames: h.frames, prior: h.prior || [], metricsAll: h.records.map(x => x.metrics || {}).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
+  if (rep.prior.length && rep.metricsAll.length) rep.metricsAll[0] = { ...rep.metricsAll[0], resumed: true };
   $("replayCard").style.display = "block";
   $("repSlider").max = rep.records.length - 1;
   replayRender();
@@ -782,7 +935,8 @@ async function pollMetrics() {
     const since = metrics.length ? metrics[metrics.length - 1].update : -1;
     const r = await fetch(`/api/metrics?since=${since}`, { cache: "no-store" }); const fresh = await r.json();
     if (since >= 0 && fresh.length === 0) return;
-    if (fresh.length && fresh[0].update <= since) metrics = fresh; else metrics = metrics.concat(fresh);
+    if (since >= 0 && fresh.length && fresh[0].update <= since) { metrics = []; return pollMetrics(); }   // new run: refetch everything (with its lineage)
+    metrics = metrics.concat(fresh);
     if (metrics.length > 6000) metrics = metrics.slice(-6000);
     // a restarted run begins again at update 0: drop stale history
     for (let i = 1; i < metrics.length; i++) if (metrics[i].update < metrics[i - 1].update) { metrics = metrics.slice(i); break; }
@@ -793,7 +947,7 @@ async function pollLive() {
   if (mode === "replay") return;
   try {
     const r = await fetch("/api/live", { cache: "no-store" }); const s = await r.json();
-    if (s && live && s.started !== live.started) { metrics = []; selectedMap = null; pollMetrics(); }   // new run began
+    if (s && live && (s.started !== live.started || s.run_id !== live.run_id)) { metrics = []; selectedMap = null; pollMetrics(); }   // new run began
     if (s && s.t !== lastLiveT) { live = s; lastLiveT = s.t; renderAll(); } else renderHeader();
   } catch (e) {}
 }

@@ -101,6 +101,50 @@ def read_history(run_dir: Path) -> dict:
     return {"meta": meta, "records": records, "frames": frames}
 
 
+def _run_span(run_dir: Path) -> tuple[float, int, int, list[dict]] | None:
+    """(started, first_update, last_update, metric records) of a saved run, or None if unusable."""
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recs = [r["metrics"] for r in read_history(run_dir)["records"] if isinstance(r.get("metrics"), dict) and r["metrics"].get("update") is not None]
+    if not recs:
+        return None
+    ups = [m["update"] for m in recs]
+    return float(meta.get("started") or 0), min(ups), max(ups), recs
+
+
+def lineage_prior(runs_dir: Path, run_id: str | None) -> list[dict]:
+    """Metric records of the runs this one was resumed from, oldest first.
+
+    A run P precedes R when P started earlier, P.first_update < R.first_update <= P.last_update + 1
+    (R picked up where P left off). The latest-started such P wins and the search recurses. Only
+    P's records with update < R.first_update are kept: later ones were replaced by R."""
+    if not run_id or not RUN_ID_RE.match(run_id) or not runs_dir.is_dir():
+        return []
+    spans = {d.name: s for d in runs_dir.iterdir() if d.is_dir() and (s := _run_span(d)) is not None}
+    if run_id not in spans:
+        return []
+    chain: list[list[dict]] = []
+    cur, seen = run_id, {run_id}
+    while True:
+        started, first, _, _ = spans[cur]
+        cands = [(s[0], name) for name, s in spans.items()
+                 if name not in seen and s[0] < started and s[1] < first <= s[2] + 1]
+        if not cands:
+            break
+        _, parent = max(cands)
+        seen.add(parent)
+        chain.append([m for m in spans[parent][3] if m["update"] < first])
+        cur = parent
+    out: list[dict] = []
+    for part in reversed(chain):
+        if out and part:  # mark where a resumed run took over, so the charts can draw a divider there
+            part = [{**part[0], "resumed": True}] + part[1:]
+        out.extend(part)
+    return out
+
+
 def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = None):
     runs_dir = runs_dir or live_dir.parent / "runs"
 
@@ -130,8 +174,17 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                     return self._send(200, page, "text/html; charset=utf-8")
                 if route == "/api/metrics":
                     since = int(parse_qs(url.query).get("since", ["-1"])[0])
-                    body = json.dumps(read_metrics(metrics_path, since)).encode()
-                    return self._send(200, body, "application/json")
+                    recs = read_metrics(metrics_path, since)
+                    if since < 0:  # full fetch: prepend the runs this live run was resumed from
+                        run_id = None
+                        with contextlib.suppress(OSError, ValueError):
+                            run_id = json.loads((live_dir / "state.json").read_text(encoding="utf-8")).get("run_id")
+                        if run_id and recs:
+                            first = min(r["update"] for r in recs)
+                            prior = [r for r in lineage_prior(runs_dir, run_id) if r["update"] < first]
+                            if prior:
+                                recs = prior + [{**recs[0], "resumed": True}] + recs[1:]
+                    return self._send(200, json.dumps(recs).encode(), "application/json")
                 if route == "/api/live":
                     state = live_dir / "state.json"
                     if not state.is_file():
@@ -146,7 +199,9 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                     run_dir = runs_dir / parts[2]
                     if not run_dir.is_dir():
                         return self._send(404, b"no such run", "text/plain")
-                    return self._send(200, json.dumps(read_history(run_dir), separators=(",", ":")).encode(), "application/json")
+                    hist = read_history(run_dir)
+                    hist["prior"] = lineage_prior(runs_dir, parts[2])
+                    return self._send(200, json.dumps(hist, separators=(",", ":")).encode(), "application/json")
                 if len(parts) == 3 and parts[0] == "runframes" and RUN_ID_RE.match(parts[1]) and FRAME_RE.match(parts[2]):
                     frame = runs_dir / parts[1] / "frames" / parts[2]
                     if not frame.is_file():
