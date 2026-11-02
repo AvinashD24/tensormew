@@ -186,6 +186,14 @@ class MainTests(unittest.TestCase):
             c.main(["--host", "h", "--port", "1", "--config", "no_such_preset"])
         self.assertEqual(cm.exception.code, c.EXIT_PREFLIGHT)
 
+    def test_long_v1_preset_is_accepted_and_not_uploaded(self):
+        import argparse
+        self.assertEqual(c.resolve_config(argparse.Namespace(config="long_v1")), ("long_v1", False))
+        args = argparse.Namespace(updates=50, rollout=128, max_steps=1024, batch_size=256, lr=3e-4, state="x",
+                                  save="s.pt", envs=16, curriculum=True, recurrent=True, states="",
+                                  config="long_v1", explicit={"updates", "save"}, resume=False, run_id="r")
+        self.assertIn("long_v1", c.build_remote_train_cmd(args, 16, "long_v1"))
+
     def test_attach_without_job(self):
         with mock.patch.object(c, "remote_capture", return_value=(0, "none")):
             self.assertEqual(c.main(["--host", "h", "--port", "1", "--attach"]), c.EXIT_FAIL)

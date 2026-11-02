@@ -26,8 +26,11 @@ except Exception:  # pragma: no cover
     Image = None  # type: ignore[assignment]
 
 try:
-    from src.game_data import get_map_name
+    from src.game_data import get_map_name, get_species_name
 except Exception:  # pragma: no cover
+
+    def get_species_name(species_id: int) -> str:
+        return f"Pokemon #{species_id}"
 
     def get_map_name(map_group: int, map_number: int) -> str:
         return f"Map ({map_group}, {map_number})"
@@ -43,6 +46,18 @@ COMPONENT_KEYS = (
     "step", "bump", "route", "tile", "neighbor", "map", "warp", "interaction", "event",
     "badge", "catch", "level", "battle", "damage", "heal", "whiteout", "behind_map", "other",
 )
+
+
+def dex_ids(bits: Any) -> set[int]:
+    """Species numbers (1-based) set in a Pokedex bitmap (32 bytes, bit j of byte k = species k*8+j+1)."""
+    out: set[int] = set()
+    for k, b in enumerate(bits or ()):
+        b = int(b)
+        while b:
+            low = b & -b
+            out.add(k * 8 + low.bit_length())
+            b ^= low
+    return out
 
 
 def _map_key(map_id: Sequence[int]) -> str:
@@ -125,6 +140,15 @@ class LiveFeed:
         self._best_badges = 0
         self._best_ep_return = float("-inf")
         self._seen_map_keys: set[str] = set()
+        # Cumulative "what the agents did" counters (run-wide, across all envs), fed by info["fun"].
+        self._fun_on = False
+        self._enc: dict[int, int] = {}      # species -> times battled (wild + trainer)
+        self._got: dict[int, int] = {}      # species -> times newly caught/obtained
+        self._dex_seen: set[int] = set()
+        self._dex_own: set[int] = set()
+        self._wild = self._trn = self._whiteouts = self._max_level = self._max_money = 0
+        self._first_map: dict[str, tuple[int, str]] = {}   # map key -> (feed step first entered, name)
+        self._fun_prev: list[dict[str, Any] | None] = [None] * num_envs
 
         self._last_frame_t = 0.0
         self._last_state_t = 0.0
@@ -190,6 +214,7 @@ class LiveFeed:
             "num_envs": self.num_envs,
             "action_names": self.action_names,
             "run": self.run_info,
+            "species_names": self._species_names(),
             "map_names": {k: get_map_name(*(int(p) for p in k.split(","))) for k in self._seen_map_keys},
         }
         try:
@@ -231,6 +256,9 @@ class LiveFeed:
                 self._ingest_info(i, info)
                 self._add_components(info.get("reward_components"))
 
+            if info:
+                self._ingest_fun(i, info, bool(dones[i]))
+
             if bool(dones[i]):
                 self._finish_episode(i, info or {})
 
@@ -271,11 +299,65 @@ class LiveFeed:
             self._trails[i].append((key, x, y))
             if key not in self._seen_map_keys:
                 self._seen_map_keys.add(key)
+                self._first_map[key] = (self.steps, env["map_name"])
                 self._event("map", f"env {i} entered {env['map_name']}", env=i, map=key)
         badges = int(info.get("badges", 0))
         if badges > self._best_badges:
             self._best_badges = badges
             self._event("badge", f"env {i} earned badge #{badges}", env=i)
+
+    def _ingest_fun(self, i: int, info: dict[str, Any], done: bool) -> None:
+        """Fold one env step's ``info["fun"]`` into the cumulative counters (cheap: no emulator reads)."""
+        comps = info.get("reward_components")
+        if isinstance(comps, dict) and comps.get("whiteout"):
+            self._whiteouts += 1
+        f = info.get("fun")
+        if not isinstance(f, dict):
+            return
+        self._fun_on = True
+        bm, es = int(f.get("bm", 0)), int(f.get("es", 0))
+        own, seen = dex_ids(f.get("dc")), dex_ids(f.get("ds"))
+        prev = self._fun_prev[i]
+        if prev is not None:
+            if bm and not prev["bm"]:
+                prev["pending"], prev["kind"] = True, bm
+            if prev.get("pending") and (es > 0 or not bm):
+                if es > 0:
+                    self._enc[es] = self._enc.get(es, 0) + 1
+                if prev["kind"] == 2:
+                    self._trn += 1
+                else:
+                    self._wild += 1
+                prev["pending"] = False
+            for sp in own - prev["own"]:
+                self._got[sp] = self._got.get(sp, 0) + 1
+        self._dex_own |= own
+        self._dex_seen |= seen
+        levels = f.get("pl") or ()
+        if levels:
+            self._max_level = max(self._max_level, int(max(levels)))
+        self._max_money = max(self._max_money, int(f.get("mo", 0)))
+        # An episode reset reloads a start state: re-baseline instead of counting its Pokedex as new catches.
+        self._fun_prev[i] = {"bm": bm, "own": own, "pending": False if done or prev is None else prev.get("pending", False),
+                             "kind": 1 if prev is None else prev.get("kind", 1)}
+
+    def _species_names(self) -> dict[str, str]:
+        ids = set(self._enc) | set(self._got)
+        return {str(sp): get_species_name(sp) for sp in ids}
+
+    def fun_payload(self) -> dict[str, Any] | None:
+        """Small cumulative record for history/live; None until any env has reported Pokemon facts."""
+        if not self._fun_on:
+            return None
+        first = sorted(self._first_map.values())[-6:]
+        return {
+            "enc": {str(k): v for k, v in self._enc.items()},
+            "got": {str(k): v for k, v in self._got.items()},
+            "seen": len(self._dex_seen), "own": len(self._dex_own),
+            "wild": self._wild, "trn": self._trn, "wo": self._whiteouts,
+            "lvl": self._max_level, "money": self._max_money,
+            "first": [[n, st] for st, n in first],
+        }
 
     def _finish_episode(self, i: int, info: dict[str, Any]) -> None:
         ret = float(self._ep_return[i])
@@ -339,6 +421,9 @@ class LiveFeed:
             "episodes": self._upd_eps,
             "events": self._upd_events,
         }
+        fun = self.fun_payload()
+        if fun is not None:
+            record["fun"] = fun
         try:
             with open(self.history_dir / "history.jsonl", "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, separators=(",", ":")) + "\n")
@@ -427,6 +512,8 @@ class LiveFeed:
                 "last_update": self._comp_payload(self._last_comp),
                 "run": self._comp_payload(self._run_comp),
             },
+            "fun": self.fun_payload(),
+            "species_names": self._species_names(),
             "envs": self._envs,
             "trails": trails,
             "heat": self._heat_payload(),

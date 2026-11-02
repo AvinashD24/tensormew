@@ -58,6 +58,9 @@ ROUTE_PROGRESS_WEIGHT = 0.08
 # Where the route graph covers the map, exploration pays almost nothing so it cannot outbid the route.
 COVERED_NEW_TILE_REWARD = 0.05
 COVERED_NEIGHBOR_BONUS = 0.0
+# Per-step cost while the lead Pokemon is at <= 25% HP. Was 0.05 (5x the step cost): on Route 29 there is no heal
+# until Cherrygrove, so a hurt starter paid up to ~50 per 1024-step episode, more than the whole route pays.
+LOW_HP_STEP_PENALTY = 0.01
 
 # Per-episode caps on the shaping sources that are not the route or the story events. A perfect run earns
 # about 60 from the route and 100-150 from events; each source below is held to a quarter of that or less,
@@ -788,7 +791,7 @@ def progress_reward(
         # Critical danger penalty when active Pokémon is below 25% HP
         lead_cur, lead_max = hp_a[0]
         if lead_max > 0 and (lead_cur / lead_max) <= 0.25:
-            add("damage", -0.05)
+            add("damage", -LOW_HP_STEP_PENALTY)
 
     # Combat: Fainted (White-out penalty: catastrophic reset of progress)
     if getattr(after, "fainted", False) and not getattr(before, "fainted", False):

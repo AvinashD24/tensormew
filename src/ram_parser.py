@@ -78,6 +78,8 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wEventFlags", size=256, required=False),
 
     Sym("wPokedexCaught", size=32, required=False),
+    Sym("wPokedexSeen", size=32, required=False),
+    Sym("wEnemyMonSpecies", required=False),
     Sym("wEnemyMonHP", size=2, required=False),
     Sym("wEnemyMonMaxHP", size=2, required=False),
     Sym("wTempWildMonSpecies", required=False),
@@ -137,6 +139,8 @@ class GameState:
     elms_lab_scene: int = 0
     other_trainer_class: int = 0
     items: tuple[int, ...] = ()
+    pokedex_seen: tuple[int, ...] = ()  # not round-tripped through to_dict (dashboard stats only)
+    enemy_mon_species: int = 0  # wEnemyMonSpecies: valid for wild and trainer battles
 
     @property
     def is_trainer_battle(self) -> bool:
@@ -452,6 +456,8 @@ class RamParser:
 
             story_objective=story_objective,
             pokedex_caught=pokedex_raw,
+            pokedex_seen=tuple(raw.get("wPokedexSeen", ())) if isinstance(raw.get("wPokedexSeen", ()), tuple) else (),
+            enemy_mon_species=int(raw.get("wEnemyMonSpecies", 0)),
             enemy_hp=int(raw.get("wEnemyMonHP", 0)),
             enemy_max_hp=int(raw.get("wEnemyMonMaxHP", 0)),
             enemy_species=int(raw.get("wTempWildMonSpecies", 0)),

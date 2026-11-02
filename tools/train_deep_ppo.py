@@ -588,6 +588,16 @@ class EnvWorker:
             "stage": stage_end,
             "truncated": bool(truncated),
             "executed_action": exec_idx,
+            # Dashboard fun-facts source: already-parsed RAM only (no extra reads); aggregated in LiveFeed.
+            "fun": {
+                "bm": int(st_now.battle_mode),
+                "es": int(getattr(st_now, "enemy_mon_species", 0)),
+                "ps": [int(v) for v in st_now.party_species],
+                "pl": [int(v) for v in (getattr(st_now, "party_levels", ()) or ())],
+                "dc": bytes(getattr(st_now, "pokedex_caught", ()) or ()),
+                "ds": bytes(getattr(st_now, "pokedex_seen", ()) or ()),
+                "mo": int(getattr(st_now, "money", 0)),
+            },
         }
         if final_obs is not None:
             info_out["final_obs"] = final_obs
@@ -1128,6 +1138,10 @@ def train(
             buf_raw.zero_()
             initial_hx = hx.detach().clone() if (policy.use_gru and hx is not None) else None
             entropy_coef = entropy_schedule.value(progress.value)
+            if cfg.lr_end_frac < 1.0:  # linear lr decay over this invocation's updates
+                lr_now = cfg.lr * (1.0 - (1.0 - cfg.lr_end_frac) * min(1.0, (update - start_update) / max(1, updates)))
+                for g in optimizer.param_groups:
+                    g["lr"] = lr_now
 
             # 1. Collect rollouts with batched inference
             policy.eval()

@@ -182,6 +182,20 @@ dialog img { width: 100%; image-rendering: pixelated; border-radius: 8px; displa
 dialog .row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; }
 dialog button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
 
+.dexhead { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.dexhead .stat { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.dexhead .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.dexhead .stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.facts { margin: 0 0 10px; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13px; }
+.facts li::before { content: "\2605  "; color: var(--gold); }
+.dex { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.mon { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; min-width: 0; }
+.mon.own { border-color: var(--good); }
+.mon .no { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.mon .nm { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon .ct { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mon .ct i { font-style: normal; color: var(--good); }
+.mon > div { min-width: 0; }
 @media (max-width: 1000px) { .grid2, .cov, .grid2 .stack { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .kpi .value { font-size: 24px; } .envs { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
@@ -254,6 +268,11 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
         <span style="--c:#38bdf8">exploring</span><span style="--c:var(--good)">learning</span><span style="--c:#a3e635">advancing</span>
         <span style="--c:var(--warn)">looping</span><span style="--c:#fb923c">thrashing</span><span style="--c:var(--bad)">collapsed</span>
       </div>
+    </section>
+
+    <section class="card" id="funCard" style="margin-bottom:14px">
+      <h2>Pok&eacute;mon &amp; fun facts <span class="sub" id="funSub"></span></h2>
+      <div id="funBody"></div>
     </section>
 
     <section class="cov">
@@ -664,12 +683,37 @@ function renderHeader() {
   $("chips").innerHTML = chips.map(c => `<span class="chip">${c}</span>`).join("");
   $("subtitle").textContent = live ? `running ${dur((live.finished ? live.t : Date.now() / 1000) - live.started)} · ${live.samples.toLocaleString()} samples trained` : "no live feed";
 }
+const escH = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function funFacts(f, nm) {
+  const out = [], top = (o) => Object.entries(o || {}).sort((a, b) => b[1] - a[1]);
+  const enc = top(f.enc), got = top(f.got), name = (id) => escH(nm[id] || "Pokémon #" + id);
+  if (enc.length) out.push(`Most-met Pokémon: <b>${name(enc[0][0])}</b>, battled ${enc[0][1].toLocaleString()} times.`);
+  if (got.length) out.push(`Favourite catch: <b>${name(got[0][0])}</b> (${got[0][1].toLocaleString()} times); ${got.length} different species obtained.`);
+  const battles = (f.wild || 0) + (f.trn || 0);
+  if (battles) out.push(`${(f.wild || 0).toLocaleString()} wild and ${(f.trn || 0).toLocaleString()} trainer battles; ${f.wo || 0} white-out${f.wo === 1 ? "" : "s"} (${(100 * (f.wo || 0) / battles).toFixed(1)}% of fights).`);
+  if (f.lvl) out.push(`Strongest Pokémon so far: level <b>${f.lvl}</b>.`);
+  const fr = f.first || []; if (fr.length) { const l = fr[fr.length - 1]; out.push(`Newest place found: <b>${escH(l[0])}</b> at step ${Number(l[1]).toLocaleString()}.`); }
+  if (f.money) out.push(`Richest agent ever held $${Number(f.money).toLocaleString()}.`);
+  return out.slice(0, 5);
+}
+function renderFun() {
+  const f = live && live.fun, body = $("funBody");
+  if (!f) { $("funSub").textContent = ""; body.innerHTML = `<div class="note" style="color:var(--muted)">No Pokémon data yet. Older runs and fresh starts do not record it.</div>`; return; }
+  const nm = live.species_names || {}, ids = new Set([...Object.keys(f.enc || {}), ...Object.keys(f.got || {})]);
+  const rows = [...ids].map((id) => ({ id: Number(id), e: (f.enc || {})[id] || 0, g: (f.got || {})[id] || 0 })).sort((a, b) => (b.e + b.g * 3) - (a.e + a.g * 3) || a.id - b.id);
+  const st = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+  const cap = 48;
+  $("funSub").textContent = `${rows.length} species met`;
+  body.innerHTML = `<div class="dexhead">${st(f.seen || 0, "Dex seen")}${st(f.own || 0, "Dex owned")}${st(((f.wild || 0) + (f.trn || 0)).toLocaleString(), "Battles")}${st(Object.values(f.got || {}).reduce((a, b) => a + b, 0).toLocaleString(), "Catches")}${st(f.wo || 0, "White-outs")}${st(f.lvl || 0, "Top level")}</div>`
+    + `<ul class="facts">${funFacts(f, nm).map((t) => `<li>${t}</li>`).join("")}</ul>`
+    + (rows.length ? `<div class="dex">${rows.slice(0, cap).map((r) => `<div class="mon${r.g ? " own" : ""}" title="#${r.id}"><div><div class="nm">${escH(nm[r.id] || "#" + r.id)}</div><div class="ct"><span class="no">#${r.id}</span> &middot; battled ${r.e.toLocaleString()}${r.g ? ` &middot; <i>caught ${r.g.toLocaleString()}</i>` : ""}</div></div></div>`).join("")}</div>${rows.length > cap ? `<div class="note" style="color:var(--muted);margin-top:6px">+${rows.length - cap} more</div>` : ""}` : "");
+}
 function renderAll() {
   const has = metrics.length || live;
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
   renderKpis(); renderCharts(); $("diag").innerHTML = diagnostics();
-  renderEvents(); renderActions(); renderWorld(); renderComponents();
+  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderFun();
 }
 /* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
 let world = null;
@@ -879,7 +923,7 @@ function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from histo
   const mm = r.metrics || {};
   return { t: r.t, started: meta.started, finished: true, update: r.update, steps: r.steps, samples: mm.samples ? recs.slice(0, idx + 1).reduce((a, q) => a + ((q.metrics || {}).samples || 0), 0) : 0,
     steps_per_sec: mm.samples && mm.duration_sec ? mm.samples / mm.duration_sec : 0, num_envs: meta.num_envs, run: meta.run || {}, run_id: rep.id, maps_seen: maps.size,
-    components: componentsAt(idx), actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
+    fun: r.fun || null, species_names: meta.species_names || {}, components: componentsAt(idx), actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
 }
 function nearestFrame(update) { let lo = 0, hi = rep.frames.length - 1, best = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (rep.frames[mid] <= update) { best = mid; lo = mid + 1; } else hi = mid - 1; } return best < 0 ? null : rep.frames[best]; }
 function replayRender() {

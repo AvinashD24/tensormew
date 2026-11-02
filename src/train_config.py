@@ -11,7 +11,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-PRESETS = ("blueprint_v1", "legacy")
+PRESETS = ("blueprint_v1", "legacy", "long_v1")
 
 
 class ConfigError(ValueError):
@@ -49,6 +49,7 @@ class TrainConfig:
     updates: int = 50
     max_steps: int = 1024
     lr: float = 3e-4
+    lr_end_frac: float = 1.0  # linear decay of lr to lr * lr_end_frac over `updates`; 1.0 = constant (old behaviour)
     recurrent: bool = True
     reward_scale: str = "running_std"  # divide rewards by the running std of the discounted return; "none" = raw
     # PPO
@@ -72,6 +73,8 @@ class TrainConfig:
                 errs.append(f"{key} must be >= 1 (got {getattr(self, key)})")
         if self.lr <= 0:
             errs.append(f"lr must be > 0 (got {self.lr})")
+        if not 0 < self.lr_end_frac <= 1:
+            errs.append(f"lr_end_frac must be in (0, 1] (got {self.lr_end_frac})")
         p = self.ppo
         if not 0 < p.gamma <= 1:
             errs.append(f"ppo.gamma must be in (0, 1] (got {p.gamma})")
@@ -137,11 +140,33 @@ def blueprint_v1() -> TrainConfig:
     return TrainConfig()
 
 
+def long_v1() -> TrainConfig:
+    """Unattended ~6 hour cloud run from a fresh policy: New Bark start, no curriculum (the swarm archive supplies
+    later stages), 32 envs x 256 steps = 8192 samples per update, lr decaying to a third, a longer episode cap so a
+    full egg round trip fits, and about 800 updates (~26 s each on a 4090 pod, ~5.8 h). Override with --updates."""
+    cfg = TrainConfig(
+        name="long_v1",
+        envs=32,
+        rollout_steps=256,
+        updates=800,
+        max_steps=2048,
+        lr=3e-4,
+        lr_end_frac=0.33,
+        entropy_start=0.03,
+        entropy_end=0.01,
+        start_states=["new_bark_outside"],
+    )
+    cfg.ppo.num_minibatches = 8  # 4 envs x 256 steps = 1024 sequences per minibatch
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
     if name == "legacy":
         return legacy()
+    if name == "long_v1":
+        return long_v1()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

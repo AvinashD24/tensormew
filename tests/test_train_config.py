@@ -76,3 +76,18 @@ class TrainConfigTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class LongV1Tests(unittest.TestCase):
+    def test_long_v1_preset(self):
+        c = load_config("long_v1")
+        self.assertEqual(c.start_states, ["new_bark_outside"])
+        self.assertEqual((c.envs, c.rollout_steps, c.updates), (32, 256, 800))
+        self.assertLess(c.lr_end_frac, 1.0)
+        self.assertLessEqual(c.ppo.num_minibatches, c.envs)
+        self.assertEqual(apply_overrides(c, {"updates": 5}).updates, 5)
+
+    def test_lr_end_frac_validation_and_default(self):
+        self.assertEqual(load_config("blueprint_v1").lr_end_frac, 1.0)
+        with self.assertRaises(ConfigError):
+            apply_overrides(load_config("long_v1"), {"lr_end_frac": 0.0})
