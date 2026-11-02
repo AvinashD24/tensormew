@@ -74,7 +74,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .zones i { position: absolute; top: -4px; width: 3px; height: 16px; background: var(--text); border-radius: 2px; transition: left .5s ease; }
 .up { color: var(--good); } .down { color: var(--bad); } .flat { color: var(--muted); }
 
-.grid2 { display: grid; grid-template-columns: minmax(0, 1.7fr) minmax(300px, 1fr); gap: 14px; margin-bottom: 14px; }
+.grid2 { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 14px; }
+.grid2 .stack { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 .charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
 .chartbox { position: relative; }
 .chartbox canvas { width: 100%; height: 210px; display: block; }
@@ -137,7 +138,7 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
 .tab { border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; }
 .tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 650; }
-#heat { width: 100%; height: 360px; display: block; background: var(--panel2); border-radius: 10px; }
+#heat { width: 100%; height: 600px; display: block; background: var(--panel2); border-radius: 10px; }
 .ramp { height: 8px; border-radius: 4px; margin-top: 8px; background: linear-gradient(90deg, #1b1040, #5a1e8c, #c4366c, #fb8c3c, #ffe86b); }
 .ramp + div { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
 .act { display: grid; gap: 7px; }
@@ -160,7 +161,7 @@ dialog img { width: 100%; image-rendering: pixelated; border-radius: 8px; displa
 dialog .row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; }
 dialog button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
 
-@media (max-width: 1000px) { .grid2, .cov { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
+@media (max-width: 1000px) { .grid2, .cov, .grid2 .stack { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .kpi .value { font-size: 24px; } .envs { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 </style>
@@ -195,11 +196,9 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
     </section>
 
     <section class="grid2">
-      <div class="card">
-        <h2><span id="envTitle">Live agents</span> <span class="sub" id="envSub"></span></h2>
-        <div class="envs" id="envs"></div>
-        <div id="replayPane">
-          <img id="repImg" alt="Frame montage of every agent at the selected update">
+      <div class="card" id="replayCard" style="display:none">
+        <h2>Replay <span class="sub">scrub or press play: charts, map and milestones rewind together</span></h2>
+        <div id="replayPane" style="display:block">
           <div class="ctl">
             <button id="repPlay" type="button" aria-label="Play or pause replay">Play</button>
             <input id="repSlider" type="range" min="0" max="0" value="0" aria-label="Replay position (update number)">
@@ -239,8 +238,7 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
     <section class="cov">
       <div class="card">
         <h2>Exploration coverage <span class="sub" id="covSub"></span></h2>
-        <div class="tabs" id="mapTabs" role="group" aria-label="Choose map"></div>
-        <canvas id="heat" role="img" aria-label="Heatmap of tiles visited by the agents on the selected map"></canvas>
+        <canvas id="heat" role="img" aria-label="Heatmap of tiles visited by the agents, drawn on the whole route from New Bark to Violet City"></canvas>
         <div class="ramp"></div><div><span>rarely visited</span><span>visited constantly</span></div>
       </div>
       <div class="stack">
@@ -539,6 +537,7 @@ function loadFrame(img, i, noimg, big) {
   probe.src = `/frames/env_${i}.png?k=${key}`;
 }
 function renderEnvs() {
+  return;  // the per-agent screen grid was removed: frames were mostly blank or the start frame
   if (!live || mode === "replay") return;
   ensureEnvs(live.num_envs);
   const rets = live.envs.map(e => e.ep_return), topRet = Math.max(...rets);
@@ -596,7 +595,6 @@ function renderHeat() {
   });
   $("covSub").textContent = `${h.name} · ${cells.length} unique tiles · peak ${mx.toLocaleString()} visits`;
 }
-$("mapTabs").addEventListener("click", (e) => { const b = e.target.closest(".tab"); if (b) { selectedMap = b.dataset.m; renderHeat(); } });
 
 /* zoom */
 const zoom = $("zoom"); let zoomEnv = -1, zoomTimer = null;
@@ -635,9 +633,62 @@ function renderAll() {
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
   renderKpis(); renderCharts(); $("diag").innerHTML = diagnostics();
-  renderEnvs(); renderEvents(); renderActions(); renderHeat(); renderComponents();
+  renderEvents(); renderActions(); renderWorld(); renderComponents();
 }
-function redrawAll() { renderCharts(); renderKpis(); renderHeat(); renderComponents(); }
+/* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
+let world = null;
+fetch("/api/world").then((r) => r.json()).then((w) => { world = w; renderWorld(); }).catch(() => {});
+const TERRAIN = { a: "rgba(70,130,220,.30)", g: "rgba(70,170,90,.22)", l: "rgba(205,170,90,.22)", t: "rgba(120,210,130,.30)", d: "rgba(255,255,255,.38)", f: "rgba(255,255,255,.08)", p: "rgba(0,0,0,.35)" };
+const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,10", "Mr. Pokémon's house"], ["26,2", "Route 31"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
+function renderWorld() {
+  const cv = $("heat"), dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  if (r.width < 10) return;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, r.width, r.height);
+  ctx.textBaseline = "alphabetic";
+  if (!world) { ctx.fillStyle = css("--muted"); ctx.font = "13px system-ui"; ctx.textAlign = "center"; ctx.fillText("loading map…", r.width / 2, r.height / 2); return; }
+  const outdoor = world.maps.filter((m) => m.outdoor), inside = world.maps.filter((m) => !m.outdoor);
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const m of outdoor) { x0 = Math.min(x0, m.ox); y0 = Math.min(y0, m.oy); x1 = Math.max(x1, m.ox + m.w); y1 = Math.max(y1, m.oy + m.h); }
+  let cx = x0, rowH = 0; const sy = y1 + 7;               // interiors sit in a strip under the overworld
+  for (const m of inside) { if (cx + m.w > x1) { cx = x0; } m.px = cx; m.py = sy; cx += m.w + 4; rowH = Math.max(rowH, m.h); }
+  const W = x1 - x0, H = sy + rowH - y0, pad = 8, sc = Math.min((r.width - 2 * pad) / W, (r.height - 2 * pad) / H);
+  const ax = (r.width - W * sc) / 2, ay = (r.height - H * sc) / 2;
+  const P = (m, x, y) => { const wx = m.outdoor ? m.ox + x : m.px + x, wy = m.outdoor ? m.oy + y : m.py + y; return [ax + (wx - x0) * sc, ay + (wy - y0) * sc]; };
+  const byId = Object.fromEntries(world.maps.map((m) => [m.id, m]));
+  const edge = css("--border");
+  for (const m of world.maps) {                             // terrain, then outline and name
+    const [bx, by] = P(m, 0, 0);
+    ctx.fillStyle = "rgba(255,255,255,.035)"; ctx.fillRect(bx, by, m.w * sc, m.h * sc);
+    m.rows.forEach((row, y) => { for (let x = 0; x < row.length; x++) { const c = TERRAIN[row[x]]; if (c) { ctx.fillStyle = c; ctx.fillRect(bx + x * sc, by + y * sc, Math.ceil(sc), Math.ceil(sc)); } } });
+    ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.strokeRect(bx + .5, by + .5, m.w * sc, m.h * sc);
+  }
+  let mx = 1, tiles = 0, seenMaps = new Set();
+  for (const h of (live ? live.heat : [])) { for (const c of h.cells) mx = Math.max(mx, c[2]); }
+  const lmx = Math.log(1 + mx);
+  for (const h of (live ? live.heat : [])) {                // visit heat on top, same colour ramp as before
+    const m = byId[h.map]; if (!m) continue;
+    seenMaps.add(h.map); tiles += h.cells.length;
+    const [bx, by] = P(m, 0, 0);
+    for (const [x, y, c] of h.cells) { const [R, G, B] = ramp(Math.log(1 + c) / lmx); ctx.fillStyle = `rgb(${R},${G},${B})`; ctx.fillRect(bx + x * sc, by + y * sc, Math.ceil(sc), Math.ceil(sc)); }
+  }
+  ctx.font = "600 11px system-ui"; ctx.textAlign = "left";
+  for (const m of world.maps) { const [bx, by] = P(m, 0, 0), t = m.name; const w = ctx.measureText(t).width + 8;
+    ctx.fillStyle = "rgba(11,16,32,.72)"; ctx.fillRect(bx + 2, by - 15 < 0 ? by + 2 : by - 15, w, 14); ctx.fillStyle = "#e6ebff"; ctx.fillText(t, bx + 6, (by - 15 < 0 ? by + 2 : by - 15) + 11); }
+  for (const s of (world.stars || [])) {                    // numbered story goals: where the agents have to get to
+    const m = byId[String(s.wmap).replace("_", ",")]; if (!m) continue;
+    const [px, py] = P(m, s.wx, s.wy); ctx.fillStyle = css("--gold"); ctx.strokeStyle = "#0b1020"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 8, 0, 7); ctx.stroke(); ctx.fill(); ctx.fillStyle = "#0b1020"; ctx.font = "700 10px system-ui"; ctx.textAlign = "center"; ctx.fillText(s.n, px, py + 3.5);
+  }
+  if (live) live.trails.forEach((tr, i) => {                // where each agent is right now
+    const p = tr[tr.length - 1]; if (!p) return; const m = byId[p[0]]; if (!m) return; const [px, py] = P(m, p[1] + .5, p[2] + .5);
+    ctx.fillStyle = `hsl(${(i * 47) % 360},90%,62%)`; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, 4, 0, 7); ctx.fill(); ctx.stroke();
+  });
+  let furthest = "nowhere yet"; for (const [id, name] of FURTHEST) if (seenMaps.has(id)) furthest = name;
+  const goals = (world.stars || []).map((s) => `${s.n} ${s.name}`).join(" · ");
+  $("covSub").textContent = live ? `furthest: ${furthest} · ${tiles.toLocaleString()} tiles visited · peak ${mx.toLocaleString()} visits · goals: ${goals}` : "";
+}
+function redrawAll() { renderCharts(); renderKpis(); renderWorld(); renderComponents(); }
 
 /* ---------- replay of a saved run ---------- */
 let mode = "live";
@@ -684,7 +735,6 @@ function replayRender() {
   metrics = rep.metricsAll.slice(0, idx + 1);
   live = snapshotAt(idx);
   const fu = nearestFrame(live.update);
-  if (fu != null) $("repImg").src = `/runframes/${rep.id}/u${String(fu).padStart(6, "0")}.jpg`;
   $("repSlider").value = idx;
   $("repLabel").textContent = `update ${live.update} / ${rep.records[rep.records.length - 1].update}` + (fu != null && fu !== live.update ? ` · frame @${fu}` : "");
   renderAll();
@@ -703,13 +753,13 @@ async function enterReplay(id) {
   const h = await r.json(); if (!h.records.length) { $("subtitle").textContent = "that run has no saved updates yet"; $("runSel").value = ""; return; }
   replayStop(); mode = "replay"; selectedMap = null; $("runSel").value = id;
   rep = { id, meta: h.meta, records: h.records, frames: h.frames, metricsAll: h.records.map(x => x.metrics || {}).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
-  $("envs").style.display = "none"; $("replayPane").style.display = "block"; $("envTitle").textContent = "Replay · all agents";
-  $("repSlider").max = rep.records.length - 1; $("envSub").textContent = "frame montage of all agents · scrub or press play";
+  $("replayCard").style.display = "block";
+  $("repSlider").max = rep.records.length - 1;
   replayRender();
 }
 function exitReplay() {
   replayStop(); mode = "live"; rep = null; metrics = []; live = null; lastLiveT = 0; selectedMap = null;
-  $("envs").style.display = ""; $("replayPane").style.display = "none"; $("envTitle").textContent = "Live agents";
+  $("replayCard").style.display = "none";
   pollMetrics(); pollLive();
 }
 $("runSel").addEventListener("change", (e) => e.target.value ? enterReplay(e.target.value) : exitReplay());

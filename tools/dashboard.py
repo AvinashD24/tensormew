@@ -137,6 +137,8 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                     if not state.is_file():
                         return self._send(200, b"null", "application/json")
                     return self._send(200, state.read_bytes(), "application/json")
+                if route == "/api/world":  # ROM-derived stitched route map (tools/build_route_map.py) for the coverage view
+                    return self._send(200, (STATIC_DIR / "world_layout.json").read_bytes(), "application/json", cache="max-age=3600")
                 if route == "/api/runs":
                     return self._send(200, json.dumps(list_runs(runs_dir)).encode(), "application/json")
                 parts = route.strip("/").split("/")

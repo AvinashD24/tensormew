@@ -18,6 +18,74 @@ pytest tests/ -q
 - **ROM:** `rom/pokemon_crystal.gbc` + `rom/pokemon_crystal.sym` (US 1.1)
 - **Checkpoints:** `states/manifest.json` + `tools/make_state.py`, `tools/import_sav.py`
 
+## Copy-paste commands
+
+Run these from the repo root. Windows PowerShell shown first; the cloud commands run in WSL (they need `rsync`).
+
+**0. Activate the environment (PowerShell)**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy RemoteSigned
+.\.venv\Scripts\Activate.ps1
+```
+
+**1. Open the dashboard** (live view of a run, plus replay of any saved run). It opens http://127.0.0.1:8765/ ; pick a
+saved run under **Source** to replay it. Leave it running in its own terminal.
+
+```powershell
+python -m tools.dashboard
+python -m tools.dashboard --demo        # no training needed: a synthetic run to look at the UI
+```
+
+**2. Train on this machine** (CPU, slow; good for a quick check). Starts every agent at New Bark with fresh weights and
+saves to `logs/<run-id>.pt`; watch it in the dashboard from step 1.
+
+```powershell
+python -m tools.train_deep_ppo --config blueprint_v1 --updates 3 --envs 4 --rollout 16 --max-steps 48 --no-curriculum --state new_bark_outside --run-id local-check
+```
+
+**3. Train on a GPU pod** (the real thing). First create a pod in the Runpod console, copy its SSH host and port from the
+Connect tab (they change every time a pod starts), and keep your SSH key at `~/.ssh/id_runpod` inside WSL
+(`chmod 600`). Then, from WSL in the repo folder (adjust host, port and run id):
+
+```bash
+python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config blueprint_v1 \
+  --run-id my-run --updates 300 --envs 32 --no-curriculum --state new_bark_outside \
+  --detach --watch --no-dashboard --sync-every 5
+```
+
+This uploads the code, installs `pyboy` on the pod, trains there, and copies telemetry into `logs/` every 5 seconds so the
+dashboard from step 1 shows it live. The checkpoint comes back as `logs/my-run.pt` when the run ends.
+Use `--envs` up to the pod's core count (a 32 vCPU pod: 32). Each update takes roughly 25 s at 32 envs.
+
+**4. Resume a run from its checkpoint** (needs `logs/my-run.pt` and `logs/my-run.optim.pt` locally; the script uploads them):
+
+```bash
+python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config blueprint_v1 \
+  --resume --save logs/my-run.pt --run-id my-run-2 --updates 200 --envs 32 --no-curriculum --state new_bark_outside \
+  --detach --watch --no-dashboard
+```
+
+**5. Reconnect to a run that is still going on the pod**, resume syncing and pull the checkpoint when it ends:
+
+```bash
+python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --attach --watch --no-dashboard --save logs/my-run.pt
+```
+
+**6. Evaluate a checkpoint** (greedy, from the New Bark save) and replay it:
+
+```powershell
+python -m tools.evaluate_policy --checkpoint logs/my-run.pt --episodes 3
+```
+
+**7. Stop paying when you are done.** A pod bills until you stop or terminate it, even if training has ended or crashed.
+Terminate it in the Runpod console (Pods -> your pod -> Terminate) after the checkpoint is back in `logs/`.
+A stopped pod often cannot restart (its GPU gets taken), so copy results first and make a new pod next time.
+
+Troubleshooting: if the dashboard shows nothing, the run id folder under `logs/runs/` is the source of truth (pick it under
+**Source**). If a long cloud run dies, its latest checkpoint is on the pod in `/workspace/tensormew/logs/`; pull it with
+`rsync -az -e "ssh -i ~/.ssh/id_runpod -p <POD_PORT>" "root@<POD_IP>:/workspace/tensormew/logs/my-run*" logs/`.
+
 ## Training from scratch
 
 This branch carries the infrastructure only: no trained weights, recordings or web app.
