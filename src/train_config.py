@@ -1,6 +1,9 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v4`` (``long_v3`` plus the dense best-ever path-progress reward, ``src.path_progress``, a smaller and
+Presets: ``long_v5`` (``long_v4`` plus anti-collapse changes after the v4-1 run collapsed to pressing A: wall-bump and
+tile-revisit penalties off while the path reward is on, a small penalty for A / B presses that change nothing, a 0.3
+path reward per tile, a higher and slower-annealed entropy coefficient and an entropy-boost safety net),
+``long_v4`` (``long_v3`` plus the dense best-ever path-progress reward, ``src.path_progress``, a smaller and
 decaying exploration budget, a heal-for-HP-restored reward, low-HP battle practice, auxiliary prediction heads, gamma
 0.999 and a lower entropy start; recommended),
 ``long_v3`` (``long_v2`` plus staggered episodes, a self-generated battle archive with an early A-bias in
@@ -20,8 +23,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from src import dwell as _dwell
+from src import entropy_guard as _entropy_guard
+from src import idle_press as _idle_press
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5")
 
 
 class ConfigError(ValueError):
@@ -137,6 +142,28 @@ class TrainConfig:
     aux_loss: bool = False
     aux_coef: float = 0.05
     aux_horizon: int = 8
+    # --- long_v5 anti-collapse fields (all OFF / unchanged by default and in every older preset) ---
+    # With the dense path reward on, the wall-bump (``bump``) and per-tile revisit (``loop``) penalties can be switched
+    # off: dwell + path progress already cover idling and wall hugging, and both costs are movement-linked, so they
+    # made standing still (pressing A) the cheapest policy in the v4-1 run. Step, damage and whiteout stay.
+    disable_bump_penalty: bool = False
+    disable_loop_penalty: bool = False
+    # Small cost per A / B press in the plain overworld that changes nothing observable (src.idle_press), at most
+    # idle_press_budget per episode. Reported as the ``idle_press`` reward component.
+    idle_press_penalty: bool = False
+    idle_press_cost: float = _idle_press.IDLE_PRESS_COST
+    idle_press_budget: float = _idle_press.IDLE_PRESS_BUDGET
+    # With entropy_anneal_updates > 0 the entropy coefficient cannot anneal faster than update / entropy_anneal_updates
+    # (it is otherwise annealed by route progress only). 0 = progress only (the old behaviour).
+    entropy_anneal_updates: int = 0
+    # Entropy safety net (src.entropy_guard): while update < entropy_boost_until, when the previous update's mean policy
+    # entropy is below entropy_boost_threshold the coefficient is raised to entropy_boost_coef until the entropy has
+    # recovered to threshold + entropy_boost_margin. Logged as the ``entropy_boost`` metric (1 = boosted).
+    entropy_boost: bool = False
+    entropy_boost_threshold: float = 0.8
+    entropy_boost_until: int = 300
+    entropy_boost_coef: float = 0.05
+    entropy_boost_margin: float = 0.2
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -221,6 +248,13 @@ class TrainConfig:
             errs.append("aux_loss needs a recurrent policy (its targets are k steps ahead inside a rollout sequence)")
         if self.aux_loss and self.aux_horizon >= self.rollout_steps:
             errs.append(f"aux_horizon ({self.aux_horizon}) must be below rollout_steps ({self.rollout_steps})")
+        if self.entropy_anneal_updates < 0:
+            errs.append(f"entropy_anneal_updates must be >= 0 (got {self.entropy_anneal_updates})")
+        if (self.disable_bump_penalty or self.disable_loop_penalty) and not self.path_progress:
+            errs.append("disable_bump_penalty / disable_loop_penalty need path_progress (nothing else would reward moving)")
+        errs.extend(_idle_press.validate_params(self.idle_press_cost, self.idle_press_budget))
+        errs.extend(_entropy_guard.validate_params(
+            self.entropy_boost_threshold, self.entropy_boost_until, self.entropy_boost_coef, self.entropy_boost_margin))
         errs.extend(_dwell.validate_params(
             self.dwell_window, self.dwell_max_tiles, self.dwell_min_penalty, self.dwell_max_penalty,
             self.dwell_ramp_steps, self.dwell_budget, self.dwell_grind_grace, self.dwell_level_targets))
@@ -239,6 +273,19 @@ class TrainConfig:
             "max_penalty": self.dwell_max_penalty, "ramp_steps": self.dwell_ramp_steps, "budget": self.dwell_budget,
             "grind_grace": self.dwell_grind_grace, "level_targets": list(self.dwell_level_targets),
         }
+
+    def idle_press_params(self) -> dict | None:
+        """Keyword arguments for ``src.idle_press.IdlePressTracker``, or None when the penalty is off."""
+        if not self.idle_press_penalty:
+            return None
+        return {"cost": self.idle_press_cost, "budget": self.idle_press_budget}
+
+    def entropy_guard_params(self) -> dict | None:
+        """Keyword arguments for ``src.entropy_guard.EntropyGuard``, or None when the safety net is off."""
+        if not self.entropy_boost:
+            return None
+        return {"threshold": self.entropy_boost_threshold, "until_update": self.entropy_boost_until,
+                "boost_coef": self.entropy_boost_coef, "margin": self.entropy_boost_margin}
 
     def path_progress_scale_or_none(self) -> float | None:
         """Scale for ``src.path_progress.PathProgress``, or None when the reward is off."""
@@ -399,6 +446,44 @@ def long_v4() -> TrainConfig:
     return cfg
 
 
+def long_v5() -> TrainConfig:
+    """``long_v4`` plus anti-collapse changes (each behind its own flag, so they can be ablated).
+
+    Live evidence (run v4-1, ``long_v4``, 75 updates, 24 envs): the policy collapsed to pressing A (58 % of actions),
+    entropy 1.78 -> 1.12 (update 38) -> 0.40 (update 75), path progress mean best only 8-22 of 319 tiles. An A press
+    does not move the character, so it avoids the movement-linked ``bump`` (-37 per update) and ``loop`` (-54)
+    penalties, while the path reward (0.08 / tile) was tiny next to them; with a low entropy coefficient (0.01 -> 0.001)
+    and gamma 0.999 PPO locked the cheapest behaviour in. Changes:
+
+    1. ``disable_bump_penalty`` / ``disable_loop_penalty``: both off while ``path_progress`` is on (dwell + path progress
+       cover idling and wall hugging). Step, damage and whiteout stay;
+    2. ``idle_press_penalty``: 0.015 per A / B press in the overworld that changes nothing observable (no dialogue,
+       battle, position, party / bag / flag change), at most 10 per episode (``src.idle_press``);
+    3. ``path_progress_scale`` 0.08 -> 0.3 (the whole 319-tile path pays ~96 instead of ~25.5, next to ~140 of
+       milestone bonuses and an exploration cap of 12);
+    4. entropy: start 0.02 (was 0.01), floor 0.005 (was 0.001), and the anneal cannot run faster than
+       update / 1200 (``entropy_anneal_updates``); the safety net ``entropy_boost`` raises the coefficient to 0.05 while
+       the mean policy entropy is below 0.8 before update 300, releasing at 1.0 (``src.entropy_guard``).
+    """
+    cfg = long_v4()
+    cfg.name = "long_v5"
+    cfg.disable_bump_penalty = True
+    cfg.disable_loop_penalty = True
+    cfg.idle_press_penalty = True
+    cfg.idle_press_cost = 0.015
+    cfg.idle_press_budget = 10.0
+    cfg.path_progress_scale = 0.3
+    cfg.entropy_start = 0.02
+    cfg.entropy_end = 0.005
+    cfg.entropy_anneal_updates = 1200
+    cfg.entropy_boost = True
+    cfg.entropy_boost_threshold = 0.8
+    cfg.entropy_boost_until = 300
+    cfg.entropy_boost_coef = 0.05
+    cfg.entropy_boost_margin = 0.2
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
@@ -412,6 +497,8 @@ def preset(name: str) -> TrainConfig:
         return long_v3()
     if name == "long_v4":
         return long_v4()
+    if name == "long_v5":
+        return long_v5()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

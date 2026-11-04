@@ -243,6 +243,7 @@ def progress_reward(
     budget: dict | None = None,
     goal_potential: bool = False,
     pay_heal: bool = True,
+    pay_bump: bool = True,
 ) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map.
 
@@ -263,6 +264,7 @@ def progress_reward(
     heal and exploration payments stop at the BUDGET_CAPS totals; without it behavior is uncapped. A non-moving
     step whose ``info.consecutive_bumps`` is 0 is not a bump (an A / B press), so it pays no bump cost.
     ``pay_heal=False`` skips every ``heal`` payment here (the caller pays ``src.heal_reward`` instead, long_v4).
+    ``pay_bump=False`` drops the wall-bump cost (long_v5, with the dense path-progress reward on).
     """
     new_tile = False
     new_map = False
@@ -290,7 +292,7 @@ def progress_reward(
     if not moved:
         is_busy = in_battle_b or dialogue_open(before)
         bump_count = getattr(info, "consecutive_bumps", 1) if info else 1
-        if not is_busy and not (info is not None and bump_count == 0):
+        if pay_bump and not is_busy and not (info is not None and bump_count == 0):
             add("bump", -0.05 * min(4, max(1, bump_count)))
     else:
         tile = (after.map_group, after.map_number, after.x, after.y)

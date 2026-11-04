@@ -27,7 +27,10 @@ Training-only environment features (all off in ``--config legacy``):
   (applied inside the policy, so PPO log-probs stay valid);
 - ``long_v4`` additions: milestone success-rate diagnostics (``src.milestone_stats``), a smaller and decaying exploration
   budget, a heal-for-HP-restored reward (``src.heal_reward``), low-HP battle practice (weighted battle-archive resets),
-  and auxiliary prediction heads trained from the same rollouts (``src.aux_tasks``).
+  and auxiliary prediction heads trained from the same rollouts (``src.aux_tasks``);
+- ``long_v5`` additions (anti-collapse after v4-1 degenerated to pressing A): wall-bump / tile-revisit penalties off, a
+  cost for A / B presses that change nothing (``src.idle_press``), path reward 0.3 per tile, a higher entropy floor with
+  a slower anneal and an entropy-boost safety net (``src.entropy_guard``, loss coefficient only).
 """
 
 from __future__ import annotations
@@ -52,6 +55,8 @@ import torch.optim as optim
 from src.battle_obs import equip_supplies, heal_item_count
 from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
 from src.dwell import DwellTracker
+from src.entropy_guard import EntropyGuard, anneal_fraction
+from src.idle_press import IdlePressTracker
 from src.path_progress import PathProgress
 from src.emulator import Emulator
 from src.heal_reward import heal_payment
@@ -560,6 +565,11 @@ class EnvWorker:
         self.dwell_exempt_loop = bool(cfg.get("dwell_exempt_loop", True))
         # Dense best-ever path-progress reward (long_v4, OFF when cfg has no "path_progress" scale): src.path_progress.
         self.path_progress = PathProgress.from_scale(cfg.get("path_progress"))
+        # long_v5 anti-collapse (all OFF when absent from cfg): no-effect A / B press cost (src.idle_press), and the
+        # wall-bump / tile-revisit penalties switched off while the path reward is on.
+        self.idle_press = IdlePressTracker.from_params(cfg.get("idle_press"))
+        self.disable_bump = bool(cfg.get("disable_bump_penalty", False))
+        self.disable_loop = bool(cfg.get("disable_loop_penalty", False))
         self._last_stage = 0  # stage already archived / seen at the start of the episode
         self._pending_stage: int | None = None  # stage entered while mid-cutscene: snapshot once the screen is calm
         self._pending_events: set = set()
@@ -685,6 +695,8 @@ class EnvWorker:
             self.dwell.reset(st)
         if self.path_progress is not None:
             self.path_progress.reset(st)   # the start state's own progress (archive / jitter) is never paid
+        if self.idle_press is not None:
+            self.idle_press.reset()
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
@@ -762,6 +774,7 @@ class EnvWorker:
             self.last_move = exec_idx
         action_name = ACTIONS[exec_idx]
         moved = False
+        plain_press = False   # an A / B press in the plain overworld (no battle, no dialogue): the idle_press candidates
 
         if before.battle_mode != 0:
             # LEARNED BATTLE: the policy's button goes straight to the game (FIGHT / PKMN / PACK / RUN menus, the
@@ -777,6 +790,7 @@ class EnvWorker:
             emu.press(action_name, frames=8)
             emu.tick(12, render=False)
             moved = False
+            plain_press = True
         else:
             step_res = stepper.step(action_name)
             moved = bool(step_res.moved)
@@ -807,6 +821,8 @@ class EnvWorker:
         pr_kwargs = {"budget": self.budget} if self._budget_ok else {}
         if self.heal_reward:
             pr_kwargs["pay_heal"] = False   # src.heal_reward pays for HP actually restored instead of the flat terms
+        if self.disable_bump and self.path_progress is not None:
+            pr_kwargs["pay_bump"] = False   # long_v5: dwell + path progress cover wall hugging
         pr_info = StepInfo(consecutive_bumps=self.consecutive_bumps)
         species_before = len(self.caught_counts)
         step_rew, new_tile, new_map = progress_reward(
@@ -838,6 +854,11 @@ class EnvWorker:
             dwell_pen, level_exempt = self.dwell.update(before, after, new_tile=new_tile, new_map=new_map, progress=progress)
             if level_exempt and self.dwell_exempt_loop:
                 loop = 0.0  # needed leveling is not "looping": the per-tile revisit cost is off while grinding below target
+        if self.disable_loop and self.path_progress is not None:
+            loop = 0.0      # long_v5: the per-tile revisit cost made standing still (pressing A) the cheapest policy
+        idle_pen = 0.0
+        if self.idle_press is not None and plain_press:
+            idle_pen = self.idle_press.update(before, after)   # <= 0: an A / B press that changed nothing observable
         momentum = 0.02 if (action_name == self.last_dir and moved) else 0.0
         momentum = budget_pay(self.budget, "explore", momentum) if self._budget_ok else momentum
         self.last_dir = action_name if moved else None
@@ -847,7 +868,9 @@ class EnvWorker:
             comps["dwell"] = dwell_pen
         if self.path_progress is not None:
             comps["path"] = path_rew
-        step_rew += curiosity + loop + momentum + dwell_pen + path_rew
+        if self.idle_press is not None:
+            comps["idle_press"] = idle_pen
+        step_rew += curiosity + loop + momentum + dwell_pen + path_rew + idle_pen
 
         # No termination on milestones or on the badge; the episode ends only on the step limit (a time limit, not a goal).
         self.steps += 1
@@ -1302,6 +1325,9 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "dwell": cfg.dwell_params(),
         "path_progress": cfg.path_progress_scale_or_none(),
         "dwell_exempt_loop": cfg.dwell_exempt_loop,
+        "idle_press": cfg.idle_press_params(),
+        "disable_bump_penalty": cfg.disable_bump_penalty,
+        "disable_loop_penalty": cfg.disable_loop_penalty,
         "explore_cap": cfg.explore_cap_override(),
         "heal_reward": cfg.heal_reward,
         "heal_scale": cfg.heal_reward_scale,
@@ -1378,6 +1404,9 @@ def train(
     hp.num_minibatches, mb_msg = plan_minibatches(units, per_unit, hp.num_minibatches, vram, explicit_mb)
     print(f"[memory] {mb_msg}", flush=True)
     entropy_schedule = EntropySchedule(cfg.entropy_start, cfg.entropy_end)
+    guard_params = cfg.entropy_guard_params()
+    entropy_guard = EntropyGuard(**guard_params) if guard_params else None   # long_v5 safety net (coefficient only)
+    last_entropy: float | None = None
     progress = RouteProgressTracker()
     scaler = RunningReturnScaler(num_envs, hp.gamma) if cfg.reward_scale == "running_std" else None
     start_update = 0
@@ -1433,6 +1462,14 @@ def train(
             f"heal reward={'x%g budget %g' % (cfg.heal_reward_scale, cfg.heal_budget) if cfg.heal_reward else 'off'} | "
             f"low-HP battle weight {cfg.battle_lowhp_weight} (<= {cfg.battle_lowhp_threshold:.0%} HP) | "
             f"aux heads={'coef %g horizon %d' % (cfg.aux_coef, cfg.aux_horizon) if hp.aux_coef > 0 else 'off'}",
+            flush=True,
+        )
+    if cfg.idle_press_penalty or cfg.disable_bump_penalty or cfg.disable_loop_penalty or cfg.entropy_boost or cfg.entropy_anneal_updates:
+        print(
+            f"[long_v5 anti-collapse] bump penalty={'OFF' if cfg.disable_bump_penalty else 'on'} loop penalty={'OFF' if cfg.disable_loop_penalty else 'on'} | "
+            f"idle-press penalty={'%g/press, budget %g' % (cfg.idle_press_cost, cfg.idle_press_budget) if cfg.idle_press_penalty else 'off'} | "
+            f"entropy {cfg.entropy_start}->{cfg.entropy_end} (anneal >= {cfg.entropy_anneal_updates} updates) | "
+            f"entropy boost={'coef %g below %g until update %d (release at +%g)' % (cfg.entropy_boost_coef, cfg.entropy_boost_threshold, cfg.entropy_boost_until, cfg.entropy_boost_margin) if cfg.entropy_boost else 'off'}",
             flush=True,
         )
     if cfg.path_progress:
@@ -1507,7 +1544,10 @@ def train(
             buf_values.zero_(), buf_rewards.zero_(), buf_dones.zero_(), buf_trunc.zero_(), buf_boot.zero_()
             buf_raw.zero_()
             initial_hx = hx.detach().clone() if (policy.use_gru and hx is not None) else None
-            entropy_coef = entropy_schedule.value(progress.value)
+            entropy_coef = entropy_schedule.value(anneal_fraction(progress.value, update, cfg.entropy_anneal_updates))
+            entropy_boosted = False
+            if entropy_guard is not None:   # the coefficient only enters the PPO loss: rollout log-probs are unaffected
+                entropy_coef, entropy_boosted = entropy_guard.coef(update, entropy_coef, last_entropy)
             # Early A-bias in battle menus: set before the rollout, constant until the PPO update below has used it, so
             # the rollout's log-probs (old_logps) and the update's evaluate_actions describe the same distribution.
             a_bias = battle_a_bias_value(update, cfg.battle_a_bias, cfg.battle_a_bias_updates)
@@ -1637,6 +1677,7 @@ def train(
             max_badges = max(badges)
             cur_lr = optimizer.param_groups[0]["lr"]
             mean_entropy = float(stats["entropy"])
+            last_entropy = mean_entropy if math.isfinite(mean_entropy) else last_entropy
             mean_val_loss = float(stats["value_loss"])
             mean_pol_loss = float(stats["policy_loss"])
             mean_kl = float(stats["approx_kl"])
@@ -1658,6 +1699,8 @@ def train(
                 "swarm_archive_size": len(archive_files(swarm_dir)) if swarm_dir else 0,
                 "intrinsic_weight": round(last_intrinsic, 4),
             }
+            if entropy_guard is not None:
+                extra["entropy_boost"] = 1.0 if entropy_boosted else 0.0
             ms_payload = ms_stats.end_update([i.get("cur_furthest") for i in live_infos])
             extra.update(ms_payload)
             if hp.aux_coef > 0:
@@ -1737,7 +1780,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
