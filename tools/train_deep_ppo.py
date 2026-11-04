@@ -70,7 +70,7 @@ from src.idle_press import IdlePressTracker
 from src.path_progress import PathProgress
 from src.emulator import Emulator
 from src.heal_reward import heal_payment
-from src.milestone_stats import MilestoneStats
+from src.milestone_stats import MilestoneRecords, MilestoneStats, is_base_start
 from src.live_feed import LiveFeed
 from src.macros import Macros
 from src.mover import walkable
@@ -972,7 +972,13 @@ class EnvWorker:
         phi_end = _story_phi(after, self.seen_maps)
         phi_start = self.start_phi
         stage_end = int(current_stage(after))
+        prev_furthest = self._ep_furthest
         self._ep_furthest = max(self._ep_furthest, stage_end)
+        # Milestones first reached in this episode at this step (fastest-to-milestone records, src.milestone_stats):
+        # [milestone index, steps since the episode start, from the base start state].  A stagger-offset first episode
+        # has a wrong step count, so it reports nothing.
+        ms_new = None if self._partial else [[s - 1, int(self.steps), is_base_start(ended_state)]
+                                             for s in range(prev_furthest + 1, self._ep_furthest + 1)]
         ended_partial = self._partial and not terminated   # a white-out is a real episode end, not a stagger cut
         ended_ms = (self._ep_start_stage, self._ep_furthest,
                     None if self.path_progress is None else self.path_progress.best) if done else None
@@ -1017,6 +1023,8 @@ class EnvWorker:
         }
         if ended_ms is not None:   # the finished episode's milestone summary (src.milestone_stats)
             info_out["ended_start_stage"], info_out["ended_furthest"], info_out["ended_best_path"] = ended_ms
+        if ms_new:
+            info_out["ms_new"] = ms_new
         if final_obs is not None:
             info_out["final_obs"] = final_obs
         return screen, ram_vec, float(step_rew), bool(done), len(self.seen_maps), after.badges, info_out
@@ -1670,6 +1678,7 @@ def train(
                 "entropy_coef": [cfg.entropy_start, cfg.entropy_end],
                 "recurrent": policy.use_gru,
                 "resume": resume,
+                "ms_records": True,   # this run logs the fastest-to-milestone records (dashboard shows the table)
                 "curriculum_states": sorted(set(states)),
                 "device": str(device),
                 "config_name": cfg.name,
@@ -1694,6 +1703,9 @@ def train(
     buf_raw = torch.zeros((T, B), dtype=torch.float32)  # unscaled rewards, for logging
 
     ms_stats = MilestoneStats()
+    # Fastest-to-milestone records (steps from the base start state); rebuilt from this run's history.jsonl on resume.
+    ms_records = (MilestoneRecords.from_history(history_dir / "history.jsonl")
+                  if (resumed and history_dir is not None) else MilestoneRecords())
     last_intrinsic = 1.0
     recent_scores: deque[float] = deque(maxlen=BEST_WINDOW)
     reward_window_8: deque[float] = deque(maxlen=REWARD_CYCLE_WINDOW)  # mean over 8 updates: hides the lockstep cycle
@@ -1767,6 +1779,16 @@ def train(
                     feed.observe(infos=infos, actions=actions_np, rewards=rews, dones=dones, screens=screens_next)
                 _t4 = _pc()
                 phase["feed"] += _t4 - _t3
+
+                # Milestones first reached this step -> fastest-to-milestone records (live toast + events feed).
+                for i, inf in enumerate(infos):
+                    new = (inf or {}).get("ms_new")
+                    if not new:
+                        continue
+                    for m_idx, m_steps, m_base in new:
+                        for ev in ms_records.observe(i, m_idx, m_steps, update, bool(m_base)):
+                            if feed is not None:
+                                feed.record_milestone(ev, ms_records.snapshot())
 
                 # Route progress per finished episode drives the entropy schedule.
                 for i in np.nonzero(dones)[0]:
@@ -1911,6 +1933,7 @@ def train(
             )
             if feed is not None:
                 feed.set_milestones(ms_payload)
+                feed.set_records(ms_records.snapshot(), ms_records.take_new())
                 feed.on_update(
                     update,
                     total_samples,

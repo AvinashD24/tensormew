@@ -250,6 +250,43 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 .lv-good .bd { background: var(--good); } .lv-warn .bd { background: var(--warn); } .lv-bad .bd { background: var(--bad); }
 .ptile .ms { font-size: 12px; line-height: 1.35; margin-top: 4px; }
 .ptile .tg { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* event markers on charts, fastest-milestone records, toasts, "why did reward change" */
+.k.milestone { color: var(--gold); }
+.chartbox .evlayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; overflow: hidden; }
+.evm { position: absolute; pointer-events: auto; min-width: 12px; height: 12px; padding: 0 3px; margin: 0; border-radius: 7px; border: 1.5px solid var(--c, var(--accent)); background: color-mix(in srgb, var(--c, var(--accent)) 38%, var(--panel)); color: var(--text); font: 700 9px/9px var(--mono); cursor: pointer; transform: translateX(-50%); display: inline-flex; align-items: center; justify-content: center; }
+.evm.sq { border-radius: 3px; } .evm.dia { border-radius: 2px; transform: translateX(-50%) rotate(45deg); } .evm.dia > b { transform: rotate(-45deg); }
+.evm.faint { opacity: .55; }
+.evm:hover, .evm:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; z-index: 3; opacity: 1; }
+.evm > b { font: inherit; }
+.evhair { position: absolute; top: 8px; bottom: 22px; width: 0; border-left: 1px dashed var(--muted); display: none; pointer-events: none; }
+.evbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 2px 0 8px; font-size: 12px; color: var(--muted); }
+.evbar button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); cursor: pointer; }
+.evbar button[aria-pressed=true] { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 700; }
+.evlegend { display: inline-flex; flex-wrap: wrap; gap: 3px 10px; }
+.evlegend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--c); background: color-mix(in srgb, var(--c) 38%, var(--panel)); margin-right: 5px; vertical-align: -1px; }
+#tip .lk { color: var(--warn); display: block; margin-top: 3px; white-space: normal; max-width: 280px; }
+#tip .ln { display: block; white-space: normal; max-width: 300px; }
+.why { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-top: 8px; font-size: 13px; }
+.why h3 { font-size: 13px; margin-bottom: 4px; }
+.why .wr { display: grid; grid-template-columns: 96px minmax(0, 1fr) 150px; gap: 8px; align-items: center; font: 12px var(--mono); margin: 3px 0; }
+.why .wb { position: relative; height: 12px; background: var(--panel); border-radius: 4px; overflow: hidden; }
+.why .wb i { position: absolute; top: 0; bottom: 0; display: block; }
+.why .wb u { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+.why .up2 { background: var(--good); } .why .dn2 { background: var(--bad); }
+.why .wn { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.rectab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rectab th { text-align: left; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; padding: 4px 6px; }
+.rectab td { padding: 5px 6px; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.rectab td.num, .rectab th.num { text-align: right; }
+.rectab .none { color: var(--muted); }
+.rectab .imp { color: var(--good); font-weight: 600; }
+.recnote { font-size: 12px; color: var(--muted); margin-top: 6px; }
+#toasts { position: fixed; right: 12px; bottom: 12px; z-index: 30; display: grid; gap: 8px; width: min(360px, calc(100vw - 24px)); pointer-events: none; }
+.toast { pointer-events: auto; background: var(--panel); border: 1px solid var(--gold); border-left-width: 5px; border-radius: 10px; padding: 9px 12px; box-shadow: var(--shadow); font-size: 13px; display: flex; gap: 10px; align-items: flex-start; }
+.toast span { flex: 1; }
+.toast button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+@media (max-width: 520px) { .why .wr { grid-template-columns: 70px minmax(0, 1fr); } .why .wr > :last-child { grid-column: 1 / -1; } .rectab .hide-s { display: none; } }
 @media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -310,12 +347,14 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
       <div class="card" id="rewardCard" style="grid-column:1/-1"><h2>Reward <span class="sub">y: mean reward per update · x: update number</span></h2>
         <div class="smoothbar"><span id="smoothLbl">Smoothing window (updates):</span><div class="seg" id="smoothSeg" role="group" aria-labelledby="smoothLbl"></div>
           <span class="cyc" id="cycleNote" hidden tabindex="0" title="The trainer's episodes are 2048 steps and each update collects 256, so every 8th update is the same point in the episode. When all environments reset together the reward rises and falls in an 8-update cycle that hides the real trend. A window of 8 averages it out.">8-update cycle detected: episodes reset together</span></div>
-        <div class="chartbox"><canvas id="chReward" role="img" aria-label="Reward over updates: faint raw line, bold smoothed trend, dashed long-term baseline"></canvas></div>
+        <div class="evbar"><button type="button" id="evToggle" aria-pressed="true" title="Show or hide the event markers on the charts">Event markers</button><span class="evlegend" id="evLegend" aria-label="Marker legend"></span><button type="button" id="whyBtn" aria-expanded="false" aria-controls="whyPanel" title="Break one update's reward down by component">Why did reward change?</button></div>
+        <div class="chartbox"><canvas id="chReward" role="img" aria-label="Reward over updates: faint raw line, bold smoothed trend, dashed long-term baseline. Event markers sit along the bottom; click the chart for a reward breakdown of that update."></canvas><div class="evlayer" id="evl_reward"></div></div>
+        <div class="why" id="whyPanel" hidden aria-live="polite"></div>
         <div class="legend" id="rewardLegend"></div>
         <div class="verdict" id="rewardVerdict" aria-live="polite">collecting data…</div></div>
-      <div class="card"><h2>Policy entropy <span class="sub">exploration vs collapse</span></h2><div class="chartbox"><canvas id="chEntropy" role="img" aria-label="Entropy over updates"></canvas></div><div class="legend"><span style="--c:var(--accent2)">entropy</span><span style="--c:var(--bad)">collapse &lt; 0.35</span><span style="--c:var(--good)">healthy &gt; 0.7</span></div></div>
-      <div class="card"><h2>PPO stability <span class="sub">KL &amp; clip fraction</span></h2><div class="chartbox"><canvas id="chKl" role="img" aria-label="KL and clip fraction"></canvas></div><div class="legend"><span style="--c:var(--accent)">approx KL</span><span style="--c:var(--accent2)">clip fraction</span><span style="--c:var(--warn)">KL limit 0.08</span></div></div>
-      <div class="card"><h2>Critic loss <span class="sub">hover to see policy loss too</span></h2><div class="chartbox"><canvas id="chLoss" role="img" aria-label="Value loss over updates"></canvas></div><div class="legend"><span style="--c:var(--accent)">value loss</span></div></div>
+      <div class="card"><h2>Policy entropy <span class="sub">exploration vs collapse</span></h2><div class="chartbox"><canvas id="chEntropy" role="img" aria-label="Entropy over updates"></canvas><div class="evlayer" id="evl_entropy"></div></div><div class="legend"><span style="--c:var(--accent2)">entropy</span><span style="--c:var(--bad)">collapse &lt; 0.35</span><span style="--c:var(--good)">healthy &gt; 0.7</span></div></div>
+      <div class="card"><h2>PPO stability <span class="sub">KL &amp; clip fraction</span></h2><div class="chartbox"><canvas id="chKl" role="img" aria-label="KL and clip fraction"></canvas><div class="evlayer" id="evl_kl"></div></div><div class="legend"><span style="--c:var(--accent)">approx KL</span><span style="--c:var(--accent2)">clip fraction</span><span style="--c:var(--warn)">KL limit 0.08</span></div></div>
+      <div class="card"><h2>Critic loss <span class="sub">hover to see policy loss too</span></h2><div class="chartbox"><canvas id="chLoss" role="img" aria-label="Value loss over updates"></canvas><div class="evlayer" id="evl_loss"></div></div><div class="legend"><span style="--c:var(--accent)">value loss</span></div></div>
     </section>
 
     <section class="card" id="ppoCard" style="margin-bottom:14px" aria-labelledby="ppoH">
@@ -327,6 +366,11 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
       <h2>Where the reward comes from <span class="sub" id="compSub"></span></h2>
       <div class="comp" id="comp"></div>
       <div class="clegend" id="compLegend"></div>
+    </section>
+
+    <section class="card" id="recCard" style="margin-bottom:14px" aria-labelledby="recH">
+      <h2 id="recH">Fastest to each milestone <span class="sub" id="recSub"></span></h2>
+      <div id="recBody"></div>
     </section>
 
     <section class="card" id="msCard" style="margin-bottom:14px" aria-labelledby="msH">
@@ -371,6 +415,7 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 </div>
 
 <div id="tip" role="tooltip"></div>
+<div id="toasts" aria-live="polite" aria-atomic="false" role="status"></div>
 
 <script>
 "use strict";
@@ -404,8 +449,10 @@ function niceStep(range, ticks) {
   return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
 }
 class Chart {
-  constructor(canvas, opts) { this.c = canvas; this.o = opts; this.cfg = null; this.hover = -1;
+  constructor(canvas, opts) { this.c = canvas; this.o = opts || {}; this.cfg = null; this.hover = -1; this.layer = this.o.layer ? $(this.o.layer) : null; this._sig = "";
     canvas.addEventListener("mousemove", (e) => this.onMove(e));
+    if (this.o.onClick) canvas.addEventListener("click", (e) => { if (!this.cfg || this.cfg.xs.length < 2) return; const g = this.geom(), r = canvas.getBoundingClientRect(), n = this.cfg.xs.length;
+      this.o.onClick(this.cfg.xs[clamp(Math.round((e.clientX - r.left - g.l) / (g.w - g.l - g.r) * (n - 1)), 0, n - 1)]); });
     canvas.addEventListener("mouseleave", () => { this.hover = -1; tip.style.display = "none"; this.draw(); });
     new ResizeObserver(() => this.draw()).observe(canvas);
   }
@@ -431,7 +478,7 @@ class Chart {
     const muted = css("--muted"), border = css("--border");
     ctx.font = "11px " + css("--mono"); ctx.textBaseline = "middle";
     const cfg = this.cfg;
-    if (!cfg || cfg.xs.length < 2) { ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.fillText("collecting data…", g.w / 2, g.h / 2); return; }
+    if (!cfg || cfg.xs.length < 2) { ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.fillText("collecting data…", g.w / 2, g.h / 2); if (this.layer) { this.layer.textContent = ""; this._sig = ""; } return; }
     const n = cfg.xs.length; let lo = Infinity, hi = -Infinity;
     for (const s of cfg.series) if (!s.hidden) for (const v of s.ys) if (v != null && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
     if (cfg.yMin != null) lo = Math.min(lo, cfg.yMin); if (cfg.yMax != null) hi = Math.max(hi, cfg.yMax);
@@ -464,6 +511,7 @@ class Chart {
     if (cfg.marker != null && cfg.marker >= 0 && cfg.marker < n) { const mx = X(cfg.marker); ctx.strokeStyle = css("--gold"); ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(mx, g.t); ctx.lineTo(mx, g.h - g.b); ctx.stroke(); ctx.setLineDash([]); }
     if (this.hover >= 0) { const x = X(this.hover); ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.h - g.b); ctx.stroke();
       for (const s of cfg.series) { const v = s.ys[this.hover]; if (v == null || s.hidden) continue; ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(x, Y(v), 3.5, 0, 7); ctx.fill(); } }
+    if (this.layer) placeMarkers(this, g, X, n);
   }
 }
 function spark(canvas, ys, color) {
@@ -476,10 +524,122 @@ function spark(canvas, ys, color) {
   ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = "round"; ctx.stroke();
 }
 
-const charts = {
-  reward: new Chart($("chReward")), entropy: new Chart($("chEntropy")),
-  kl: new Chart($("chKl")), loss: new Chart($("chLoss")),
+/* ---------- event markers (derived server-side by tools/dashboard_events.py from history.jsonl) ---------- */
+const EVT = {   // type -> label, colour token, lane (row at the bottom of the plot), shape
+  ms: { l: "Milestone reached", c: "--good", lane: 0, s: "dia" }, rec: { l: "Fastest-to-milestone record", c: "--gold", lane: 0, s: "dia" },
+  path: { l: "New best path progress", c: "--accent2", lane: 0, s: "sq" }, map: { l: "New map", c: "--accent2", lane: 0, s: "" },
+  badge: { l: "Badge", c: "--gold", lane: 0, s: "dia" }, lvl: { l: "New top level", c: "--good", lane: 0, s: "sq" }, dex: { l: "New species", c: "--good", lane: 0, s: "" },
+  wo: { l: "White-outs", c: "--bad", lane: 1, s: "" }, spike: { l: "Spike / drop (outlier)", c: "--warn", lane: 1, s: "dia" },
+  abias: { l: "A-bias reached 0", c: "--accent", lane: 2, s: "sq" }, boost: { l: "Entropy boost on/off", c: "--accent", lane: 2, s: "sq" },
+  intr: { l: "Exploration bonus decay", c: "--accent", lane: 2, s: "sq" }, ecoef: { l: "Entropy coef floor", c: "--accent", lane: 2, s: "sq" }, rck: { l: "Route checkpoints", c: "--accent", lane: 2, s: "" },
 };
+let evData = { events: [], comps: [], run_id: null }, evVer = 0, evOn = true;
+try { evOn = localStorage.getItem("tm_ev_on") !== "0"; } catch (e) {}
+const evCur = () => mode === "replay" && live ? live.update : (metrics.length ? metrics[metrics.length - 1].update : Infinity);   // replay: only up to the slider
+const evVisible = () => { const cur = evCur(); return evData.events.filter(e => e.u <= cur); };
+const spikeOf = (k) => (e) => e.t !== "spike" || e.v.metric === k;
+const CHART_EV = {   // which events each chart shows
+  reward: (e) => e.t !== "spike" || e.v.metric === "mean_reward",
+  entropy: (e) => ["ms", "wo", "abias", "boost", "intr", "ecoef", "rck", "rec"].includes(e.t) ? (e.t !== "wo" || e.v.wave) : (e.t === "spike" && e.v.metric === "entropy"),
+  kl: (e) => ["ms", "abias", "boost", "intr", "ecoef", "rck", "rec"].includes(e.t),
+  loss: (e) => ["ms", "abias", "boost", "intr", "ecoef", "rck", "rec"].includes(e.t) || (e.t === "wo" && e.v.wave) || (e.t === "spike" && e.v.metric === "value_loss"),
+};
+function evTipHtml(group) {
+  const e0 = group[0], md = EVT[e0.t] || { l: e0.t };
+  const lines = group.slice(0, 4).map(e => `<span class="ln">${esc(e.x)}</span>`).join("") + (group.length > 4 ? `<span class="ln">and ${group.length - 4} more</span>` : "");
+  const us = group.length > 1 ? `updates ${group[0].u}–${group[group.length - 1].u}` : `update ${e0.u}`;
+  let extra = "";
+  const lk = group.find(e => e.lk); if (lk) extra += `<span class="lk">Possibly related (correlation, not proof): ${esc(lk.lk.join("; "))}</span>`;
+  const tp = group.find(e => e.top); if (tp) extra += `<span class="lk">Reward components vs previous 8 updates: ${tp.top.map(([k, d]) => `${esc(k)} ${sgn(d, 1)}`).join(", ")}</span>`;
+  return `<b>${md.l} · ${us}</b>${lines}${extra}`;
+}
+function evAria(group) {
+  const e0 = group[0], md = EVT[e0.t] || { l: e0.t };
+  return `${md.l}${group.length > 1 ? " x" + group.length : ""}, update ${e0.u}${group.length > 1 ? " to " + group[group.length - 1].u : ""}: ${group.slice(0, 3).map(e => e.x).join("; ")}` + (group.find(e => e.lk) ? `. Possibly related: ${group.find(e => e.lk).lk.join("; ")}` : "");
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function showEvTip(el, group, pin) {
+  tip.innerHTML = evTipHtml(group); tip.style.display = "block"; tip.style.whiteSpace = "normal"; tip.style.left = "0px"; tip.style.top = "0px";
+  const r = el.getBoundingClientRect(), w = tip.offsetWidth;
+  tip.style.left = Math.max(6, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)) + "px";
+  tip.style.top = Math.max(6, r.top - tip.offsetHeight - 8) + "px";
+  const hair = el.parentNode.querySelector(".evhair"); if (hair) { hair.style.left = el.style.left; hair.style.display = "block"; }
+}
+function hideEvTip() { tip.style.display = "none"; tip.style.whiteSpace = ""; document.querySelectorAll(".evhair").forEach(h => h.style.display = "none"); }
+function placeMarkers(ch, g, X, n) {
+  const layer = ch.layer, xs = ch.cfg.xs;
+  const sig = [Math.round(g.w), Math.round(g.h), n, xs[0], xs[n - 1], evVer, evOn ? 1 : 0, evCur()].join("|");
+  if (sig === ch._sig) return; ch._sig = sig;
+  layer.textContent = ""; if (!evOn) return;
+  const filt = ch.o.filter || (() => true), evs = evVisible().filter(filt), idx = new Map(); xs.forEach((u, i) => { if (!idx.has(u)) idx.set(u, i); });
+  const hair = document.createElement("div"); hair.className = "evhair"; hair.style.top = g.t + "px"; hair.style.bottom = g.b + "px"; layer.appendChild(hair);
+  const plotW = g.w - g.l - g.r, span = Math.max(1, xs[n - 1] - xs[0]), win = Math.max(2, Math.ceil(span / (plotW / 22)));   // merge events closer than ~22px (and within 3 updates)
+  const routineWo = evs.filter(e => e.t === "wo" && !e.v.wave).length, dropWo = routineWo > 40;   // dense routine white-outs would wallpaper the chart: only waves are marked then
+  const byType = {}; for (const e of evs) if (idx.has(e.u) && !(dropWo && e.t === "wo" && !e.v.wave)) (byType[e.t] || (byType[e.t] = [])).push(e);
+  const groups = [];
+  for (const [t, list] of Object.entries(byType)) { let cur = null; for (const e of list) { if (cur && e.u - cur[0].u <= win) cur.push(e); else groups.push(cur = [e]); } }
+  groups.sort((a, b) => a[0].u - b[0].u);
+  const taken = [[], [], []];
+  for (const grp of groups) {
+    const e0 = grp[0], md = EVT[e0.t] || { c: "--accent", lane: 2, s: "" };
+    let x = X(idx.get(e0.u));
+    while (taken[md.lane].some(tx => Math.abs(tx - x) < 14) && x < g.w - g.r) x += 12;
+    taken[md.lane].push(x);
+    const b = document.createElement("button"); b.type = "button";
+    b.className = "evm " + (md.s || "") + (e0.t === "wo" && !grp.some(e => e.v.wave) && grp.length < 3 ? " faint" : "");
+    b.style.left = x + "px"; b.style.top = (g.h - g.b - 16 - md.lane * 15) + "px"; b.style.setProperty("--c", `var(${md.c})`);
+    b.setAttribute("aria-label", evAria(grp)); if (grp.length > 1) b.innerHTML = `<b>${grp.length}</b>`;
+    b.addEventListener("mouseenter", () => showEvTip(b, grp)); b.addEventListener("focus", () => showEvTip(b, grp));
+    b.addEventListener("mouseleave", hideEvTip); b.addEventListener("blur", hideEvTip);
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); showEvTip(b, grp); if (ch.o.why) openWhy(grp[0].u); });
+    layer.appendChild(b);
+  }
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideEvTip(); });
+const charts = {
+  reward: new Chart($("chReward"), { layer: "evl_reward", filter: CHART_EV.reward, why: true, onClick: (u) => openWhy(u) }),
+  entropy: new Chart($("chEntropy"), { layer: "evl_entropy", filter: CHART_EV.entropy }),
+  kl: new Chart($("chKl"), { layer: "evl_kl", filter: CHART_EV.kl }), loss: new Chart($("chLoss"), { layer: "evl_loss", filter: CHART_EV.loss }),
+};
+function redrawMarkers() { evVer++; for (const c of Object.values(charts)) c.draw(); renderEvLegend(); }
+function renderEvLegend() {
+  const t = $("evToggle"); t.setAttribute("aria-pressed", String(evOn));
+  const present = [...new Set(evVisible().map(e => e.t))].filter(k => EVT[k]);
+  $("evLegend").innerHTML = evOn ? (present.length ? present.map(k => `<span style="--c:var(${EVT[k].c})">${EVT[k].l}</span>`).join("") : `<span class="flat" style="--c:var(--muted)">no events yet</span>`) : "";
+}
+$("evToggle").onclick = () => { evOn = !evOn; try { localStorage.setItem("tm_ev_on", evOn ? "1" : "0"); } catch (e) {} hideEvTip(); redrawMarkers(); };
+let evFetchT = 0;
+async function fetchEvents(force) {
+  const now = Date.now(); if (!force && now - evFetchT < 6000) return; evFetchT = now;
+  const url = mode === "replay" && rep ? `/api/run/${encodeURIComponent(rep.id)}/events` : "/api/events", want = mode === "replay" && rep ? rep.id : "live";
+  try {
+    const r = await fetch(url, { cache: "no-store" }); if (!r.ok) return; const d = await r.json();
+    if ((mode === "replay" && rep ? rep.id : "live") !== want) return;
+    evData = { events: d.events || [], comps: d.comps || [], run_id: d.run_id }; redrawMarkers(); renderWhy();
+  } catch (e) {}
+}
+setInterval(() => { if (mode === "live") fetchEvents(); }, 15000);
+/* "Why did reward change?": one update's reward components vs the mean of the 8 updates before it */
+let whyU = null;
+function openWhy(u) { whyU = u; $("whyPanel").hidden = false; $("whyBtn").setAttribute("aria-expanded", "true"); renderWhy(); }
+$("whyBtn").onclick = () => { const p = $("whyPanel"); if (!p.hidden) { p.hidden = true; $("whyBtn").setAttribute("aria-expanded", "false"); return; } openWhy(whyU != null ? whyU : (metrics.length ? metrics[metrics.length - 1].update : null)); };
+function renderWhy() {
+  const p = $("whyPanel"); if (p.hidden) return;
+  const cur = evCur(), comps = evData.comps.filter(c => c[0] <= cur);
+  if (whyU == null || whyU > cur) whyU = comps.length ? comps[comps.length - 1][0] : null;
+  const i = comps.findIndex(c => c[0] === whyU);
+  if (i < 1) { p.innerHTML = `<h3>Why did reward change?</h3><div class="wn">${comps.length ? "Pick an update after the first one" : "Per-update reward components are not available for this run yet"} (click the reward chart or a marker).</div>`; return; }
+  const now = comps[i][1], prior = comps.slice(Math.max(0, i - 8), i).map(c => c[1]), keys = [...new Set([...Object.keys(now), ...prior.flatMap(o => Object.keys(o))])];
+  const rows = keys.map(k => { const a = prior.reduce((s, o) => s + (o[k] || 0), 0) / prior.length; return { k, v: now[k] || 0, a, d: (now[k] || 0) - a }; }).sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+  const top = rows.slice(0, 8), mx = Math.max(1e-9, ...top.map(r => Math.abs(r.d)));
+  const mm = metrics.find(m => m.update === whyU), pm = metrics.filter(m => m.update < whyU).slice(-8), pav = mean(pm.map(m => m.mean_reward).filter(okv));
+  const tot = rows.reduce((s, r) => s + r.d, 0), up = rows.filter(r => r.d > 0).sort((x, y) => y.d - x.d)[0], dn = rows.filter(r => r.d < 0).sort((x, y) => x.d - y.d)[0];
+  const evs = evVisible().filter(e => Math.abs(e.u - whyU) <= 1 && (e.t !== "wo" || e.v.wave)).map(e => e.x);
+  p.innerHTML = `<h3>Update ${whyU}: reward components vs the average of the previous ${prior.length} updates</h3>` +
+    (mm && mm.mean_reward != null ? `<div class="wn" style="margin:0 0 4px">Mean reward ${sgn(mm.mean_reward, 2)}${pav != null ? ` vs ${sgn(pav, 2)} before` : ""}. Summed component change ${sgn(tot, 1)} (per update, all envs).</div>` : "") +
+    top.map(r => `<div class="wr"><span>${esc(r.k)}</span><div class="wb" role="img" aria-label="${esc(r.k)} ${r.d >= 0 ? "rose" : "fell"} by ${Math.abs(r.d).toFixed(1)}"><u></u><i class="${r.d >= 0 ? "up2" : "dn2"}" style="${r.d >= 0 ? "left:50%" : "right:50%"};width:${Math.abs(r.d) / mx * 50}%"></i></div><span>${sgn(r.d, 1)} <span class="flat">(${fmt(r.v, 1)} vs ${fmt(r.a, 1)})</span></span></div>`).join("") +
+    `<div class="wn">${up ? `Biggest rise: <b>${esc(up.k)}</b> ${sgn(up.d, 1)}. ` : ""}${dn ? `Biggest fall: <b>${esc(dn.k)}</b> ${sgn(dn.d, 1)}.` : ""}${evs.length ? ` Events near this update: ${esc(evs.slice(0, 3).join("; "))} (correlation, not proof).` : ""}</div>`;
+}
 
 /* ---------- derived data ---------- */
 const col = (k) => metrics.map(m => m[k] ?? null);
@@ -952,12 +1112,51 @@ function renderFun() {
     + `<ul class="facts">${funFacts(f, nm).map((t) => `<li>${t}</li>`).join("")}</ul>`
     + (rows.length ? `<div class="dex">${rows.slice(0, cap).map((r) => `<div class="mon${r.g ? " own" : unowned.has(r.id) ? " unk" : ""}" title="#${r.id}${r.g || !unowned.has(r.id) ? "" : " (seen, not caught)"}">${spr(r.id, nm[r.id] || "Pokémon #" + r.id, !r.g && unowned.has(r.id))}<div><div class="nm">${escH(nm[r.id] || "#" + r.id)}</div><div class="ct"><span class="no">#${r.id}</span> &middot; battled ${r.e.toLocaleString()}${r.g ? ` &middot; <i>caught ${r.g.toLocaleString()}</i>` : ""}</div></div></div>`).join("")}</div>${rows.length > cap ? `<div class="note" style="color:var(--muted);margin-top:6px">+${rows.length - cap} more</div>` : ""}` : "");
 }
+/* ---------- fastest to each milestone (trainer field state.records / history record.records; only runs launched with the tracking) ---------- */
+function renderRecords() {
+  const body = $("recBody"), sub = $("recSub"), r = live && live.records, flagged = live && live.run && live.run.ms_records;
+  if (!r && !flagged) { sub.textContent = ""; body.innerHTML = `<div class="none" style="color:var(--muted)">Not recorded for this run. Runs launched after the fastest-record tracking was added log the fewest steps each milestone took.</div>`; return; }
+  const st = (r && r.start) || [], an = (r && r.any) || [], none = `<span class="none">not reached yet</span>`;
+  const got = st.filter(Boolean).length;
+  sub.textContent = `${got} of ${MS_NAMES.length} reached from the start state · steps = environment steps since the episode began`;
+  const rows = MS_NAMES.map((nm, k) => {
+    const a = st[k], b = an[k];
+    const vs = !a ? "" : a.prev == null ? `first arrival` : `<span class="imp">${a.delta} steps</span> <span class="none">(was ${a.prev})</span>`;
+    return `<tr><td>${nm}</td><td class="num">${a ? `<b>${a.steps}</b> steps` : none}</td><td>${a ? `update ${a.update}${a.env != null && a.env >= 0 ? ` · env ${a.env}` : ""}` : ""}</td><td>${vs}</td><td class="num hide-s">${b ? b.steps : "–"}</td></tr>`;
+  }).join("");
+  const latest = ((r && r.log) || []).filter(e => e.scope === "start").slice(-3).reverse().map(e => esc(e.first ? `First time reaching ${e.name}: ${e.steps} steps` : `New record: ${e.name} in ${e.steps} steps (was ${e.prev}, ${e.steps - e.prev})`)).join(" · ");
+  body.innerHTML = `<table class="rectab"><thead><tr><th>Milestone</th><th class="num">Fastest from start</th><th>Reached at</th><th>vs previous record</th><th class="num hide-s" title="Fewest steps in any full episode, whatever its start state (archive starts are closer to the goal)">Any start</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div class="recnote">Counted only for episodes from the New Bark start state (not swarm / battle / route-checkpoint resets, not staggered partial episodes). &ldquo;Any start&rdquo; counts every full episode, so it can be faster.${latest ? `<br>Latest: ${latest}` : ""}</div>`;
+}
+function recordsAt(idx) {      // replay: records as of the selected update, from the per-update `records` lists
+  const start = MS_NAMES.map(() => null), anyT = MS_NAMES.map(() => null); let seen = false;
+  for (let i = 0; i <= idx; i++) for (const e of rep.records[i].records || []) {
+    seen = true; const t = e.scope === "start" ? start : anyT, c = t[e.m];
+    if (!c || e.steps < c.steps) t[e.m] = { steps: e.steps, update: e.u, env: e.env, prev: e.prev, delta: e.prev == null ? null : e.steps - e.prev };
+  }
+  return seen || (rep.meta.run && rep.meta.run.ms_records) ? { start, any: anyT, log: [] } : null;
+}
+/* toasts for new fastest-milestone records seen in the live feed: at most 3 on screen, auto-dismiss, announced politely */
+let toastSeenT = null, toastRun = null;
+function showToast(text) {
+  const box = $("toasts"); while (box.children.length >= 3) box.removeChild(box.firstChild);
+  const d = document.createElement("div"); d.className = "toast";
+  const s = document.createElement("span"); s.textContent = text; const b = document.createElement("button"); b.type = "button"; b.setAttribute("aria-label", "Dismiss"); b.textContent = "×";
+  const kill = () => { if (d.parentNode) d.parentNode.removeChild(d); }; b.onclick = kill; d.append(s, b); box.appendChild(d); setTimeout(kill, 10000);
+}
+function toastNew(s) {
+  if (!s || !Array.isArray(s.events)) return;
+  const ms = s.events.filter(e => e.kind === "milestone"), top = ms.reduce((m, e) => Math.max(m, e.t), 0);
+  if (toastSeenT === null || toastRun !== s.run_id) { toastSeenT = top; toastRun = s.run_id; return; }   // history on page load / new run: no toast
+  const fresh = ms.filter(e => e.t > toastSeenT).sort((a, b) => a.t - b.t); toastSeenT = Math.max(toastSeenT, top);
+  fresh.slice(-3).forEach(e => showToast(e.text));
+}
 function renderAll() {
   const has = metrics.length || live;
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
   renderKpis(); renderCharts(); renderPpo(); renderLearning(); $("diag").innerHTML = diagnostics();
-  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderMilestones(); renderFun();
+  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderMilestones(); renderRecords(); renderFun(); renderEvLegend(); renderWhy();
 }
 /* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
 let world = null;
@@ -1163,7 +1362,7 @@ function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from histo
   const mm = r.metrics || {};
   return { t: r.t, started: meta.started, finished: true, update: r.update, steps: r.steps, samples: mm.samples ? recs.slice(0, idx + 1).reduce((a, q) => a + ((q.metrics || {}).samples || 0), 0) : 0,
     steps_per_sec: mm.samples && mm.duration_sec ? mm.samples / mm.duration_sec : 0, num_envs: meta.num_envs, run: meta.run || {}, run_id: rep.id, maps_seen: maps.size,
-    fun: r.fun || null, species_names: meta.species_names || {}, components: componentsAt(idx), actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
+    records: recordsAt(idx), fun: r.fun || null, species_names: meta.species_names || {}, components: componentsAt(idx), actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
 }
 function nearestFrame(update) { let lo = 0, hi = rep.frames.length - 1, best = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (rep.frames[mid] <= update) { best = mid; lo = mid + 1; } else hi = mid - 1; } return best < 0 ? null : rep.frames[best]; }
 function replayRender() {
@@ -1199,10 +1398,12 @@ async function enterReplay(id) {
   if (rep.prior.length && rep.metricsAll.length) rep.metricsAll[0] = { ...rep.metricsAll[0], resumed: true };
   $("replayCard").style.display = "block"; $("backLive").style.display = "";
   $("repSlider").max = rep.records.length - 1;
-  replayRender();
+  evData = { events: [], comps: [], run_id: null }; whyU = null; hideEvTip();
+  replayRender(); fetchEvents(true);
 }
 function exitReplay() {
   replayStop(); mode = "live"; rep = null; metrics = []; live = null; lastLiveT = 0; selectedMap = null;
+  evData = { events: [], comps: [], run_id: null }; whyU = null; hideEvTip(); fetchEvents(true);
   $("replayCard").style.display = "none"; $("backLive").style.display = "none"; lsSet("");
   const liveR = runsInfo.find(r => r.status === "live"); $("runSel").value = liveR ? liveR.id : "";
   pollMetrics(); pollLive();
@@ -1235,9 +1436,10 @@ async function pollMetrics() {
   try {
     const since = metrics.length ? metrics[metrics.length - 1].update : -1;
     const r = await fetch(`/api/metrics?since=${since}`, { cache: "no-store" }); const fresh = await r.json();
+    if (mode === "replay") return;   // a replay was entered while this request was in flight: do not overwrite its metrics
     if (since >= 0 && fresh.length === 0) return;
     if (since >= 0 && fresh.length && fresh[0].update <= since) { metrics = []; return pollMetrics(); }   // new run: refetch everything (with its lineage)
-    metrics = metrics.concat(fresh);
+    metrics = metrics.concat(fresh); fetchEvents();
     if (metrics.length > 6000) metrics = metrics.slice(-6000);
     // a restarted run begins again at update 0: drop stale history
     for (let i = 1; i < metrics.length; i++) if (metrics[i].update < metrics[i - 1].update) { metrics = metrics.slice(i); break; }
@@ -1249,7 +1451,7 @@ async function pollLive() {
   try {
     const r = await fetch("/api/live", { cache: "no-store" }); const s = await r.json();
     if (s && live && (s.started !== live.started || s.run_id !== live.run_id)) { metrics = []; selectedMap = null; pollMetrics(); }   // new run began
-    if (s && s.t !== lastLiveT) { live = s; lastLiveT = s.t; renderAll(); } else renderHeader();
+    if (s && s.t !== lastLiveT) { live = s; lastLiveT = s.t; toastNew(s); renderAll(); } else renderHeader();
   } catch (e) {}
 }
 pollMetrics(); pollLive();

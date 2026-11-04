@@ -110,6 +110,8 @@ class LiveFeed:
         self._run_comp = self._blank_comp()
         self._last_comp = self._blank_comp()
         self._milestones: dict[str, Any] | None = None   # latest milestone reach rates (src.milestone_stats), compact
+        self._records: dict[str, Any] | None = None      # fastest-to-milestone records (MilestoneRecords.snapshot), compact
+        self._upd_records: list[dict[str, Any]] = []     # record events of the running update (go into history.jsonl)
         self._last_screens: np.ndarray | None = None
         self.num_envs = num_envs
         self.action_names = list(action_names)
@@ -403,6 +405,28 @@ class LiveFeed:
         """Latest milestone success-rate payload (``MilestoneStats.end_update``); shown live in state.json."""
         self._milestones = dict(payload) if payload else None
 
+    def record_milestone(self, ev: dict[str, Any], snapshot: dict[str, Any] | None = None) -> None:
+        """A new fastest-to-milestone record (``MilestoneRecords`` event): live events-feed entry + state.json right away.
+
+        Only the "from the base start state" records are announced; the "any start" ones live in the records table."""
+        if snapshot is not None:
+            self._records = snapshot
+        if ev.get("scope") != "start":
+            return
+        name = str(ev.get("name", "milestone"))
+        if ev.get("first"):
+            text = f"First time reaching {name}: {ev['steps']} steps (env {ev.get('env')})"
+        else:
+            text = f"New record: {name} in {ev['steps']} steps (was {ev['prev']}, {ev['steps'] - ev['prev']:+d})"
+        self._event("milestone", text, env=ev.get("env"), rec=ev)
+        self.flush()
+
+    def set_records(self, snapshot: dict[str, Any] | None, new_events: Sequence[dict[str, Any]] | None = None) -> None:
+        """Records snapshot for state.json plus this update's new record events (written to the history record)."""
+        self._records = snapshot
+        if new_events:
+            self._upd_records.extend(dict(e) for e in new_events)
+
     def on_update(self, update: int, samples: int, metrics: dict[str, Any] | None = None) -> None:
         """Called once per PPO update: persists the update's history and resets per-update windows."""
         self.update = update
@@ -414,6 +438,7 @@ class LiveFeed:
         self._upd_heat = {}
         self._upd_eps = []
         self._upd_events = []
+        self._upd_records = []
         self.flush()
 
     def finish(self) -> None:
@@ -444,6 +469,8 @@ class LiveFeed:
         fun = self.fun_payload()
         if fun is not None:
             record["fun"] = fun
+        if self._upd_records:   # only on updates where a record happened, so replay can show it
+            record["records"] = self._upd_records
         try:
             with open(self.history_dir / "history.jsonl", "a", encoding="utf-8") as fh:
                 fh.write(json.dumps(record, separators=(",", ":")) + "\n")
@@ -517,6 +544,7 @@ class LiveFeed:
             },
             "fun": self.fun_payload(),
             "milestones": self._milestones,
+            "records": self._records,
             "species_names": self._species_names(),
             "envs": self._envs,
             "trails": trails,

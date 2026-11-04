@@ -28,6 +28,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
+try:
+    from tools.dashboard_events import run_events
+except ImportError:  # run as a plain script
+    from dashboard_events import run_events  # type: ignore
+
 STATIC_DIR = Path(__file__).resolve().parent / "dashboard_static"
 METRICS_TAIL_BYTES = 8 * 1024 * 1024
 
@@ -217,6 +222,12 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                     if not state.is_file():
                         return self._send(200, b"null", "application/json")
                     return self._send(200, state.read_bytes(), "application/json")
+                if route == "/api/events":  # chart event markers of the live run (derived from its history.jsonl)
+                    live_id = None
+                    with contextlib.suppress(OSError, ValueError, AttributeError):
+                        live_id = json.loads((live_dir / "state.json").read_text(encoding="utf-8")).get("run_id")
+                    out = run_events(runs_dir / live_id) if live_id and RUN_ID_RE.match(live_id) else {"events": [], "comps": [], "n": 0}
+                    return self._send(200, json.dumps({**out, "run_id": live_id}, separators=(",", ":")).encode(), "application/json")
                 if route == "/api/world":  # ROM-derived stitched route map (tools/build_route_map.py) for the coverage view
                     return self._send(200, (STATIC_DIR / "world_layout.json").read_bytes(), "application/json", cache="no-cache")
                 if route == "/api/runs":
@@ -231,6 +242,11 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                         return self._send(404, b"", "image/png")
                     return self._send(200, sprite.read_bytes(), "image/png", cache="max-age=86400")
                 parts = route.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "events" and RUN_ID_RE.match(parts[2]):
+                    run_dir = runs_dir / parts[2]
+                    if not run_dir.is_dir():
+                        return self._send(404, b"no such run", "text/plain")
+                    return self._send(200, json.dumps({**run_events(run_dir), "run_id": parts[2]}, separators=(",", ":")).encode(), "application/json")
                 if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "history" and RUN_ID_RE.match(parts[2]):
                     run_dir = runs_dir / parts[2]
                     if not run_dir.is_dir():

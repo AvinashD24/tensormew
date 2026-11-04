@@ -20,6 +20,9 @@ from __future__ import annotations
 from src.story_path import MILESTONES, MILESTONE_COUNT
 
 MILESTONE_NAMES = tuple(m.name for m in MILESTONES)
+_PRETTY = {"route29": "Route 29", "cherrygrove": "Cherrygrove", "route30": "Route 30", "route31": "Route 31",
+           "violet_gate": "Violet gate", "violet_city": "Violet City", "violet_gym": "Violet Gym", "beat_falkner": "Falkner beaten"}
+MILESTONE_LABELS = tuple(_PRETTY.get(n, n.replace("_", " ").capitalize()) for n in MILESTONE_NAMES)   # for humans / the dashboard
 
 
 def _rates(reached: list[int], eligible: list[int]) -> list[float | None]:
@@ -77,3 +80,106 @@ class MilestoneStats:
         }
         self._reset_window()
         return out
+
+
+BASE_START_STATE = "new_bark_outside"   # the only start state whose step counts are comparable "from the start"
+RECORD_LOG_MAX = 50
+
+
+def is_base_start(state_name) -> bool:
+    """True for the plain New Bark start state (not a swarm / battle / route-checkpoint archive reset)."""
+    s = str(state_name or "").replace("\\", "/").rsplit("/", 1)[-1]
+    if s.endswith(".state"):
+        s = s[:-len(".state")]
+    return s == BASE_START_STATE
+
+
+class MilestoneRecords:
+    """Fastest-to-each-milestone records, in episode steps (env steps since the start of an episode).
+
+    * ``start``: episodes from the BASE start state only (``new_bark_outside``).  Archive resets (swarm / battle / route
+      checkpoint) begin closer to the goal and would give fake records, and a staggered partial first episode starts with a
+      step offset, so neither counts.  These are the headline records.
+    * ``any``: the fewest steps since the start of ANY full-length episode, whatever its start (labelled "any start").
+    A record is ``{steps, update, env, prev, delta}`` (``prev``/``delta`` None for a first arrival).  ``log`` keeps the last
+    ``RECORD_LOG_MAX`` events ``{u, m, name, steps, prev, env, scope, first}`` of both scopes.
+    """
+
+    def __init__(self, n: int = MILESTONE_COUNT, log_max: int = RECORD_LOG_MAX):
+        self.n = int(n)
+        self.start: list[dict | None] = [None] * self.n
+        self.any: list[dict | None] = [None] * self.n
+        self.log: list[dict] = []
+        self.log_max = int(log_max)
+        self._new: list[dict] = []   # events since the last take_new()
+
+    def _try(self, table: list, scope: str, m: int, steps: int, update: int, env: int) -> dict | None:
+        cur = table[m]
+        if cur is not None and steps >= cur["steps"]:
+            return None
+        prev = None if cur is None else cur["steps"]
+        table[m] = {"steps": steps, "update": int(update), "env": int(env), "prev": prev,
+                    "delta": None if prev is None else steps - prev}
+        ev = {"u": int(update), "m": m, "name": MILESTONE_LABELS[m], "steps": steps, "prev": prev, "env": int(env),
+              "scope": scope, "first": prev is None}
+        self.log.append(ev)
+        del self.log[:-self.log_max]
+        self._new.append(ev)
+        return ev
+
+    def observe(self, env: int, m: int, steps: int, update: int, from_start: bool, partial: bool = False) -> list[dict]:
+        """One first arrival in an episode: milestone index ``m`` after ``steps`` steps.  Returns the new record events."""
+        if partial or steps is None or not (0 <= int(m) < self.n) or int(steps) <= 0:
+            return []
+        steps = int(steps)
+        out = []
+        if from_start:
+            ev = self._try(self.start, "start", int(m), steps, update, env)
+            if ev:
+                out.append(ev)
+        ev = self._try(self.any, "any", int(m), steps, update, env)
+        if ev:
+            out.append(ev)
+        return out
+
+    def take_new(self) -> list[dict]:
+        """Events since the previous call (they go into the history record of the update)."""
+        out, self._new = self._new, []
+        return out
+
+    def snapshot(self) -> dict:
+        """Compact payload for state.json."""
+        return {"start": [dict(r) if r else None for r in self.start], "any": [dict(r) if r else None for r in self.any],
+                "log": list(self.log), "names": list(MILESTONE_LABELS), "base_state": BASE_START_STATE}
+
+    def load_events(self, events) -> None:
+        """Rebuild the records from logged events (history.jsonl ``records`` lists) when a run resumes."""
+        for ev in sorted((e for e in events if isinstance(e, dict)), key=lambda e: e.get("u", 0)):
+            try:
+                m, steps = int(ev["m"]), int(ev["steps"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            scope = "start" if ev.get("scope") == "start" else "any"
+            if 0 <= m < self.n:
+                self._try(self.start if scope == "start" else self.any, scope, m, steps, int(ev.get("u", 0)), int(ev.get("env", -1)))
+        self._new = []
+
+    @classmethod
+    def from_history(cls, history_jsonl, n: int = MILESTONE_COUNT) -> "MilestoneRecords":
+        """Reconstruct from an existing ``history.jsonl`` (line scan for ``records``; unreadable file = empty records)."""
+        import json
+        rec = cls(n)
+        events: list = []
+        try:
+            with open(history_jsonl, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    if '"records"' not in line:
+                        continue
+                    try:
+                        events.extend(json.loads(line).get("records") or [])
+                    except ValueError:
+                        continue
+        except OSError:
+            pass
+        rec.load_events(events)
+        return rec
