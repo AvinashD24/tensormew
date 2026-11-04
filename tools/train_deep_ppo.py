@@ -24,7 +24,10 @@ Training-only environment features (all off in ``--config legacy``):
   happen in lockstep (``phase_spread`` metric);
 - battle archive (``long_v3``): states saved when a battle starts (bounded, keyed by kind / map / enemy species);
   ``battle_archive_prob`` of resets load one, and the trainer schedules a decaying A-logit bias inside battle menus
-  (applied inside the policy, so PPO log-probs stay valid).
+  (applied inside the policy, so PPO log-probs stay valid);
+- ``long_v4`` additions: milestone success-rate diagnostics (``src.milestone_stats``), a smaller and decaying exploration
+  budget, a heal-for-HP-restored reward (``src.heal_reward``), low-HP battle practice (weighted battle-archive resets),
+  and auxiliary prediction heads trained from the same rollouts (``src.aux_tasks``).
 """
 
 from __future__ import annotations
@@ -46,11 +49,13 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from src.battle_obs import equip_supplies
+from src.battle_obs import equip_supplies, heal_item_count
 from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
 from src.dwell import DwellTracker
 from src.path_progress import PathProgress
 from src.emulator import Emulator
+from src.heal_reward import heal_payment
+from src.milestone_stats import MilestoneStats
 from src.live_feed import LiveFeed
 from src.macros import Macros
 from src.mover import walkable
@@ -170,10 +175,27 @@ def weighted_index(weights: list[float], rng) -> int:
     return len(weights) - 1
 
 
-def battle_archive_key(state) -> str:
-    """Diversity key of a battle: kind (1 wild / 2 trainer), map and enemy species."""
-    return (f"m{int(getattr(state, 'battle_mode', 0))}_{int(state.map_group)}-{int(state.map_number)}"
-            f"_s{int(getattr(state, 'enemy_mon_species', 0))}")
+LOWHP_TAG = "hLp1"   # key suffix of a battle state whose lead is at low HP while the bag holds a heal item
+
+
+def battle_archive_key(state, with_hp: bool = False, low_threshold: float = 0.4) -> str:
+    """Diversity key of a battle: kind (1 wild / 2 trainer), map and enemy species.
+
+    ``with_hp`` (long_v4 low-HP practice) appends ``_h<L|M|H>p<0|1>``: the lead's HP band (L = at most ``low_threshold``,
+    M = at most 0.8) and whether the bag holds a heal item; ``hLp1`` is the state worth practising healing in."""
+    key = (f"m{int(getattr(state, 'battle_mode', 0))}_{int(state.map_group)}-{int(state.map_number)}"
+           f"_s{int(getattr(state, 'enemy_mon_species', 0))}")
+    if not with_hp:
+        return key
+    hp = list(getattr(state, "party_hp", ()) or ())
+    frac = (hp[0][0] / hp[0][1]) if hp and hp[0][1] > 0 else 1.0
+    band = "L" if frac <= low_threshold else ("M" if frac <= 0.8 else "H")
+    return f"{key}_h{band}p{1 if heal_item_count(state) > 0 else 0}"
+
+
+def lowhp_battle_weight(key: str, weight: float) -> float:
+    """Sampling weight of a battle-archive key: ``1 + weight`` for low-HP-with-heal-item states, else 1."""
+    return 1.0 + float(weight) if key.endswith("_" + LOWHP_TAG) else 1.0
 
 
 def archive_files(directory) -> list[str]:  # state files currently in an archive dir
@@ -191,6 +213,14 @@ def phase_spread(ep_steps, ep_lens) -> float:
     return float(np.std(steps / lens)) if steps.size else 0.0
 
 
+def intrinsic_weight_value(update: int, end: float, updates: int) -> float:
+    """Weight of the exploration payments: linear 1.0 -> ``end`` over the first ``updates`` updates (absolute index),
+    ``end`` afterwards; 1.0 when ``updates`` is 0 or ``end`` is 1 (long_v3)."""
+    if updates <= 0 or end >= 1.0:
+        return 1.0
+    return 1.0 + (float(end) - 1.0) * min(1.0, max(0.0, float(update) / float(updates)))
+
+
 def battle_a_bias_value(update: int, start: float, updates: int) -> float:
     """Linear schedule ``start`` -> 0 over the first ``updates`` updates (absolute update index; 0 afterwards)."""
     if start <= 0 or updates <= 0:
@@ -205,9 +235,10 @@ class SwarmArchive:
     ``max_files`` files.  Nothing but the directory is shared, so it is safe across processes.
     """
 
-    def __init__(self, directory: str | Path, max_files: int = SWARM_MAX_FILES):
+    def __init__(self, directory: str | Path, max_files: int = SWARM_MAX_FILES, protect_suffix: str | None = None):
         self.dir = Path(directory)
         self.max_files = int(max_files)
+        self.protect_suffix = protect_suffix   # states whose key ends with it are evicted last (long_v4 low-HP states)
         self.dir.mkdir(parents=True, exist_ok=True)
 
     def keys(self) -> list[str]:
@@ -277,8 +308,10 @@ class SwarmArchive:
 
     def prune(self) -> None:
         """Delete the oldest states until at most ``max_files`` remain (several workers may overshoot briefly)."""
+        suffix = f"{self.protect_suffix}.state" if self.protect_suffix else None
         try:
-            files = sorted(self.dir.glob("*.state"), key=lambda p: p.stat().st_mtime)
+            files = sorted(self.dir.glob("*.state"),
+                           key=lambda p: (bool(suffix and p.name.endswith(suffix)), p.stat().st_mtime))
         except OSError:
             return
         for p in files[: max(0, len(files) - self.max_files)]:
@@ -286,6 +319,13 @@ class SwarmArchive:
                 p.unlink()
             except OSError:
                 pass
+
+    def sample_weighted(self, rng, weight_fn) -> str | None:
+        """A key drawn with probability proportional to ``weight_fn(key)`` (no grouping)."""
+        keys = self.keys()
+        if not keys:
+            return None
+        return keys[weighted_index([float(weight_fn(k)) for k in keys], rng)]
 
     def sample(self, rng, furthest_floor: float | None = None) -> str | None:
         """Uniform over groups (``stage2_0..3`` is one group, ``event123`` another), then uniform inside the group.
@@ -319,8 +359,9 @@ class StartStateSelector:
     def __init__(self, start_states, env_index: int = 0, stages: dict[str, int] | None = None,
                  archive: SwarmArchive | None = None, swarm_prob: float = SWARM_SAMPLE_PROB, rng=None,
                  battle_archive: SwarmArchive | None = None, battle_prob: float = 0.0,
-                 furthest_floor: float | None = None):
+                 furthest_floor: float | None = None, battle_lowhp_weight: float = 0.0):
         self.states = list(start_states)
+        self.battle_lowhp_weight = float(battle_lowhp_weight)   # > 0: favour low-HP battle states (long_v4)
         self.battle_archive = battle_archive
         self.battle_prob = float(battle_prob) if battle_archive is not None else 0.0
         self.furthest_floor = furthest_floor  # None = uniform over archive stages, else furthest-weighted
@@ -345,7 +386,11 @@ class StartStateSelector:
             # One draw: [0, battle_prob) = battle archive, next swarm_prob = swarm archive, the rest = start states.
             u = float(self.rng.random())
             if u < self.battle_prob:
-                key = self.battle_archive.sample(self.rng)
+                if self.battle_lowhp_weight > 0:
+                    key = self.battle_archive.sample_weighted(
+                        self.rng, lambda k: lowhp_battle_weight(k, self.battle_lowhp_weight))
+                else:
+                    key = self.battle_archive.sample(self.rng)
                 if key is not None:
                     return BATTLE_PREFIX + key
             elif swarm_on and u < self.battle_prob + self.swarm_prob:
@@ -458,11 +503,15 @@ class EnvWorker:
         swarm_dir = cfg.get("swarm_dir")
         self.archive = SwarmArchive(swarm_dir) if swarm_dir else None
         battle_dir = cfg.get("battle_dir")
-        self.battle_archive = (SwarmArchive(battle_dir, int(cfg.get("battle_max", 32))) if battle_dir else None)
+        self.battle_lowhp_weight = float(cfg.get("battle_lowhp_weight", 0.0))
+        self.battle_lowhp_threshold = float(cfg.get("battle_lowhp_threshold", 0.4))
+        self.battle_archive = (SwarmArchive(battle_dir, int(cfg.get("battle_max", 32)),
+                                            protect_suffix=LOWHP_TAG if self.battle_lowhp_weight > 0 else None)
+                               if battle_dir else None)
         self.selector = StartStateSelector(
             names, self.index, stages, self.archive, float(cfg.get("swarm_prob", SWARM_SAMPLE_PROB)), self.rng,
             battle_archive=self.battle_archive, battle_prob=float(cfg.get("battle_prob", 0.0)),
-            furthest_floor=cfg.get("swarm_furthest_floor"),
+            furthest_floor=cfg.get("swarm_furthest_floor"), battle_lowhp_weight=self.battle_lowhp_weight,
         )
         # Staggered episodes: the first episode starts at a random step offset, every episode length is jittered.
         self.stagger = bool(cfg.get("stagger_episodes", False))
@@ -495,6 +544,17 @@ class EnvWorker:
         self.seen_warps: set = set()
         self.budget: dict = {}  # per-episode payment budget handed to progress_reward (cleared on reset)
         self._budget_ok = _progress_reward_takes_budget()
+        # long_v4 budget overrides, re-applied to the fresh budget at every reset (empty = exactly the long_v3 behaviour).
+        self._budget_init: dict = {}
+        if cfg.get("explore_cap") is not None:
+            self._budget_init["cap:explore"] = float(cfg["explore_cap"])
+        self.heal_reward = bool(cfg.get("heal_reward", False))
+        self.heal_scale = float(cfg.get("heal_scale", 4.0))
+        if self.heal_reward:
+            self._budget_init["cap:heal"] = float(cfg.get("heal_budget", 8.0))
+        self._intrinsic_scale = 1.0
+        self._ep_start_stage = 0   # milestone diagnostics (src.milestone_stats)
+        self._ep_furthest = 0
         # Dwell penalty (long_v4, OFF when cfg has no "dwell" params): see src.dwell.
         self.dwell = DwellTracker.from_params(cfg.get("dwell"))
         self.dwell_exempt_loop = bool(cfg.get("dwell_exempt_loop", True))
@@ -598,6 +658,9 @@ class EnvWorker:
         self.seen_interactions.clear()
         self.seen_warps.clear()
         self.budget.clear()
+        self.budget.update(self._budget_init)
+        if self._intrinsic_scale != 1.0:
+            self.budget["scale:explore"] = self._intrinsic_scale
         self._pending_stage, self._pending_events = None, set()
         self.blocked_count = self.consecutive_bumps = self.steps = 0
         self.last_dir = self.last_move = None
@@ -617,6 +680,7 @@ class EnvWorker:
             if species_id and species_id != 255:
                 self.caught_counts[species_id] = self.caught_counts.get(species_id, 0) + 1
         self._last_stage = int(current_stage(st))
+        self._ep_start_stage = self._ep_furthest = self._last_stage
         if self.dwell is not None:
             self.dwell.reset(st)
         if self.path_progress is not None:
@@ -627,6 +691,14 @@ class EnvWorker:
         screen, ram_vec, _ = self.get_obs()  # also records the start map as seen (it must not pay a milestone)
         self.start_phi = _story_phi(st, self.seen_maps)
         return screen, ram_vec
+
+    def set_intrinsic_scale(self, scale: float) -> None:
+        """Weight of the exploration payments (long_v4 decay): applied to the running and all later episodes."""
+        self._intrinsic_scale = float(scale)
+        if self._intrinsic_scale != 1.0:
+            self.budget["scale:explore"] = self._intrinsic_scale
+        else:
+            self.budget.pop("scale:explore", None)
 
     def _maybe_archive(self, after) -> None:
         """Save the emulator state when this env is first to reach a new stage or key event (swarm sharing)."""
@@ -672,7 +744,8 @@ class EnvWorker:
         self._battle_wait = None
         if self._total_steps - self._last_battle_save < BATTLE_SAVE_GAP:
             return
-        key = battle_archive_key(after)
+        lowhp = getattr(self, "battle_lowhp_weight", 0.0) > 0
+        key = battle_archive_key(after, with_hp=lowhp, low_threshold=getattr(self, "battle_lowhp_threshold", 0.4))
         if self.battle_archive.has(key):
             return
         if self.battle_archive.save_fifo(key, self.emu.save_state()):
@@ -732,6 +805,8 @@ class EnvWorker:
 
         comps: dict[str, float] = {}
         pr_kwargs = {"budget": self.budget} if self._budget_ok else {}
+        if self.heal_reward:
+            pr_kwargs["pay_heal"] = False   # src.heal_reward pays for HP actually restored instead of the flat terms
         pr_info = StepInfo(consecutive_bumps=self.consecutive_bumps)
         species_before = len(self.caught_counts)
         step_rew, new_tile, new_map = progress_reward(
@@ -742,6 +817,11 @@ class EnvWorker:
         )
         step_rew += worker_interaction_reward(before, after, exec_idx, self.seen_interactions, self.seen_warps, comps,
                                               self.budget if self._budget_ok else None)
+        if self.heal_reward:
+            heal_pay = budget_pay(self.budget, "heal", heal_payment(before, after, self.heal_scale))
+            if heal_pay:
+                comps["heal"] = comps.get("heal", 0.0) + heal_pay
+                step_rew += heal_pay
         # Count-based novelty (1/sqrt(visits)) and a small straight-line momentum bonus: generic exploration terms.
         v_count = self.tile_visit_counts.get((after.map_group, after.map_number, after.x, after.y), 0)
         curiosity = intrinsic_curiosity_reward(v_count, scale=0.08)
@@ -778,7 +858,10 @@ class EnvWorker:
         phi_end = _story_phi(after, self.seen_maps)
         phi_start = self.start_phi
         stage_end = int(current_stage(after))
+        self._ep_furthest = max(self._ep_furthest, stage_end)
         ended_partial = self._partial
+        ended_ms = (self._ep_start_stage, self._ep_furthest,
+                    None if self.path_progress is None else self.path_progress.best) if done else None
         self._maybe_archive(after)
         final_obs = self._peek_obs(after) if truncated else None
         if done:
@@ -802,6 +885,7 @@ class EnvWorker:
             "partial_episode": bool(ended_partial and done),  # a staggered first episode that was cut short
             "ep_steps": int(self.steps),  # steps taken in the running episode (0 right after a reset)
             "ep_len": int(self.ep_len),
+            "cur_furthest": int(self._ep_furthest),   # furthest story stage of the running episode (0 = none yet)
             "executed_action": exec_idx,
             # Dashboard fun-facts source: already-parsed RAM only (no extra reads); aggregated in LiveFeed.
             "fun": {
@@ -815,6 +899,8 @@ class EnvWorker:
                 "mo": int(getattr(st_now, "money", 0)),
             },
         }
+        if ended_ms is not None:   # the finished episode's milestone summary (src.milestone_stats)
+            info_out["ended_start_stage"], info_out["ended_furthest"], info_out["ended_best_path"] = ended_ms
         if final_obs is not None:
             info_out["final_obs"] = final_obs
         return screen, ram_vec, float(step_rew), bool(done), len(self.seen_maps), after.badges, info_out
@@ -860,6 +946,8 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int, env_cfg
                 pipe.send(worker.reset())
             elif cmd == "STEP":
                 pipe.send(worker.step(int(data_arg)))
+            elif cmd == "INTRINSIC":   # no reply: the parent does not wait for one
+                worker.set_intrinsic_scale(float(data_arg))
             elif cmd == "CLOSE":
                 break
     except (EOFError, KeyboardInterrupt):
@@ -1012,6 +1100,11 @@ class VectorEnv:
             maps,
             badges,
         )
+
+    def set_intrinsic_scale(self, scale: float) -> None:
+        """Broadcast the exploration-payment weight to every worker (fire and forget; applies from their next step)."""
+        for i in range(len(self.pipes)):
+            self._send(i, ("INTRINSIC", float(scale)))
 
     def close(self):
         """Stop every worker; idempotent.  Workers that ignore CLOSE (stuck in a step) are terminated, then killed."""
@@ -1209,6 +1302,12 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "dwell": cfg.dwell_params(),
         "path_progress": cfg.path_progress_scale_or_none(),
         "dwell_exempt_loop": cfg.dwell_exempt_loop,
+        "explore_cap": cfg.explore_cap_override(),
+        "heal_reward": cfg.heal_reward,
+        "heal_scale": cfg.heal_reward_scale,
+        "heal_budget": cfg.heal_budget,
+        "battle_lowhp_weight": cfg.battle_lowhp_weight if cfg.battle_archive else 0.0,
+        "battle_lowhp_threshold": cfg.battle_lowhp_threshold,
     }
 
 
@@ -1237,13 +1336,16 @@ def train(
     np.random.seed(cfg.seed)
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru}, config={cfg.name})...")
 
-    policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=N_ACTIONS, use_gru=use_gru, gru_hidden_dim=512)
+    use_aux = bool(cfg.aux_loss and use_gru)
+    policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=N_ACTIONS, use_gru=use_gru, gru_hidden_dim=512,
+                                 aux_heads=use_aux)
     resumed = False
     sidecar = None
     if resume:
         try:
             policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru,
-                                              override_obs_dim=DEEP_OBS_DIM, check_schema=True)
+                                              override_obs_dim=DEEP_OBS_DIM, check_schema=True,
+                                              override_aux_heads=use_aux)
         except CheckpointIncompatibleError as e:
             raise RuntimeError(f"--resume: {e}") from e
         except Exception as e:
@@ -1266,6 +1368,8 @@ def train(
     print(f"Policy ready with {policy.param_count:,} trainable parameters.")
 
     hp = PPOHParams(**dataclasses.asdict(cfg.ppo))
+    hp.aux_coef = float(cfg.aux_coef) if (use_aux and policy.aux_enabled) else 0.0
+    hp.aux_horizon = int(cfg.aux_horizon)
     if not policy.use_gru and batch_size:  # feed-forward minibatches are samples, sized by --batch-size
         hp.num_minibatches = max(1, math.ceil(num_envs * rollout_steps / int(batch_size)))
     explicit_mb = minibatches_typed or bool(batch_size and not policy.use_gru)
@@ -1321,6 +1425,16 @@ def train(
             f"grind grace {cfg.dwell_grind_grace}, exempt loop={cfg.dwell_exempt_loop}",
             flush=True,
         )
+    if cfg.name == "long_v4" or cfg.heal_reward or cfg.aux_loss or cfg.battle_lowhp_weight > 0 or cfg.intrinsic_decay_updates:
+        print(
+            f"[long_v4 features] gamma={cfg.ppo.gamma} lambda={cfg.ppo.gae_lambda} rollout={cfg.rollout_steps} "
+            f"(whole rollout = one BPTT sequence, hidden state carried across rollouts) | entropy {cfg.entropy_start}->{cfg.entropy_end} | "
+            f"explore budget {cfg.explore_budget} weight 1.0->{cfg.intrinsic_weight_end} over {cfg.intrinsic_decay_updates} updates | "
+            f"heal reward={'x%g budget %g' % (cfg.heal_reward_scale, cfg.heal_budget) if cfg.heal_reward else 'off'} | "
+            f"low-HP battle weight {cfg.battle_lowhp_weight} (<= {cfg.battle_lowhp_threshold:.0%} HP) | "
+            f"aux heads={'coef %g horizon %d' % (cfg.aux_coef, cfg.aux_horizon) if hp.aux_coef > 0 else 'off'}",
+            flush=True,
+        )
     if cfg.path_progress:
         print(f"[path progress] +{cfg.path_progress_scale} per tile of new best progress along the story path "
               f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * 319:.1f} for the whole path)",
@@ -1371,6 +1485,8 @@ def train(
     buf_boot = torch.zeros((T, B), dtype=torch.float32)
     buf_raw = torch.zeros((T, B), dtype=torch.float32)  # unscaled rewards, for logging
 
+    ms_stats = MilestoneStats()
+    last_intrinsic = 1.0
     recent_scores: deque[float] = deque(maxlen=BEST_WINDOW)
     reward_window_8: deque[float] = deque(maxlen=REWARD_CYCLE_WINDOW)  # mean over 8 updates: hides the lockstep cycle
     last_done: int | None = None  # last completed update index
@@ -1396,6 +1512,10 @@ def train(
             # the rollout's log-probs (old_logps) and the update's evaluate_actions describe the same distribution.
             a_bias = battle_a_bias_value(update, cfg.battle_a_bias, cfg.battle_a_bias_updates)
             policy.set_battle_a_bias(a_bias)
+            iw = intrinsic_weight_value(update, cfg.intrinsic_weight_end, cfg.intrinsic_decay_updates)
+            if abs(iw - last_intrinsic) > 1e-9:   # workers only hear about a change (never for long_v3)
+                vec_env.set_intrinsic_scale(iw)
+                last_intrinsic = iw
             if cfg.lr_end_frac < 1.0:  # linear lr decay over this invocation's updates
                 lr_now = cfg.lr * (1.0 - (1.0 - cfg.lr_end_frac) * min(1.0, (update - start_update) / max(1, updates)))
                 for g in optimizer.param_groups:
@@ -1438,6 +1558,8 @@ def train(
                 # Route progress per finished episode drives the entropy schedule.
                 for i in np.nonzero(dones)[0]:
                     inf = infos[i] or {}
+                    ms_stats.add_episode(inf.get("ended_start_stage"), inf.get("ended_furthest"),
+                                         inf.get("ended_best_path"), partial=bool(inf.get("partial_episode")))
                     if inf.get("partial_episode"):
                         continue  # a staggered first episode cut short: not a full-length progress sample
                     progress.add(inf.get("ep_start_phi"), inf.get("route_phi"))
@@ -1534,7 +1656,14 @@ def train(
                 "battle_a_bias": round(a_bias, 4),
                 "battle_archive_size": len(archive_files(battle_dir)) if battle_dir else 0,
                 "swarm_archive_size": len(archive_files(swarm_dir)) if swarm_dir else 0,
+                "intrinsic_weight": round(last_intrinsic, 4),
             }
+            ms_payload = ms_stats.end_update([i.get("cur_furthest") for i in live_infos])
+            extra.update(ms_payload)
+            if hp.aux_coef > 0:
+                extra["aux_map_loss"] = _finite_or_none(stats.get("aux_map_loss"))
+                extra["aux_hp_loss"] = _finite_or_none(stats.get("aux_hp_loss"))
+                extra["aux_battle_loss"] = _finite_or_none(stats.get("aux_battle_loss"))
 
             monitor.log_update(
                 update=update,
@@ -1552,6 +1681,7 @@ def train(
                 extra=extra,
             )
             if feed is not None:
+                feed.set_milestones(ms_payload)
                 feed.on_update(
                     update,
                     total_samples,
@@ -1607,7 +1737,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v4 = long_v3 + dense best-ever path-progress reward; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)

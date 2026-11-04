@@ -120,6 +120,12 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .comp .cbar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; background: var(--panel2); gap: 1px; }
 .comp .cbar i { display: block; min-width: 1px; font: 600 10px/22px var(--mono); color: #0b1020; text-align: center; overflow: hidden; white-space: nowrap; cursor: default; }
 .comp .cbar i:hover { filter: brightness(1.25); }
+.msrow { display: grid; grid-template-columns: 112px 1fr 168px; gap: 8px; align-items: center; margin-bottom: 6px; font: 12px var(--mono); }
+.msrow .msbar { position: relative; height: 16px; border-radius: 5px; background: var(--panel2); overflow: hidden; }
+.msrow .msbar i { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
+.msrow .msbar .cum { background: var(--accent2); opacity: .45; } .msrow .msbar .rec { background: var(--accent); height: 8px; top: 4px; }
+.msrow .msv { color: var(--muted); white-space: nowrap; }
+@media (max-width: 640px) { .msrow { grid-template-columns: 92px 1fr; } .msrow .msv { grid-column: 1 / -1; } }
 .comp .ctot { text-align: right; color: var(--muted); }
 .comp .none { color: var(--muted); font-size: 12px; }
 .clegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 10px; }
@@ -319,6 +325,11 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
       <h2>Where the reward comes from <span class="sub" id="compSub"></span></h2>
       <div class="comp" id="comp"></div>
       <div class="clegend" id="compLegend"></div>
+    </section>
+
+    <section class="card" id="msCard" style="margin-bottom:14px" aria-labelledby="msH">
+      <h2 id="msH">Milestone reach rate <span class="sub" id="msSub"></span></h2>
+      <div id="msBody"></div>
     </section>
 
     <section class="card" style="margin-bottom:14px">
@@ -581,6 +592,30 @@ function rewardDiagnostics() {
   return out.map(([cls, ic, text]) => `<div class="${cls}"><span class="ic">${ic}</span><span>${text}</span></div>`).join("");
 }
 
+/* ---------- milestone reach rate (trainer fields ms_reach / ms_elig / ms_reach_cum / ms_envs_at; old runs have none) ---------- */
+const MS_NAMES = ["Route 29", "Cherrygrove", "Route 30", "Route 31", "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"];
+function msAgg(from, to) {                // exact window aggregate: sum(rate * eligible) / sum(eligible) per milestone
+  const r = MS_NAMES.map(() => 0), e = MS_NAMES.map(() => 0);
+  for (let i = Math.max(0, from); i < Math.min(metrics.length, to); i++) {
+    const m = metrics[i], rr = m.ms_reach, el = m.ms_elig; if (!Array.isArray(rr) || !Array.isArray(el)) continue;
+    MS_NAMES.forEach((_, k) => { if (rr[k] != null && el[k] > 0) { r[k] += rr[k] * el[k]; e[k] += el[k]; } });
+  }
+  return { rate: r.map((v, k) => e[k] > 0 ? v / e[k] : null), n: e };
+}
+const msScore = (a) => a.rate.reduce((s, v) => s + (v || 0), 0);
+function renderMilestones() {
+  const body = $("msBody"), n = metrics.length;
+  let last = null; for (let i = n - 1; i >= 0; i--) if (Array.isArray(metrics[i].ms_reach_cum)) { last = metrics[i]; break; }
+  if (!last) { $("msSub").textContent = ""; body.innerHTML = `<div class="none">Not recorded in this run. Runs from <code>long_v4</code> on log the share of episodes that reach each story milestone.</div>`; return; }
+  const rec = msAgg(n - 32, n), cum = last.ms_reach_cum, at = last.ms_envs_at || [];
+  const pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
+  $("msSub").textContent = `bar = all episodes so far, thin line = last 32 updates, ${last.ms_eps_cum ?? 0} finished episodes` + (last.path_best_max_cum != null ? ` · best path progress ${last.path_best_max_cum}/319 tiles` : "");
+  body.innerHTML = MS_NAMES.map((nm, k) => {
+    const c = cum[k], r = rec.rate[k];
+    return `<div class="msrow" title="Share of finished episodes (that started before this milestone) that reached it"><span>${nm}</span><div class="msbar" role="img" aria-label="${nm}: ${pct(c)} of all episodes, ${pct(r)} recently"><i class="cum" style="width:${(c || 0) * 100}%"></i><i class="rec" style="width:${(r || 0) * 100}%"></i></div><span class="msv">${pct(c)} all · ${pct(r)} recent · ${pct(at[k])} of envs now</span></div>`;
+  }).join("") + (last.path_best_mean != null ? `<div class="note" style="color:var(--muted);margin-top:4px">Best path progress per finished episode, last update: mean ${last.path_best_mean}, max ${last.path_best_max} of 319 tiles.</div>` : "");
+}
+
 /* ---------- smoothing, reward verdict, PPO health, "is it learning?" ---------- */
 let smoothW = null;                       // null = automatic default
 const SMOOTH_CHOICES = [1, 4, 8, 16, 32];
@@ -712,6 +747,10 @@ function renderLearning() {
   if (pv.length >= 8) { const K = Math.min(32, Math.floor(pv.length / 2)), a = mean(pv.slice(-4)), b = mean(pv.slice(-K - 4, -K));
     const up = a > b * 1.02 + 1e-9, nm = useRoute ? "Route progress" : "Maps discovered";
     add(up ? "good" : "warn", "Progress", up ? `${nm} is higher than ${K} updates ago (${fmt(b, useRoute ? 2 : 1)} to ${fmt(a, useRoute ? 2 : 1)}).` : `${nm} has not grown in ${K} updates (${fmt(a, useRoute ? 2 : 1)}).`, "Route progress and maps discovered show whether the agent is getting further through the game, not just collecting reward."); }
+  const msRows = metrics.filter(m => Array.isArray(m.ms_elig)).length;   // only runs that log milestone reach rates
+  if (msRows >= 16) { const a = msAgg(n - 32, n), b = msAgg(n - 64, n - 32), sa = msScore(a), sb = msScore(b), far = (x) => { let f = -1; x.rate.forEach((v, k) => { if (v != null && v >= 0.05) f = k; }); return f < 0 ? "none" : MS_NAMES[f]; };
+    const have = b.n.some(v => v > 0), up = sa > sb + 0.02;
+    add(!have ? "na" : up ? "good" : "warn", "Reaching further milestones?", have ? `Furthest milestone reached by at least 5% of episodes: ${far(a)} (before: ${far(b)}). Reach-rate total ${fmt(sa, 2)} vs ${fmt(sb, 2)} in the 32 updates before.` : `Furthest milestone reached by at least 5% of episodes: ${far(a)}.`, "The share of episodes that reach Route 29, Cherrygrove, Route 30, ... Falkner. Unlike the mean reward it only goes up when the agent gets further along the story."); }
   const wo = metrics.map(m => m._wo ?? null);
   if (nz(wo).length >= 16) { const a = mean(nz(wo).slice(-16).map(Math.abs)), b = mean(nz(wo).slice(-32, -16).map(Math.abs));
     add(a <= b || a < 1 ? "good" : "warn", "White-outs", `White-out penalty per update: ${fmt(a, 1)} (previous 16: ${fmt(b, 1)}).`, "A white-out is when all of the party faints and the agent is sent back to a Pokemon Center. Fewer is better."); }
@@ -908,7 +947,7 @@ function renderAll() {
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
   renderKpis(); renderCharts(); renderPpo(); renderLearning(); $("diag").innerHTML = diagnostics();
-  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderFun();
+  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderMilestones(); renderFun();
 }
 /* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
 let world = null;

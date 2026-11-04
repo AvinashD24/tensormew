@@ -38,6 +38,9 @@ class PPOHParams:
     bn_refresh_frames: int = 256  # frames (subsample of the rollout) used to refresh the running statistics
     bn_refresh_chunk: int = 64  # frames per refresh forward pass (bounds memory)
     bn_refresh_momentum: float = 0.3  # running-stat momentum per refresh chunk
+    # Auxiliary prediction loss (src.aux_tasks), recurrent policies built with aux_heads only; 0 = off (default).
+    aux_coef: float = 0.0
+    aux_horizon: int = 8
 
 
 @dataclass
@@ -299,6 +302,10 @@ def ppo_update(
             if isinstance(m, torch.nn.modules.batchnorm._BatchNorm):
                 m.eval()
     pol_l, val_l, ent_l, kl_l, clip_l, gn_l = [], [], [], [], [], []
+    use_aux = bool(recurrent and hp.aux_coef > 0 and getattr(policy, "aux_enabled", False))
+    aux_l: dict[str, list[float]] = {"map": [], "hp": [], "battle": []}
+    if use_aux:
+        from src import aux_tasks  # lazy: pulls in the observation layout
     n_steps = 0
     first_kl = None  # approx KL of the very first minibatch, before any optimizer step (0 when rollout and update agree)
     early_stopped = False
@@ -321,12 +328,16 @@ def ppo_update(
                 old_lp = to_dev(batch.old_logps[idx])
                 mb_adv, mb_ret, mb_old_v = to_dev(adv[idx]), to_dev(returns[idx]), to_dev(old_values[idx])
                 hx = None if batch.initial_hx is None else to_dev(batch.initial_hx[:, idx, :])
-                if batch.dones is None:
+                mb_dones = None if batch.dones is None else to_dev(batch.dones[idx])
+                aux_raw = None
+                if use_aux:
+                    new_lp, entropy, v_pred, aux_raw = policy.evaluate_actions_sequence(
+                        s, r, a, hx, dones=mb_dones, return_aux=True
+                    )
+                elif mb_dones is None:
                     new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx)
                 else:
-                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(
-                        s, r, a, hx, dones=to_dev(batch.dones[idx])
-                    )
+                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx, dones=mb_dones)
             else:
                 s = to_dev(f_screens[idx], True)
                 r = to_dev(f_rams[idx])
@@ -348,6 +359,15 @@ def ppo_update(
                 value_loss = F.mse_loss(v_pred, mb_ret)
             ent_mean = entropy.mean()
             loss = policy_loss + hp.vf_coef * value_loss - ent_coef * ent_mean
+            aux_parts = None
+            if use_aux and aux_raw is not None:
+                # Auxiliary prediction loss on the shared recurrent features (UNREAL-style). The targets are read from
+                # the stored RAM observations k steps ahead; the gradient flows into the whole trunk, not into the
+                # action / value heads.
+                aux_total, aux_parts = aux_tasks.aux_loss(
+                    aux_tasks.split_outputs(aux_raw), aux_tasks.make_targets(r, mb_dones, hp.aux_horizon)
+                )
+                loss = loss + hp.aux_coef * aux_total
 
             with torch.no_grad():
                 approx_kl = float(((ratio - 1.0) - log_ratio).mean())
@@ -377,6 +397,9 @@ def ppo_update(
             pol_l.append(policy_loss.item())
             val_l.append(value_loss.item())
             ent_l.append(ent_mean.item())
+            if aux_parts is not None:
+                for k_, v_ in aux_parts.items():
+                    aux_l[k_].append(v_)
             kl_l.append(approx_kl)
             clip_l.append(clip_frac)
             gn_l.append(float(grad_norm.detach()))
@@ -407,4 +430,7 @@ def ppo_update(
         "early_stopped": early_stopped,
         "bn_refresh_frames": bn_frames,
         "approx_kl_first": float("nan") if first_kl is None else first_kl,
+        "aux_map_loss": mean(aux_l["map"]),
+        "aux_hp_loss": mean(aux_l["hp"]),
+        "aux_battle_loss": mean(aux_l["battle"]),
     }

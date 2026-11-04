@@ -120,6 +120,7 @@ if TORCH_AVAILABLE:
             fusion_dim: int = 512,
             use_gru: bool = False,
             gru_hidden_dim: int = 512,
+            aux_heads: bool = False,
         ):
             super().__init__()
             self.obs_dim = obs_dim
@@ -162,6 +163,17 @@ if TORCH_AVAILABLE:
             self.actor = nn.Linear(head_dim, num_actions)
             self.critic = nn.Linear(head_dim, 1)
 
+            # 6. Optional auxiliary prediction head (src.aux_tasks; training only). It reads the same recurrent features
+            # as the actor / critic, so its gradients shape the shared trunk, but it is not part of forward(),
+            # act() or the action / value outputs. Its parameters are all named ``aux_head.*`` so checkpoints without
+            # them still load (missing keys tolerated) and inference never needs them.
+            self.aux_head = None
+            if aux_heads:
+                from src.aux_tasks import AUX_OUT_DIM  # lazy: the task module pulls in the observation layout
+
+                self.aux_head = nn.Sequential(nn.Linear(head_dim, 128), nn.ReLU(inplace=True),
+                                              nn.Linear(128, AUX_OUT_DIM))
+
             self._init_weights()
 
         def _init_weights(self):
@@ -177,6 +189,10 @@ if TORCH_AVAILABLE:
                         nn.init.constant_(m.bias, 0)
             # Small initial gain for actor head to keep initial policy uniform
             nn.init.orthogonal_(self.actor.weight, gain=0.01)
+
+        @property
+        def aux_enabled(self) -> bool:
+            return getattr(self, "aux_head", None) is not None
 
         def set_battle_a_bias(self, value: float) -> None:
             self.battle_a_bias = float(value)
@@ -350,7 +366,8 @@ if TORCH_AVAILABLE:
             actions: torch.Tensor,
             hx: torch.Tensor | None = None,
             dones: torch.Tensor | None = None,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            return_aux: bool = False,
+        ):
             """Evaluate sequential trajectory chunk for recurrent PPO loss updates.
 
             Args:
@@ -361,6 +378,8 @@ if TORCH_AVAILABLE:
                 dones: optional (B, T) bool; ``dones[b, t]`` means env b's episode ended after step t, so its hidden
                     state is zeroed before step t + 1 (as the rollout does). None keeps the old behavior of
                     carrying the hidden state across episode boundaries.
+                return_aux: also return the raw auxiliary-head output ``(B, T, AUX_OUT_DIM)`` as a 4th element
+                    (needs ``aux_heads=True``); the default 3-tuple is unchanged.
             """
             B, T = screens.shape[:2]
             screens_flat = screens.reshape(B * T, *screens.shape[2:])
@@ -394,23 +413,27 @@ if TORCH_AVAILABLE:
             dist = Categorical(logits=logits.reshape(B, T, self.num_actions))
             log_probs = dist.log_prob(actions)
             entropy = dist.entropy()
+            if return_aux:
+                if not self.aux_enabled:
+                    raise RuntimeError("return_aux needs a policy built with aux_heads=True")
+                return log_probs, entropy, values, self.aux_head(out).reshape(B, T, -1)
             return log_probs, entropy, values
 
         def save(self, path: str | Path) -> None:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                {
-                    "state_dict": self.state_dict(),
-                    "obs_dim": self.obs_dim,
-                    "num_actions": self.num_actions,
-                    "param_count": self.param_count,
-                    "use_gru": self.use_gru,
-                    "gru_hidden_dim": self.gru_hidden_dim,
-                    "model_type": "SpatialVisionPolicy",
-                    "obs_schema": OBS_SCHEMA,
-                },
-                str(path),
-            )
+            blob = {
+                "state_dict": self.state_dict(),
+                "obs_dim": self.obs_dim,
+                "num_actions": self.num_actions,
+                "param_count": self.param_count,
+                "use_gru": self.use_gru,
+                "gru_hidden_dim": self.gru_hidden_dim,
+                "model_type": "SpatialVisionPolicy",
+                "obs_schema": OBS_SCHEMA,
+            }
+            if self.aux_enabled:
+                blob["aux_heads"] = True   # only written when on, so older/no-aux checkpoints keep their exact format
+            torch.save(blob, str(path))
 
         @classmethod
         def load(
@@ -420,10 +443,15 @@ if TORCH_AVAILABLE:
             override_use_gru: bool | None = None,
             override_obs_dim: int | None = None,
             check_schema: bool = False,
+            override_aux_heads: bool | None = None,
         ) -> "SpatialVisionPolicy":
             """Load a checkpoint. ``check_schema=True`` (trainer, evaluator, play_live) rejects checkpoints from another
             observation / action layout with ``CheckpointIncompatibleError``. ``override_obs_dim`` must equal the saved
-            width (zero-padding old checkpoints is no longer offered: the new features change the meaning of columns)."""
+            width (zero-padding old checkpoints is no longer offered: the new features change the meaning of columns).
+
+            ``override_aux_heads=True`` (the trainer, long_v4) builds the auxiliary head; a checkpoint without it loads
+            with the head freshly initialised (missing ``aux_head.*`` keys are tolerated), and a checkpoint with it loads
+            into a policy without the head (the extra keys are dropped). Evaluation leaves it at None: no head."""
             p = Path(path)
             if not p.exists():
                 fallback = Path("models") / p.name
@@ -462,11 +490,20 @@ if TORCH_AVAILABLE:
                 num_actions=checkpoint.get("num_actions", 5),
                 use_gru=use_gru,
                 gru_hidden_dim=gru_hidden_dim,
+                aux_heads=bool(override_aux_heads),
             )
 
             state_dict = checkpoint["state_dict"]
+            if not model.aux_enabled:
+                state_dict = {k: v for k, v in state_dict.items() if not k.startswith("aux_head.")}
             strict = (use_gru == saved_use_gru)
-            model.load_state_dict(state_dict, strict=strict)
+            if strict and model.aux_enabled:
+                result = model.load_state_dict(state_dict, strict=False)
+                bad = [k for k in list(result.missing_keys) + list(result.unexpected_keys) if not k.startswith("aux_head.")]
+                if bad:
+                    raise RuntimeError(f"checkpoint {p} does not match the policy: {bad[:6]}")
+            else:
+                model.load_state_dict(state_dict, strict=strict)
             model.to(device)
             model.eval()
             # battle_a_bias stays 0 here: it is a training-time aid the trainer sets per update (see the sidecar)

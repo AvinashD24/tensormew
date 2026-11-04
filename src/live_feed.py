@@ -109,6 +109,7 @@ class LiveFeed:
         self._upd_comp = self._blank_comp()
         self._run_comp = self._blank_comp()
         self._last_comp = self._blank_comp()
+        self._milestones: dict[str, Any] | None = None   # latest milestone reach rates (src.milestone_stats), compact
         self._last_screens: np.ndarray | None = None
         self.num_envs = num_envs
         self.action_names = list(action_names)
@@ -398,6 +399,10 @@ class LiveFeed:
         self._ep_steps[i] = 0
         self._trails[i].clear()
 
+    def set_milestones(self, payload: dict[str, Any] | None) -> None:
+        """Latest milestone success-rate payload (``MilestoneStats.end_update``); shown live in state.json."""
+        self._milestones = dict(payload) if payload else None
+
     def on_update(self, update: int, samples: int, metrics: dict[str, Any] | None = None) -> None:
         """Called once per PPO update: persists the update's history and resets per-update windows."""
         self.update = update
@@ -511,6 +516,7 @@ class LiveFeed:
                 "run": self._comp_payload(self._run_comp),
             },
             "fun": self.fun_payload(),
+            "milestones": self._milestones,
             "species_names": self._species_names(),
             "envs": self._envs,
             "trails": trails,

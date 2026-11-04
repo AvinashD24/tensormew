@@ -115,9 +115,14 @@ def budget_pay(budget: dict | None, key: str, value: float) -> float:
     No budget (or a non-positive value, or an unknown key) returns ``value`` unchanged. Callers that add their
     own exploration terms (curiosity, momentum) should route them through ``budget_pay(budget, "explore", v)``.
     """
-    cap = BUDGET_CAPS.get(key)
-    if budget is None or cap is None or value <= 0:
+    if budget is None or value <= 0:
         return value
+    # Optional per-episode overrides (long_v4): "cap:<key>" replaces the cap, "scale:<key>" multiplies the payment
+    # before the cap is applied (a decaying intrinsic weight).  Absent keys leave the behaviour unchanged.
+    cap = budget.get("cap:" + key, BUDGET_CAPS.get(key))
+    if cap is None:
+        return value
+    value = value * budget.get("scale:" + key, 1.0)
     paid = budget.get(key, 0.0)
     pay = max(0.0, min(value, cap - paid))
     budget[key] = paid + pay
@@ -237,6 +242,7 @@ def progress_reward(
     components: dict[str, float] | None = None,
     budget: dict | None = None,
     goal_potential: bool = False,
+    pay_heal: bool = True,
 ) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map.
 
@@ -256,6 +262,7 @@ def progress_reward(
     ``other``. ``budget`` is a per-episode counter dict (fresh at every reset): with it, battle, level-up, catch,
     heal and exploration payments stop at the BUDGET_CAPS totals; without it behavior is uncapped. A non-moving
     step whose ``info.consecutive_bumps`` is 0 is not a bump (an A / B press), so it pays no bump cost.
+    ``pay_heal=False`` skips every ``heal`` payment here (the caller pays ``src.heal_reward`` instead, long_v4).
     """
     new_tile = False
     new_map = False
@@ -427,6 +434,8 @@ def progress_reward(
             leveled = level_gain > 0 or sum(p[1] for p in hp_a) != sum(p[1] for p in hp_b)
             if faint_ctx or cur_b == 0 or not same_map or leveled:
                 pass  # white-out recovery (the teleport to a Pokécenter) or a level-up is not a heal to pay for
+            elif not pay_heal:
+                pass  # long_v4: src.heal_reward pays for HP actually restored instead
             elif is_pc:
                 # Paid once per Pokémon Center per episode, so taking damage to heal again earns nothing.
                 # Proportional to the fraction healed: one missing HP pays almost nothing.
@@ -443,7 +452,7 @@ def progress_reward(
                     info.healed_party = True
         elif is_pc and cur_b < max_b and same_map and not faint_ctx:
             # Low HP in Pokémon Center: reward choosing to interact with Nurse Joy
-            if dialogue_open(after) and not dialogue_open(before):
+            if pay_heal and dialogue_open(after) and not dialogue_open(before):
                 add("heal", 2.0, "heal")
 
         # One of the player's Pokémon fainted (not the white-out, which has its own penalty)

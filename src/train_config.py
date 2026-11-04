@@ -1,6 +1,8 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v4`` (``long_v3`` plus the dense best-ever path-progress reward, ``src.path_progress``; recommended),
+Presets: ``long_v4`` (``long_v3`` plus the dense best-ever path-progress reward, ``src.path_progress``, a smaller and
+decaying exploration budget, a heal-for-HP-restored reward, low-HP battle practice, auxiliary prediction heads, gamma
+0.999 and a lower entropy start; recommended),
 ``long_v3`` (``long_v2`` plus staggered episodes, a self-generated battle archive with an early A-bias in
 battle menus, furthest-map weighted archive resets, and a dwell penalty for staying in one small area without progress
 that is exempt while the party is below the target level for the story stage), ``long_v2`` (fresh from-scratch run, no
@@ -113,6 +115,28 @@ class TrainConfig:
     dwell_grind_grace: int = _dwell.DWELL_GRIND_GRACE
     dwell_level_targets: list[int] = field(default_factory=lambda: list(_dwell.DWELL_LEVEL_TARGETS))
     dwell_exempt_loop: bool = True
+    # Exploration budget (long_v4). ``explore_budget`` is the per-episode cap on the summed novelty payments (curiosity,
+    # new tiles / neighbours / maps / warps / interactions, momentum); 30.0 = ``src.rl_env.EXPLORE_BUDGET`` (the
+    # unchanged default). The intrinsic weight multiplies those payments and decays linearly from 1.0 to
+    # ``intrinsic_weight_end`` over ``intrinsic_decay_updates`` updates (0 = no decay). Reward shaping only.
+    explore_budget: float = 30.0
+    intrinsic_weight_end: float = 1.0
+    intrinsic_decay_updates: int = 0
+    # Healing reward for HP actually restored, weighted toward low HP (OFF by default, see src.heal_reward). It replaces
+    # the flat ``heal`` terms; ``heal_budget`` caps the total paid per episode.
+    heal_reward: bool = False
+    heal_reward_scale: float = 4.0
+    heal_budget: float = 8.0
+    # Low-HP battle practice (0 = off): in the battle archive, states whose lead Pokemon is at <= battle_lowhp_threshold
+    # HP while the bag holds a heal item get sampling weight 1 + battle_lowhp_weight (others 1). Needs battle_archive.
+    battle_lowhp_weight: float = 0.0
+    battle_lowhp_threshold: float = 0.4
+    # Auxiliary prediction heads (OFF by default, see src.aux_tasks): predict, from the recurrent features, the map id,
+    # the lead-HP change and whether a battle starts within ``aux_horizon`` steps. Loss weight ``aux_coef``;
+    # the targets come from the stored RAM observations, so they cost no emulator time. Needs ``recurrent``.
+    aux_loss: bool = False
+    aux_coef: float = 0.05
+    aux_horizon: int = 8
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -175,6 +199,28 @@ class TrainConfig:
             errs.append(f"path_progress_scale must be >= 0 (got {self.path_progress_scale})")
         if self.path_progress and self.goal_potential:
             errs.append("path_progress and goal_potential both reward route progress; enable only one")
+        if self.explore_budget < 0:
+            errs.append(f"explore_budget must be >= 0 (got {self.explore_budget})")
+        if not 0 <= self.intrinsic_weight_end <= 1:
+            errs.append(f"intrinsic_weight_end must be in [0, 1] (got {self.intrinsic_weight_end})")
+        if self.intrinsic_decay_updates < 0:
+            errs.append(f"intrinsic_decay_updates must be >= 0 (got {self.intrinsic_decay_updates})")
+        if self.heal_reward_scale < 0 or self.heal_budget < 0:
+            errs.append("heal_reward_scale and heal_budget must be >= 0")
+        if self.battle_lowhp_weight < 0:
+            errs.append(f"battle_lowhp_weight must be >= 0 (got {self.battle_lowhp_weight})")
+        if not 0 < self.battle_lowhp_threshold <= 1:
+            errs.append(f"battle_lowhp_threshold must be in (0, 1] (got {self.battle_lowhp_threshold})")
+        if self.battle_lowhp_weight > 0 and not self.battle_archive:
+            errs.append("battle_lowhp_weight > 0 needs battle_archive")
+        if self.aux_coef < 0:
+            errs.append(f"aux_coef must be >= 0 (got {self.aux_coef})")
+        if self.aux_horizon < 1:
+            errs.append(f"aux_horizon must be >= 1 (got {self.aux_horizon})")
+        if self.aux_loss and not self.recurrent:
+            errs.append("aux_loss needs a recurrent policy (its targets are k steps ahead inside a rollout sequence)")
+        if self.aux_loss and self.aux_horizon >= self.rollout_steps:
+            errs.append(f"aux_horizon ({self.aux_horizon}) must be below rollout_steps ({self.rollout_steps})")
         errs.extend(_dwell.validate_params(
             self.dwell_window, self.dwell_max_tiles, self.dwell_min_penalty, self.dwell_max_penalty,
             self.dwell_ramp_steps, self.dwell_budget, self.dwell_grind_grace, self.dwell_level_targets))
@@ -197,6 +243,10 @@ class TrainConfig:
     def path_progress_scale_or_none(self) -> float | None:
         """Scale for ``src.path_progress.PathProgress``, or None when the reward is off."""
         return float(self.path_progress_scale) if self.path_progress else None
+
+    def explore_cap_override(self) -> float | None:
+        """The explore cap for the worker budget, or None when it is the unchanged default (30.0)."""
+        return None if abs(float(self.explore_budget) - 30.0) < 1e-9 else float(self.explore_budget)
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -307,17 +357,45 @@ def long_v3() -> TrainConfig:
 
 
 def long_v4() -> TrainConfig:
-    """``long_v3`` (unchanged) plus the dense best-ever path-progress reward.
+    """``long_v3`` plus the dense best-ever path-progress reward and the learning-speed changes below.
 
     ``path_progress`` pays ``path_progress_scale`` (0.08) per tile of NEW best progress along the 319-step minimal
     story path (``src.path_progress``): monotone per episode, nothing for stepping back, nothing for re-walking, the
     start state's own progress is free, a new best resets the dwell window. The whole path pays about 25.5 in total,
     next to ~140 of milestone bonuses. Reward-only: the observation is exactly ``long_v3``'s.
+
+    Added on top (each behind its own flag/field; literature in ``research/analysis/design_hardcoded_vs_learned.md``):
+
+    * horizon: ``gamma`` 0.997 -> 0.999 (horizon 1000 steps instead of 333: the story path is 319 steps but an episode
+      is up to 2048 steps with battles; 0.997**1000 = 0.05 hides the last milestones from the start, 0.999**1000 =
+      0.37). RND (Burda et al. 2018) used gamma_E = 0.999 and found it clearly better than 0.99. ``gae_lambda`` stays 0.95
+      (OpenAI Five, Pleines et al. 2025). The recurrent state is carried across rollouts and the whole 256-step rollout
+      is one BPTT sequence (unchanged);
+    * exploration budget: ``explore_budget`` 30 -> 12 per episode and the intrinsic weight decays 1.0 -> 0.4 over 800
+      updates (the live v3-1 run paid ~30 of exploration per episode vs 1.8 of milestones, 71 % of the positive reward);
+    * ``heal_reward``: pays for HP actually restored, concave in the HP fraction (low-HP heals pay most), budget 8;
+    * ``battle_lowhp_weight`` 3: the battle archive favours states with a low-HP lead and a heal item in the bag;
+    * ``aux_loss``: auxiliary map / lead-HP-change / battle-start prediction heads, weight 0.05, horizon 8 steps;
+    * entropy 0.01 -> 0.001 (was 0.04 -> 0.01; the live run sat at entropy 1.70 of 1.79).
     """
     cfg = long_v3()
     cfg.name = "long_v4"
     cfg.path_progress = True
     cfg.path_progress_scale = 0.08
+    cfg.ppo.gamma = 0.999
+    cfg.entropy_start = 0.01
+    cfg.entropy_end = 0.001
+    cfg.explore_budget = 12.0
+    cfg.intrinsic_weight_end = 0.4
+    cfg.intrinsic_decay_updates = 800
+    cfg.heal_reward = True
+    cfg.heal_reward_scale = 4.0
+    cfg.heal_budget = 8.0
+    cfg.battle_lowhp_weight = 3.0
+    cfg.battle_lowhp_threshold = 0.4
+    cfg.aux_loss = True
+    cfg.aux_coef = 0.05
+    cfg.aux_horizon = 8
     return cfg
 
 

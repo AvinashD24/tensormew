@@ -180,13 +180,18 @@ class ConfigTests(unittest.TestCase):
                 self.assertFalse(load_config(name).path_progress, name)
         self.assertIsNone(t.worker_env_cfg(load_config("long_v3"), None)["path_progress"])
 
-    def test_long_v4_is_long_v3_plus_path_progress_only(self):
+    def test_long_v4_is_long_v3_plus_path_progress_and_the_documented_learning_changes(self):
         v3, v4 = load_config("long_v3").to_dict(), load_config("long_v4").to_dict()
         self.assertEqual(v4["name"], "long_v4")
         self.assertTrue(v4["path_progress"])
         self.assertAlmostEqual(v4["path_progress_scale"], 0.08)
+        # the learning-speed changes (tests/test_long_v4_learning.py) are the only other differences
+        changed = {"name", "path_progress", "entropy_start", "entropy_end", "explore_budget", "intrinsic_weight_end",
+                   "intrinsic_decay_updates", "heal_reward", "battle_lowhp_weight", "aux_loss"}
+        v3p, v4p = dict(v3.pop("ppo")), dict(v4.pop("ppo"))
+        self.assertEqual({k for k in v3p if v3p[k] != v4p[k]}, {"gamma"})
         for k in v3:
-            if k not in ("name", "path_progress"):
+            if k not in changed:
                 self.assertEqual(v3[k], v4[k], k)
         self.assertFalse(v4["goal_potential"])
         self.assertTrue(v4["dwell_penalty"])
