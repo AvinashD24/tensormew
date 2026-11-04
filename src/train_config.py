@@ -1,8 +1,9 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v3`` (``long_v2`` plus staggered episodes, a self-generated battle archive with an early A-bias in
+Presets: ``long_v4`` (``long_v3`` plus the dense best-ever path-progress reward, ``src.path_progress``; recommended),
+``long_v3`` (``long_v2`` plus staggered episodes, a self-generated battle archive with an early A-bias in
 battle menus, furthest-map weighted archive resets, and a dwell penalty for staying in one small area without progress
-that is exempt while the party is below the target level for the story stage; the recommended one), ``long_v2`` (fresh from-scratch run, no
+that is exempt while the party is below the target level for the story stage), ``long_v2`` (fresh from-scratch run, no
 oracle, learned battles), and the older
 ``blueprint_v1`` / ``long_v1`` / ``legacy`` (same environment and observation now, only the hyperparameters and start
 states differ; their old curriculum start states carry egg / rival flags from the removed errand and are LEGACY).
@@ -18,7 +19,7 @@ from pathlib import Path
 
 from src import dwell as _dwell
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4")
 
 
 class ConfigError(ValueError):
@@ -92,6 +93,11 @@ class TrainConfig:
     # OPTIONAL tile-level potential toward Falkner (BFS steps, src.route_graph). OFF by default and in every preset:
     # it is an oracle (a hand-computed gradient toward the goal) kept only for ablations / debugging.
     goal_potential: bool = False
+    # Dense path-progress reward (OFF by default, ON in long_v4; see src.path_progress): path_progress_scale per tile of
+    # NEW best progress along the 319-step story path (BFS over the ROM graph), once per tile, never negative. Reward
+    # shaping only: nothing is added to the observation. Not combinable with the older goal_potential.
+    path_progress: bool = False
+    path_progress_scale: float = 0.08
     # Dwell penalty (OFF by default, see src.dwell): a cost for staying in <= dwell_max_tiles tiles for dwell_window
     # overworld steps with nothing new happening; ramps dwell_min_penalty -> dwell_max_penalty over dwell_ramp_steps,
     # at most dwell_budget per episode. Zero while the party's highest level is below dwell_level_targets[furthest story
@@ -165,6 +171,10 @@ class TrainConfig:
             errs.append(f"battle_a_bias must be >= 0 (got {self.battle_a_bias})")
         if self.battle_a_bias_updates < 0:
             errs.append(f"battle_a_bias_updates must be >= 0 (got {self.battle_a_bias_updates})")
+        if self.path_progress_scale < 0:
+            errs.append(f"path_progress_scale must be >= 0 (got {self.path_progress_scale})")
+        if self.path_progress and self.goal_potential:
+            errs.append("path_progress and goal_potential both reward route progress; enable only one")
         errs.extend(_dwell.validate_params(
             self.dwell_window, self.dwell_max_tiles, self.dwell_min_penalty, self.dwell_max_penalty,
             self.dwell_ramp_steps, self.dwell_budget, self.dwell_grind_grace, self.dwell_level_targets))
@@ -183,6 +193,10 @@ class TrainConfig:
             "max_penalty": self.dwell_max_penalty, "ramp_steps": self.dwell_ramp_steps, "budget": self.dwell_budget,
             "grind_grace": self.dwell_grind_grace, "level_targets": list(self.dwell_level_targets),
         }
+
+    def path_progress_scale_or_none(self) -> float | None:
+        """Scale for ``src.path_progress.PathProgress``, or None when the reward is off."""
+        return float(self.path_progress_scale) if self.path_progress else None
 
     def to_dict(self) -> dict:
         return dataclasses.asdict(self)
@@ -292,6 +306,21 @@ def long_v3() -> TrainConfig:
     return cfg
 
 
+def long_v4() -> TrainConfig:
+    """``long_v3`` (unchanged) plus the dense best-ever path-progress reward.
+
+    ``path_progress`` pays ``path_progress_scale`` (0.08) per tile of NEW best progress along the 319-step minimal
+    story path (``src.path_progress``): monotone per episode, nothing for stepping back, nothing for re-walking, the
+    start state's own progress is free, a new best resets the dwell window. The whole path pays about 25.5 in total,
+    next to ~140 of milestone bonuses. Reward-only: the observation is exactly ``long_v3``'s.
+    """
+    cfg = long_v3()
+    cfg.name = "long_v4"
+    cfg.path_progress = True
+    cfg.path_progress_scale = 0.08
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
@@ -303,6 +332,8 @@ def preset(name: str) -> TrainConfig:
         return long_v2()
     if name == "long_v3":
         return long_v3()
+    if name == "long_v4":
+        return long_v4()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

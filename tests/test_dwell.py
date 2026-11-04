@@ -169,7 +169,6 @@ class DwellTrackerTests(unittest.TestCase):
 
 class ConfigTests(unittest.TestCase):
     def test_dwell_is_on_in_long_v3_only(self):
-        self.assertNotIn("long_v4", PRESETS)
         v2, v3 = load_config("long_v2"), load_config("long_v3")
         self.assertTrue(v3.dwell_penalty)
         self.assertFalse(v2.dwell_penalty)

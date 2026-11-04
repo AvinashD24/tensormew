@@ -49,6 +49,7 @@ import torch.optim as optim
 from src.battle_obs import equip_supplies
 from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
 from src.dwell import DwellTracker
+from src.path_progress import PathProgress
 from src.emulator import Emulator
 from src.live_feed import LiveFeed
 from src.macros import Macros
@@ -497,6 +498,8 @@ class EnvWorker:
         # Dwell penalty (long_v4, OFF when cfg has no "dwell" params): see src.dwell.
         self.dwell = DwellTracker.from_params(cfg.get("dwell"))
         self.dwell_exempt_loop = bool(cfg.get("dwell_exempt_loop", True))
+        # Dense best-ever path-progress reward (long_v4, OFF when cfg has no "path_progress" scale): src.path_progress.
+        self.path_progress = PathProgress.from_scale(cfg.get("path_progress"))
         self._last_stage = 0  # stage already archived / seen at the start of the episode
         self._pending_stage: int | None = None  # stage entered while mid-cutscene: snapshot once the screen is calm
         self._pending_events: set = set()
@@ -616,6 +619,8 @@ class EnvWorker:
         self._last_stage = int(current_stage(st))
         if self.dwell is not None:
             self.dwell.reset(st)
+        if self.path_progress is not None:
+            self.path_progress.reset(st)   # the start state's own progress (archive / jitter) is never paid
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
@@ -743,10 +748,13 @@ class EnvWorker:
         curiosity = budget_pay(self.budget, "explore", curiosity) if self._budget_ok else curiosity
         in_play = not busy and after.battle_mode == 0 and not dialogue_open(after)  # no loop penalty in fights/text
         loop = -0.02 * min(4.0, (v_count - 10) / 5.0) if (v_count > 12 and in_play) else 0.0  # anti-looping pacing
+        path_rew = 0.0
+        if self.path_progress is not None:
+            path_rew = self.path_progress.update(before, after)   # >= 0: only a new best progress tile pays
         dwell_pen = 0.0
         if self.dwell is not None:
-            # progress = story milestone / event, or a species caught for the first time this episode
-            progress = bool(pr_info.story_progress or len(self.caught_counts) > species_before)
+            # progress = story milestone / event, a species caught for the first time this episode, or a new best path tile
+            progress = bool(pr_info.story_progress or len(self.caught_counts) > species_before or path_rew > 0.0)
             dwell_pen, level_exempt = self.dwell.update(before, after, new_tile=new_tile, new_map=new_map, progress=progress)
             if level_exempt and self.dwell_exempt_loop:
                 loop = 0.0  # needed leveling is not "looping": the per-tile revisit cost is off while grinding below target
@@ -757,7 +765,9 @@ class EnvWorker:
         comps["curiosity"], comps["loop"], comps["momentum"] = curiosity, loop, momentum
         if self.dwell is not None:
             comps["dwell"] = dwell_pen
-        step_rew += curiosity + loop + momentum + dwell_pen
+        if self.path_progress is not None:
+            comps["path"] = path_rew
+        step_rew += curiosity + loop + momentum + dwell_pen + path_rew
 
         # No termination on milestones or on the badge; the episode ends only on the step limit (a time limit, not a goal).
         self.steps += 1
@@ -1197,6 +1207,7 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "seed": cfg.seed,
         "goal_potential": cfg.goal_potential,
         "dwell": cfg.dwell_params(),
+        "path_progress": cfg.path_progress_scale_or_none(),
         "dwell_exempt_loop": cfg.dwell_exempt_loop,
     }
 
@@ -1310,6 +1321,10 @@ def train(
             f"grind grace {cfg.dwell_grind_grace}, exempt loop={cfg.dwell_exempt_loop}",
             flush=True,
         )
+    if cfg.path_progress:
+        print(f"[path progress] +{cfg.path_progress_scale} per tile of new best progress along the story path "
+              f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * 319:.1f} for the whole path)",
+              flush=True)
     vec_env = VectorEnv(num_envs=num_envs, start_states=states, max_steps=cfg.max_steps,
                         env_cfg=worker_env_cfg(cfg, swarm_dir, battle_dir))
     screens_cur, rams_cur = vec_env.reset()
@@ -1592,7 +1607,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v4 = long_v3 + dense best-ever path-progress reward; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)

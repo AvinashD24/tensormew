@@ -9,6 +9,9 @@ as a reward ``ROUTE_PROGRESS_WEIGHT * (Phi' - Phi)`` for ablations ("is the orac
 runs do not use it, and the policy is never told the direction or distance (the old ``route_features`` and
 ``next_direction`` observation was removed: it was an oracle, not reinforcement learning).
 
+``path_progress`` / ``path_total`` expose the same distance field as "tiles of the 319-step path already covered" for the
+``long_v4`` best-ever reward (``src.path_progress``); that reward is also reward shaping only, never an observation.
+
 Buildings next to the route (houses, marts, Pokecenters) are included as dead-end spurs so entering one lowers Phi
 by the walk back out. The graph is built lazily, once per process.
 """
@@ -39,7 +42,10 @@ GOALS = (
     ((10, 7), 5, 2),
 )
 
-DIR_NAMES = tuple(_DIRS)            # ("up", "down", "left", "right"), the feature order
+# Where the path starts as (map, x, y): states/new_bark_outside.state (outside New Bark Town).
+PATH_START = ((24, 4), 3, 9)
+
+DIR_NAMES = tuple(_DIRS)           # ("up", "down", "left", "right"), the feature order
 _CARPET_DIR = {
     COLL_WARP_CARPET_DOWN: "down",
     COLL_WARP_CARPET_LEFT: "left",
@@ -281,6 +287,30 @@ def route_potential(state) -> float:
     if node[0] not in g.maps:
         return 0.0
     return float(g.potential(0, node))
+
+
+def path_total() -> float | None:
+    """Length of the minimal story path (BFS steps from the New Bark start tile to the tile in front of Falkner)."""
+    g = _graph()
+    return None if g is None else g.goal_distance(0, PATH_START)
+
+
+def path_progress(state) -> float | None:
+    """How far along the minimal story path the position is: ``path_total - steps_to_Falkner``, clamped to >= 0.
+
+    Uses the EXACT BFS distance over the ROM graph (warps included), so every tile that is not on the shortest path
+    counts as the progress of the path tile it branches from, minus the walk back: a dead-end corridor or a building
+    spur never scores above its junction. None when the tile is off the graph or has no path to the goal. Used only
+    by the ``path_progress`` reward (``src.path_progress``); never an observation.
+    """
+    g = _graph()
+    if g is None:
+        return None
+    total = g.goal_distance(0, PATH_START)
+    d = g.goal_distance(0, _node(state))
+    if total is None or d is None:
+        return None
+    return float(max(0, total - d))
 
 
 def goal_remaining(state) -> float | None:

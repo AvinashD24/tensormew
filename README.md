@@ -57,7 +57,8 @@ python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config lon
 This uploads the code, installs `pyboy` on the pod, trains there, and copies telemetry into `logs/` every 5 seconds so the
 dashboard from step 1 shows it live. The checkpoint comes back as `logs/my-run.pt` when the run ends.
 Use `--envs` up to the pod's core count (a 32 vCPU pod: 32). Each update takes roughly 25 s at 32 envs.
-`--config long_v3` is the recommended fresh from-scratch preset: `long_v2` (32 envs x 256 steps, 800 updates, New Bark
+`--config long_v4` = `long_v3` plus a **dense path-progress reward** (`path_progress`, `path_progress_scale`, `src/path_progress.py`): +0.08 per tile of NEW best progress along the 319-step story path (progress = 319 - BFS steps to Falkner over the ROM map graph, warps included), best-ever per episode, never negative, nothing for stepping back or re-walking, free for the start state's own progress (archive starts), a new best resets the dwell window; reported as the `path` reward component (about 25.5 for the whole path). Reward only: the observation is unchanged. Ablate with `{"preset": "long_v4", "path_progress": false}`.
+`--config long_v3` is the earlier fresh from-scratch preset: `long_v2` (32 envs x 256 steps, 800 updates, New Bark
 start, no route oracle, the agent plays its own battles) plus staggered episodes (resets no longer happen in lockstep;
 `phase_spread` and `reward_8` are logged), a self-generated battle archive with an early A-bias inside battle menus, and
 furthest-map weighted archive resets. Each is a config flag (`stagger_episodes`, `battle_archive`, `battle_a_bias`,
@@ -159,7 +160,7 @@ free disk and python deps. The stock PyTorch image lacks `pyboy` and Ubuntu 24.0
 `pip install --break-system-packages pyboy==2.8.1` automatically (`tools/pod_bootstrap.sh` does the same by hand).
 `--envs` above the core count is capped with a warning. Skip with `--skip-preflight`.
 
-**Config.** `--config long_v3|long_v2|blueprint_v1|long_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
+**Config.** `--config long_v4|long_v3|long_v2|blueprint_v1|long_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
 uploads a JSON file to the pod, and passes `--config` to the remote trainer.
 
 **Detached runs.** For multi-hour runs use `--detach`: the job runs under tmux (or `setsid nohup`) on the pod, logging
