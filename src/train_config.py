@@ -1,6 +1,8 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v5`` (``long_v4`` plus anti-collapse changes after the v4-1 run collapsed to pressing A: wall-bump and
+Presets: ``long_v6`` (``long_v5`` plus a route-checkpoint archive that restarts episodes along the agents' own best
+route progress, a dialogue-loop penalty and a reward-scaler warm-up rollout, after v5-1 got stuck at the end of Route 29),
+``long_v5`` (``long_v4`` plus anti-collapse changes after the v4-1 run collapsed to pressing A: wall-bump and
 tile-revisit penalties off while the path reward is on, a small penalty for A / B presses that change nothing, a 0.3
 path reward per tile, a higher and slower-annealed entropy coefficient and an entropy-boost safety net),
 ``long_v4`` (``long_v3`` plus the dense best-ever path-progress reward, ``src.path_progress``, a smaller and
@@ -22,11 +24,15 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src import dialogue_loop as _dialogue_loop
 from src import dwell as _dwell
 from src import entropy_guard as _entropy_guard
 from src import idle_press as _idle_press
+from src import path_progress as _path_progress
+from src import route_ckpt as _route_ckpt
+from src import stagnation as _stagnation
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6")
 
 
 class ConfigError(ValueError):
@@ -164,6 +170,46 @@ class TrainConfig:
     entropy_boost_until: int = 300
     entropy_boost_coef: float = 0.05
     entropy_boost_margin: float = 0.2
+    # --- long_v6 fields (all OFF / unchanged by default and in every older preset) ---
+    # Route-checkpoint archive (src.route_ckpt; Go-Explore / reverse curriculum): workers save an emulator state whenever
+    # the path progress reaches a new multiple of route_ckpt_every tiles (up to route_ckpt_per_bucket states per
+    # bucket, route_ckpt_max files in all); route_ckpt_prob of the resets load one, buckets weighted
+    # floor + (1 - floor) * bucket / max_bucket. Reset order: battle archive, swarm archive, route checkpoints, start
+    # state; the three shares must sum to <= 1. Needs path_progress.
+    route_ckpt: bool = False
+    route_ckpt_every: int = _route_ckpt.ROUTE_CKPT_EVERY
+    route_ckpt_prob: float = 0.0
+    route_ckpt_per_bucket: int = _route_ckpt.ROUTE_PER_BUCKET
+    route_ckpt_max: int = _route_ckpt.ROUTE_MAX_FILES
+    route_ckpt_weight_floor: float = _route_ckpt.ROUTE_WEIGHT_FLOOR
+    # Dialogue-loop penalty (src.dialogue_loop): small cost per step of repeated, effect-less A-driven dialogue.
+    dialogue_loop_penalty: bool = False
+    dialogue_loop_window: int = _dialogue_loop.DIALOGUE_LOOP_WINDOW
+    dialogue_loop_max_steps: int = _dialogue_loop.DIALOGUE_LOOP_MAX_STEPS
+    dialogue_loop_max_talks: int = _dialogue_loop.DIALOGUE_LOOP_MAX_TALKS
+    dialogue_loop_cost: float = _dialogue_loop.DIALOGUE_LOOP_COST
+    dialogue_loop_budget: float = _dialogue_loop.DIALOGUE_LOOP_BUDGET
+    # Warm-up rollouts before update 0 (0 = none): their rewards only initialise the running reward scaler (RND,
+    # Burda et al. 2018, does the same for its normalisation statistics). No gradient step, not logged as an update.
+    warmup_rollout: int = 0
+    # Retreat cost (src.path_progress, reward only): charge retreat_cost_frac * path_progress_scale per tile of path
+    # progress lost on every walked step that moves further from the goal, at most retreat_budget per episode; re-approach
+    # is free. A soft asymmetric potential (NOT policy-invariant, unlike Ng et al. 1999). Needs path_progress.
+    retreat_penalty: bool = False
+    retreat_cost_frac: float = _path_progress.RETREAT_FRAC
+    retreat_budget: float = _path_progress.RETREAT_BUDGET
+    # Stagnation penalty (src.stagnation): no new best path progress for stagnation_after counted steps costs
+    # stagnation_min -> stagnation_max per step over stagnation_ramp steps (at most stagnation_budget per episode);
+    # composed with the dwell penalty as max(), not a sum. Needs path_progress and dwell_penalty (level exemption).
+    stagnation_penalty: bool = False
+    stagnation_after: int = _stagnation.STAGNATION_AFTER
+    stagnation_min: float = _stagnation.STAGNATION_MIN
+    stagnation_max: float = _stagnation.STAGNATION_MAX
+    stagnation_ramp: int = _stagnation.STAGNATION_RAMP
+    stagnation_budget: float = _stagnation.STAGNATION_BUDGET
+    # A white-out (the whole party fainted) ENDS the episode as a true termination (done, not a time-limit truncation:
+    # no value bootstrap) instead of teleporting the agent and continuing. The -15 white-out penalty is the terminal reward.
+    terminate_on_whiteout: bool = False
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -252,6 +298,28 @@ class TrainConfig:
             errs.append(f"entropy_anneal_updates must be >= 0 (got {self.entropy_anneal_updates})")
         if (self.disable_bump_penalty or self.disable_loop_penalty) and not self.path_progress:
             errs.append("disable_bump_penalty / disable_loop_penalty need path_progress (nothing else would reward moving)")
+        errs.extend(_route_ckpt.validate_params(
+            self.route_ckpt_every, self.route_ckpt_prob, self.route_ckpt_per_bucket, self.route_ckpt_max,
+            self.route_ckpt_weight_floor))
+        if self.route_ckpt:
+            if not self.path_progress:
+                errs.append("route_ckpt needs path_progress (buckets are path-progress tiles)")
+            share = ((self.swarm_prob if self.swarm else 0.0) + (self.battle_archive_prob if self.battle_archive else 0.0)
+                     + self.route_ckpt_prob)
+            if share > 1.0 + 1e-9:
+                errs.append(f"swarm_prob + battle_archive_prob + route_ckpt_prob must not exceed 1 (got {share:.3f})")
+        errs.extend(_dialogue_loop.validate_params(
+            self.dialogue_loop_window, self.dialogue_loop_max_steps, self.dialogue_loop_max_talks,
+            self.dialogue_loop_cost, self.dialogue_loop_budget))
+        errs.extend(_path_progress.validate_retreat(self.retreat_cost_frac, self.retreat_budget))
+        if self.retreat_penalty and not self.path_progress:
+            errs.append("retreat_penalty needs path_progress (it is measured in path-progress tiles)")
+        errs.extend(_stagnation.validate_params(
+            self.stagnation_after, self.stagnation_min, self.stagnation_max, self.stagnation_ramp, self.stagnation_budget))
+        if self.stagnation_penalty and not (self.path_progress and self.dwell_penalty):
+            errs.append("stagnation_penalty needs path_progress (new-best signal) and dwell_penalty (level exemption, no double count)")
+        if self.warmup_rollout < 0:
+            errs.append(f"warmup_rollout must be >= 0 (got {self.warmup_rollout})")
         errs.extend(_idle_press.validate_params(self.idle_press_cost, self.idle_press_budget))
         errs.extend(_entropy_guard.validate_params(
             self.entropy_boost_threshold, self.entropy_boost_until, self.entropy_boost_coef, self.entropy_boost_margin))
@@ -279,6 +347,28 @@ class TrainConfig:
         if not self.idle_press_penalty:
             return None
         return {"cost": self.idle_press_cost, "budget": self.idle_press_budget}
+
+    def retreat_params(self) -> dict | None:
+        """``retreat`` argument of ``PathProgress.from_scale``, or None when the retreat cost is off."""
+        if not self.retreat_penalty:
+            return None
+        return {"frac": self.retreat_cost_frac, "budget": self.retreat_budget}
+
+    def stagnation_params(self) -> dict | None:
+        """Keyword arguments for ``src.stagnation.StagnationTracker``, or None when the penalty is off."""
+        if not self.stagnation_penalty:
+            return None
+        return {"after": self.stagnation_after, "min_penalty": self.stagnation_min,
+                "max_penalty": self.stagnation_max, "ramp_steps": self.stagnation_ramp,
+                "budget": self.stagnation_budget}
+
+    def dialogue_loop_params(self) -> dict | None:
+        """Keyword arguments for ``src.dialogue_loop.DialogueLoopTracker``, or None when the penalty is off."""
+        if not self.dialogue_loop_penalty:
+            return None
+        return {"window": self.dialogue_loop_window, "max_steps": self.dialogue_loop_max_steps,
+                "max_talks": self.dialogue_loop_max_talks, "cost": self.dialogue_loop_cost,
+                "budget": self.dialogue_loop_budget}
 
     def entropy_guard_params(self) -> dict | None:
         """Keyword arguments for ``src.entropy_guard.EntropyGuard``, or None when the safety net is off."""
@@ -484,6 +574,59 @@ def long_v5() -> TrainConfig:
     return cfg
 
 
+def long_v6() -> TrainConfig:
+    """``long_v5`` plus three changes (each behind its own flag, so they can be ablated), after run v5-1 (``long_v5``,
+    update 317, 24 envs) got one agent 97 of 99 steps of Route 29 but typically only ~30, never reached Cherrygrove, spent
+    19 % of its visits on one tile of the Route 29 gate building (a dialogue loop) and had a net reward of ~0:
+
+    1. ``route_ckpt`` (``src.route_ckpt``): self-generated reverse curriculum / Go-Explore archive. A state is saved at
+       every new multiple of 12 tiles of path progress (4 per bucket, 60 files); 40 % of the resets load one,
+       weighted toward the furthest bucket (0.2 + 0.8 * bucket / max_bucket). Reset shares: battle 0.15, swarm 0.25
+       (was 0.5; the swarm archive only holds map-entry states), route checkpoints 0.40, start state 0.20.
+    2. ``dialogue_loop_penalty`` (``src.dialogue_loop``): 0.02 per step of repeated effect-less dialogue (more than 60 such
+       steps in 200, or one tile talked to more than 6 times without effect), at most 10 per episode.
+    3. ``warmup_rollout`` 1: one rollout before update 0 that only initialises the reward scaler. Every tile is novel at
+       the start of a run, so update 0 pays curiosity + tile novelty (mean reward 12.4 vs ~0 later); without the warm-up
+       the first update is scaled by a std that does not describe the steady state.
+
+    4. ``retreat_penalty`` (``src.path_progress``): 0.35 x the path reward per tile of progress lost on each step further
+       from the goal (re-approach free, at most 15 per episode); reward only, not policy-invariant.
+    5. ``stagnation_penalty`` (``src.stagnation``): 0.004 -> 0.02 per step after 250 steps without a new best path
+       progress (ramp 300, at most 10 per episode), max() with the dwell penalty, off while leveling is needed.
+    6. ``terminate_on_whiteout``: a white-out ends the episode (true termination, no bootstrap; the -15 stays).
+
+    Everything else (no bump / loop penalty, idle_press, path scale 0.3, entropy 0.02 -> 0.005 with the boost guard) is
+    ``long_v5``.
+    """
+    cfg = long_v5()
+    cfg.name = "long_v6"
+    cfg.swarm_prob = 0.25
+    cfg.route_ckpt = True
+    cfg.route_ckpt_every = 12
+    cfg.route_ckpt_prob = 0.4
+    cfg.route_ckpt_per_bucket = 4
+    cfg.route_ckpt_max = 60
+    cfg.route_ckpt_weight_floor = 0.2
+    cfg.dialogue_loop_penalty = True
+    cfg.dialogue_loop_window = 200
+    cfg.dialogue_loop_max_steps = 60
+    cfg.dialogue_loop_max_talks = 6
+    cfg.dialogue_loop_cost = 0.02
+    cfg.dialogue_loop_budget = 10.0
+    cfg.warmup_rollout = 1
+    cfg.retreat_penalty = True
+    cfg.retreat_cost_frac = 0.35
+    cfg.retreat_budget = 15.0
+    cfg.stagnation_penalty = True
+    cfg.stagnation_after = 250
+    cfg.stagnation_min = 0.004
+    cfg.stagnation_max = 0.02
+    cfg.stagnation_ramp = 300
+    cfg.stagnation_budget = 10.0
+    cfg.terminate_on_whiteout = True
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
@@ -499,6 +642,8 @@ def preset(name: str) -> TrainConfig:
         return long_v4()
     if name == "long_v5":
         return long_v5()
+    if name == "long_v6":
+        return long_v6()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

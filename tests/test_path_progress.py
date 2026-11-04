@@ -176,7 +176,7 @@ class ConfigTests(unittest.TestCase):
     def test_long_v3_keeps_path_progress_off(self):
         self.assertIn("long_v3", PRESETS)
         for name in PRESETS:
-            if name not in ("long_v4", "long_v5"):
+            if name not in ("long_v4", "long_v5", "long_v6"):
                 self.assertFalse(load_config(name).path_progress, name)
         self.assertIsNone(t.worker_env_cfg(load_config("long_v3"), None)["path_progress"])
 

@@ -30,7 +30,12 @@ Training-only environment features (all off in ``--config legacy``):
   and auxiliary prediction heads trained from the same rollouts (``src.aux_tasks``);
 - ``long_v5`` additions (anti-collapse after v4-1 degenerated to pressing A): wall-bump / tile-revisit penalties off, a
   cost for A / B presses that change nothing (``src.idle_press``), path reward 0.3 per tile, a higher entropy floor with
-  a slower anneal and an entropy-boost safety net (``src.entropy_guard``, loss coefficient only).
+  a slower anneal and an entropy-boost safety net (``src.entropy_guard``, loss coefficient only);
+- ``long_v6`` additions (after v5-1 stalled near the end of Route 29): a route-checkpoint archive (``src.route_ckpt``, a
+  self-generated reverse curriculum: states saved every 12 tiles of path progress, ``route_ckpt_prob`` of the resets load
+  one), a dialogue-loop penalty (``src.dialogue_loop``) and a warm-up rollout before update 0 that only initialises the
+  running reward scaler.  Reset order: battle archive, swarm archive, route checkpoints, start state.  Also long_v6: a retreat cost
+  and a stagnation penalty (reward only, ``src.path_progress`` / ``src.stagnation``) and white-out as a true episode end.
 """
 
 from __future__ import annotations
@@ -54,7 +59,12 @@ import torch.optim as optim
 
 from src.battle_obs import equip_supplies, heal_item_count
 from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
+from src.dialogue_loop import DialogueLoopTracker
+from src.stagnation import StagnationTracker
 from src.dwell import DwellTracker
+from src.route_ckpt import (
+    ROUTE_PREFIX, ROUTE_SAVE_GAP, RouteCheckpointArchive, bucket_of, milestone_stage, stage_maps,
+)
 from src.entropy_guard import EntropyGuard, anneal_fraction
 from src.idle_press import IdlePressTracker
 from src.path_progress import PathProgress
@@ -364,8 +374,11 @@ class StartStateSelector:
     def __init__(self, start_states, env_index: int = 0, stages: dict[str, int] | None = None,
                  archive: SwarmArchive | None = None, swarm_prob: float = SWARM_SAMPLE_PROB, rng=None,
                  battle_archive: SwarmArchive | None = None, battle_prob: float = 0.0,
-                 furthest_floor: float | None = None, battle_lowhp_weight: float = 0.0):
+                 furthest_floor: float | None = None, battle_lowhp_weight: float = 0.0,
+                 route_archive: RouteCheckpointArchive | None = None, route_prob: float = 0.0):
         self.states = list(start_states)
+        self.route_archive = route_archive   # long_v6 route checkpoints (src.route_ckpt)
+        self.route_prob = float(route_prob) if route_archive is not None else 0.0
         self.battle_lowhp_weight = float(battle_lowhp_weight)   # > 0: favour low-HP battle states (long_v4)
         self.battle_archive = battle_archive
         self.battle_prob = float(battle_prob) if battle_archive is not None else 0.0
@@ -387,9 +400,12 @@ class StartStateSelector:
         k = self.count
         self.count += 1
         swarm_on = self.archive is not None and self.swarm_prob > 0
-        if k > 0 and (swarm_on or self.battle_prob > 0):
-            # One draw: [0, battle_prob) = battle archive, next swarm_prob = swarm archive, the rest = start states.
+        route_on = self.route_prob > 0
+        if k > 0 and (swarm_on or self.battle_prob > 0 or route_on):
+            # One draw: [0, battle_prob) = battle archive, next swarm_prob = swarm archive, next route_prob = route
+            # checkpoint (long_v6), the rest = start states. An empty archive falls through to a start state.
             u = float(self.rng.random())
+            route_lo = self.battle_prob + (self.swarm_prob if swarm_on else 0.0)
             if u < self.battle_prob:
                 if self.battle_lowhp_weight > 0:
                     key = self.battle_archive.sample_weighted(
@@ -402,6 +418,10 @@ class StartStateSelector:
                 key = self.archive.sample(self.rng, self.furthest_floor)
                 if key is not None:
                     return SWARM_PREFIX + key
+            elif route_on and route_lo <= u < route_lo + self.route_prob:
+                key = self.route_archive.sample(self.rng)
+                if key is not None:
+                    return ROUTE_PREFIX + key
         n = self.env_index + k
         if self.by_stage:
             group = self.by_stage[self.stage_order[n % len(self.stage_order)]]
@@ -513,11 +533,21 @@ class EnvWorker:
         self.battle_archive = (SwarmArchive(battle_dir, int(cfg.get("battle_max", 32)),
                                             protect_suffix=LOWHP_TAG if self.battle_lowhp_weight > 0 else None)
                                if battle_dir else None)
+        # long_v6 route checkpoints (OFF when cfg has no "route_dir"): src.route_ckpt.
+        route_dir = cfg.get("route_dir")
+        self.route_every = int(cfg.get("route_every", 12))
+        self.route_archive = (RouteCheckpointArchive(
+            route_dir, self.route_every, int(cfg.get("route_per_bucket", 4)), int(cfg.get("route_max", 60)),
+            float(cfg.get("route_floor", 0.2))) if route_dir else None)
         self.selector = StartStateSelector(
             names, self.index, stages, self.archive, float(cfg.get("swarm_prob", SWARM_SAMPLE_PROB)), self.rng,
             battle_archive=self.battle_archive, battle_prob=float(cfg.get("battle_prob", 0.0)),
             furthest_floor=cfg.get("swarm_furthest_floor"), battle_lowhp_weight=self.battle_lowhp_weight,
+            route_archive=self.route_archive, route_prob=float(cfg.get("route_prob", 0.0)),
         )
+        self._route_seed_stage = 0        # milestones already passed by the loaded route checkpoint's saver
+        self._route_saved_bucket = 0      # highest bucket saved (or started in) during this episode
+        self._last_route_save = -ROUTE_SAVE_GAP
         # Staggered episodes: the first episode starts at a random step offset, every episode length is jittered.
         self.stagger = bool(cfg.get("stagger_episodes", False))
         self.len_jitter = float(cfg.get("episode_len_jitter", 0.0))
@@ -564,12 +594,17 @@ class EnvWorker:
         self.dwell = DwellTracker.from_params(cfg.get("dwell"))
         self.dwell_exempt_loop = bool(cfg.get("dwell_exempt_loop", True))
         # Dense best-ever path-progress reward (long_v4, OFF when cfg has no "path_progress" scale): src.path_progress.
-        self.path_progress = PathProgress.from_scale(cfg.get("path_progress"))
+        self.path_progress = PathProgress.from_scale(cfg.get("path_progress"), cfg.get("retreat"))
+        # long_v6: stagnation penalty (src.stagnation, OFF without params), white-out as a true episode end.
+        self.stagnation = StagnationTracker.from_params(cfg.get("stagnation"))
+        self.terminate_on_whiteout = bool(cfg.get("terminate_on_whiteout", False))
         # long_v5 anti-collapse (all OFF when absent from cfg): no-effect A / B press cost (src.idle_press), and the
         # wall-bump / tile-revisit penalties switched off while the path reward is on.
         self.idle_press = IdlePressTracker.from_params(cfg.get("idle_press"))
         self.disable_bump = bool(cfg.get("disable_bump_penalty", False))
         self.disable_loop = bool(cfg.get("disable_loop_penalty", False))
+        # long_v6: repeated effect-less dialogue cost (src.dialogue_loop), OFF when cfg has no "dialogue_loop" params.
+        self.dialogue_loop = DialogueLoopTracker.from_params(cfg.get("dialogue_loop"))
         self._last_stage = 0  # stage already archived / seen at the start of the episode
         self._pending_stage: int | None = None  # stage entered while mid-cutscene: snapshot once the screen is calm
         self._pending_events: set = set()
@@ -594,12 +629,17 @@ class EnvWorker:
     def _load(self, name: str) -> bytes:
         """Load a start state (or an archived ``swarm:<key>`` / ``battle:<key>`` state) into the emulator; returns its bytes."""
         data = None
+        self._route_seed_stage = 0
         if name.startswith(SWARM_PREFIX) and self.archive is not None:
             data = self.archive.load(name[len(SWARM_PREFIX):])
         elif name.startswith(BATTLE_PREFIX) and self.battle_archive is not None:
             data = self.battle_archive.load(name[len(BATTLE_PREFIX):])
+        elif name.startswith(ROUTE_PREFIX) and self.route_archive is not None:
+            loaded = self.route_archive.load(name[len(ROUTE_PREFIX):])
+            if loaded is not None:
+                data, self._route_seed_stage = loaded
         if data is None:
-            name = name if not name.startswith((SWARM_PREFIX, BATTLE_PREFIX)) else self.selector.states[0]
+            name = name if not name.startswith((SWARM_PREFIX, BATTLE_PREFIX, ROUTE_PREFIX)) else self.selector.states[0]
             data = self._state_bytes(name)
         self.state_name = name
         self.emu.load_state(data)
@@ -667,6 +707,10 @@ class EnvWorker:
         self.caught_counts.clear()
         self.seen_interactions.clear()
         self.seen_warps.clear()
+        if self._route_seed_stage:
+            # Route checkpoint: the milestones its saver had passed are done (maps seen), so walking back over them and
+            # forward again never pays their bonuses a second time; the observation's milestone bits stay consistent.
+            self.seen_maps.update(stage_maps(self._route_seed_stage))
         self.budget.clear()
         self.budget.update(self._budget_init)
         if self._intrinsic_scale != 1.0:
@@ -695,8 +739,14 @@ class EnvWorker:
             self.dwell.reset(st)
         if self.path_progress is not None:
             self.path_progress.reset(st)   # the start state's own progress (archive / jitter) is never paid
+            # The route checkpoint's own bucket is already in the archive: save again only for a higher one.
+            self._route_saved_bucket = bucket_of(self.path_progress.best, self.route_every)
         if self.idle_press is not None:
             self.idle_press.reset()
+        if self.dialogue_loop is not None:
+            self.dialogue_loop.reset()
+        if self.stagnation is not None:
+            self.stagnation.reset()
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
@@ -762,6 +812,26 @@ class EnvWorker:
             return
         if self.battle_archive.save_fifo(key, self.emu.save_state()):
             self._last_battle_save = self._total_steps
+
+    def _maybe_save_route(self, after) -> None:
+        """Save a route checkpoint when the position reaches a path-progress bucket not yet saved in this episode.
+
+        Calm states only (no battle, no open text, no white-out teleport); rate limited to one save per
+        ``ROUTE_SAVE_GAP`` of this worker's steps (a blocked save is retried on the next steps).  The bucket is that of the
+        CURRENT position, so a state saved after stepping back is filed under the bucket it really is in."""
+        if self.route_archive is None or self.path_progress is None:
+            return
+        cur = self.path_progress.current
+        if cur is None or getattr(after, "fainted", False) or after.battle_mode != 0 or dialogue_open(after):
+            return
+        bucket = bucket_of(cur, self.route_every)
+        if bucket < 1 or bucket <= self._route_saved_bucket:
+            return
+        if self._total_steps - self._last_route_save < ROUTE_SAVE_GAP:
+            return
+        self._route_saved_bucket = bucket
+        self._last_route_save = self._total_steps
+        self.route_archive.save(bucket, milestone_stage(self.seen_maps), self.emu.save_state())
 
     # -- stepping
     def step(self, act_idx: int):
@@ -847,7 +917,8 @@ class EnvWorker:
         path_rew = 0.0
         if self.path_progress is not None:
             path_rew = self.path_progress.update(before, after)   # >= 0: only a new best progress tile pays
-        dwell_pen = 0.0
+        retreat_pen = self.path_progress.retreat_step if self.path_progress is not None else 0.0   # <= 0 (long_v6)
+        dwell_pen, level_exempt = 0.0, False
         if self.dwell is not None:
             # progress = story milestone / event, a species caught for the first time this episode, or a new best path tile
             progress = bool(pr_info.story_progress or len(self.caught_counts) > species_before or path_rew > 0.0)
@@ -856,9 +927,18 @@ class EnvWorker:
                 loop = 0.0  # needed leveling is not "looping": the per-tile revisit cost is off while grinding below target
         if self.disable_loop and self.path_progress is not None:
             loop = 0.0      # long_v5: the per-tile revisit cost made standing still (pressing A) the cheapest policy
+        stag_pen = 0.0
+        if self.stagnation is not None and self.path_progress is not None:
+            # long_v6: max(dwell, stagnation) per step, never the sum: only the excess over this step's dwell charge is paid here
+            stag_pen = self.stagnation.update(before, after, new_best=path_rew > 0.0, level_exempt=level_exempt,
+                                              dwell_charge=dwell_pen)
         idle_pen = 0.0
         if self.idle_press is not None and plain_press:
             idle_pen = self.idle_press.update(before, after)   # <= 0: an A / B press that changed nothing observable
+        dlg_pen = 0.0
+        if self.dialogue_loop is not None:
+            dlg_pen = self.dialogue_loop.update(before, after, exec_idx == ACTIONS.index("a"))   # <= 0 (long_v6)
+        self._maybe_save_route(after)
         momentum = 0.02 if (action_name == self.last_dir and moved) else 0.0
         momentum = budget_pay(self.budget, "explore", momentum) if self._budget_ok else momentum
         self.last_dir = action_name if moved else None
@@ -870,19 +950,30 @@ class EnvWorker:
             comps["path"] = path_rew
         if self.idle_press is not None:
             comps["idle_press"] = idle_pen
-        step_rew += curiosity + loop + momentum + dwell_pen + path_rew + idle_pen
+        if self.dialogue_loop is not None:
+            comps["dialogue_loop"] = dlg_pen
+        if self.path_progress is not None and self.path_progress.retreat_frac > 0:
+            comps["retreat"] = retreat_pen
+        if self.stagnation is not None:
+            comps["stagnation"] = stag_pen
+        step_rew += curiosity + loop + momentum + dwell_pen + path_rew + idle_pen + dlg_pen + retreat_pen + stag_pen
 
-        # No termination on milestones or on the badge; the episode ends only on the step limit (a time limit, not a goal).
+        # No termination on milestones or on the badge; the episode ends on the step limit (a time limit, not a goal) or,
+        # with ``terminate_on_whiteout`` (long_v6), on a white-out: a TRUE termination (not truncated, so the trainer does
+        # not bootstrap the value; the -15 white-out penalty of this step is the terminal reward).
         self.steps += 1
-        truncated = self.steps >= self.ep_len  # time limit, not a real end
-        done = truncated
+        whiteout = bool(getattr(after, "fainted", False) and not getattr(before, "fainted", False))
+        terminated = self.terminate_on_whiteout and whiteout
+        truncated = self.steps >= self.ep_len and not terminated  # time limit, not a real end
+        done = truncated or terminated
+        end_reason = "whiteout" if terminated else ("time_limit" if truncated else None)
         ended_maps = len(self.seen_maps)
         ended_state = self.state_name
         phi_end = _story_phi(after, self.seen_maps)
         phi_start = self.start_phi
         stage_end = int(current_stage(after))
         self._ep_furthest = max(self._ep_furthest, stage_end)
-        ended_partial = self._partial
+        ended_partial = self._partial and not terminated   # a white-out is a real episode end, not a stagger cut
         ended_ms = (self._ep_start_stage, self._ep_furthest,
                     None if self.path_progress is None else self.path_progress.best) if done else None
         self._maybe_archive(after)
@@ -905,6 +996,8 @@ class EnvWorker:
             "ep_start_phi": phi_start,  # the same quantity at the start of the episode this step belongs to
             "stage": stage_end,
             "truncated": bool(truncated),
+            "terminated": bool(terminated),   # true termination (white-out with terminate_on_whiteout): no bootstrap
+            "end_reason": end_reason,          # "whiteout" / "time_limit" / None while the episode runs on
             "partial_episode": bool(ended_partial and done),  # a staggered first episode that was cut short
             "ep_steps": int(self.steps),  # steps taken in the running episode (0 right after a reset)
             "ep_len": int(self.ep_len),
@@ -1182,6 +1275,46 @@ def policy_values(policy, screens_u8: np.ndarray, rams: np.ndarray, hx, device) 
     return val.float().cpu()
 
 
+@torch.no_grad()
+def warmup_scaler(policy, vec_env, scaler, screens, rams, hx, rollouts: int, rollout_steps: int, device) -> dict:
+    """Warm-up rollout(s) before update 0 (``long_v6``): step the envs with the current policy and feed ONLY the running
+    reward scaler.  Nothing here is stored for training, no gradient step happens, nothing is logged as an update, the
+    PPO update counter and the archives are untouched, and the envs just keep running their episodes.
+
+    Why: every tile is novel at the start of a run, so the first rollout pays curiosity + new-tile bonuses on almost every
+    step (mean reward 12.4 per env at update 0 in v5-1 against ~0 later, 254 of ~400 positive reward from those two terms).
+    Without this the scaler starts from its (mean 0, var 1, count ~0) prior and its first batch statistics come from that
+    burst alone, so the first real update would be scaled by a std that does not describe the run.  RND (Burda et al.
+    2018) likewise initialises its observation / reward normalisation statistics with random-agent steps before training.
+
+    Returns ``(screens, rams, hx, info)``; ``hx`` is carried on (zeroed where an episode ended).
+    """
+    std_before = scaler.std if scaler is not None else 1.0
+    policy.eval()
+    total, steps = 0.0, int(rollouts) * int(rollout_steps)
+    for _ in range(steps):
+        s = torch.from_numpy(screens).to(device).permute(0, 3, 1, 2).contiguous().float().div_(255.0)
+        r = torch.from_numpy(rams).float().to(device)
+        if policy.use_gru:
+            logits, _val, next_hx = policy.forward_recurrent(s, r, hx)
+        else:
+            logits, _val = policy(s, r)
+            next_hx = None
+        actions = torch.distributions.Categorical(logits=logits).sample().cpu().numpy()
+        screens, rams, rews, dones, _maps, _badges = vec_env.step(actions)
+        if scaler is not None:
+            scaler.update(rews, dones)
+        total += float(np.sum(rews))
+        if next_hx is not None:
+            if dones.any():
+                next_hx[:, torch.from_numpy(np.asarray(dones)).to(device), :] = 0.0
+            hx = next_hx
+    n_env = max(1, len(screens))
+    info = {"steps": steps, "mean_reward": total / n_env / max(1, int(rollouts)),
+            "std_before": std_before, "std_after": scaler.std if scaler is not None else 1.0}
+    return screens, rams, hx, info
+
+
 def fit_minibatches(envs: int, num_minibatches: int) -> int:
     """Minibatches are groups of whole environments; ``ppo_update`` splits them unevenly when the count does not
     divide ``envs`` (e.g. 7 envs, 4 minibatches -> groups of 2/2/2/1), so only the ``<= envs`` limit applies."""
@@ -1306,8 +1439,19 @@ def load_optimizer_state(optimizer, save_path: str | Path, device) -> bool:
         return False
 
 
-def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: str | Path | None = None) -> dict:
+def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: str | Path | None = None,
+                   route_dir: str | Path | None = None) -> dict:
     return {
+        "route_dir": str(route_dir) if (cfg.route_ckpt and route_dir) else None,
+        "route_prob": cfg.route_ckpt_prob if cfg.route_ckpt else 0.0,
+        "route_every": cfg.route_ckpt_every,
+        "route_per_bucket": cfg.route_ckpt_per_bucket,
+        "route_max": cfg.route_ckpt_max,
+        "route_floor": cfg.route_ckpt_weight_floor,
+        "dialogue_loop": cfg.dialogue_loop_params(),
+        "retreat": cfg.retreat_params(),
+        "stagnation": cfg.stagnation_params(),
+        "terminate_on_whiteout": cfg.terminate_on_whiteout,
         "stagger_episodes": cfg.stagger_episodes,
         "episode_len_jitter": cfg.episode_len_jitter,
         "num_envs": cfg.envs,
@@ -1433,6 +1577,9 @@ def train(
     archive_root = (Path(runs_dir).parent if runs_dir else Path("logs")) / "swarm" / run_name
     swarm_dir = archive_root if cfg.swarm else None
     battle_dir = archive_root / "battle" if cfg.battle_archive else None
+    route_dir = archive_root / "route" if cfg.route_ckpt else None
+    route_archive = (RouteCheckpointArchive(route_dir, cfg.route_ckpt_every, cfg.route_ckpt_per_bucket,
+                                            cfg.route_ckpt_max, cfg.route_ckpt_weight_floor) if route_dir else None)
 
     print(
         f"Spawning {num_envs} vectorized PyBoy workers across states: {states} "
@@ -1472,16 +1619,40 @@ def train(
             f"entropy boost={'coef %g below %g until update %d (release at +%g)' % (cfg.entropy_boost_coef, cfg.entropy_boost_threshold, cfg.entropy_boost_until, cfg.entropy_boost_margin) if cfg.entropy_boost else 'off'}",
             flush=True,
         )
+    if (cfg.route_ckpt or cfg.dialogue_loop_penalty or cfg.warmup_rollout or cfg.retreat_penalty
+            or cfg.stagnation_penalty or cfg.terminate_on_whiteout):
+        print(
+            f"[long_v6] route checkpoints={'every %d tiles, %d/bucket, <= %d files, %.0f%% of resets, weight floor %g -> %s' % (cfg.route_ckpt_every, cfg.route_ckpt_per_bucket, cfg.route_ckpt_max, 100 * cfg.route_ckpt_prob, cfg.route_ckpt_weight_floor, route_dir) if cfg.route_ckpt else 'off'} | "
+            f"reset order: battle {cfg.battle_archive_prob if cfg.battle_archive else 0}, swarm {cfg.swarm_prob if cfg.swarm else 0}, route {cfg.route_ckpt_prob if cfg.route_ckpt else 0}, rest start state | "
+            f"dialogue-loop penalty={'%g/step, > %d steps in %d or > %d idle talks, budget %g' % (cfg.dialogue_loop_cost, cfg.dialogue_loop_max_steps, cfg.dialogue_loop_window, cfg.dialogue_loop_max_talks, cfg.dialogue_loop_budget) if cfg.dialogue_loop_penalty else 'off'} | "
+            f"warm-up rollouts={cfg.warmup_rollout} | "
+            f"retreat cost={'%g x path scale per tile lost, budget %g' % (cfg.retreat_cost_frac, cfg.retreat_budget) if cfg.retreat_penalty else 'off'} | "
+            f"stagnation penalty={'%g->%g/step after %d steps without a new best (ramp %d, budget %g)' % (cfg.stagnation_min, cfg.stagnation_max, cfg.stagnation_after, cfg.stagnation_ramp, cfg.stagnation_budget) if cfg.stagnation_penalty else 'off'} | "
+            f"terminate on white-out={cfg.terminate_on_whiteout}",
+            flush=True,
+        )
     if cfg.path_progress:
         print(f"[path progress] +{cfg.path_progress_scale} per tile of new best progress along the story path "
               f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * 319:.1f} for the whole path)",
               flush=True)
     vec_env = VectorEnv(num_envs=num_envs, start_states=states, max_steps=cfg.max_steps,
-                        env_cfg=worker_env_cfg(cfg, swarm_dir, battle_dir))
+                        env_cfg=worker_env_cfg(cfg, swarm_dir, battle_dir, route_dir))
     screens_cur, rams_cur = vec_env.reset()
 
     hidden = policy.gru_hidden_dim if use_gru else 512
     hx = torch.zeros(1, num_envs, hidden, device=device) if policy.use_gru else None
+    if cfg.warmup_rollout > 0 and scaler is not None and not (sidecar is not None and "reward_scaler" in sidecar):
+        try:
+            screens_cur, rams_cur, hx, wu = warmup_scaler(policy, vec_env, scaler, screens_cur, rams_cur, hx,
+                                                          cfg.warmup_rollout, rollout_steps, device)
+        except BaseException:
+            vec_env.close()
+            raise
+        print(f"[warmup] {cfg.warmup_rollout} rollout(s) x {rollout_steps} steps fed the reward scaler only "
+              f"(mean reward {wu['mean_reward']:.2f}/env/rollout, scaler std {wu['std_before']:.3f} -> {wu['std_after']:.3f}); "
+              f"no update, no gradient step, update counter untouched", flush=True)
+    elif cfg.warmup_rollout > 0:
+        print("[warmup] skipped (reward scaling off or the reward scaler was restored from the checkpoint)", flush=True)
     monitor = TerminalMonitor(total_updates=start_update + updates, jsonl_path=metrics_path)
     feed = None
     if live:
@@ -1564,6 +1735,8 @@ def train(
             # 1. Collect rollouts with batched inference
             policy.eval()
             phase = {"infer": 0.0, "env": 0.0, "feed": 0.0, "trunc": 0.0, "buf": 0.0}
+            whiteouts = 0   # episodes ended by a white-out in this rollout (terminate_on_whiteout)
+            resets_total = resets_route = 0   # resets in this rollout, and how many of them loaded a route checkpoint
             _pc = time.perf_counter
             for step in range(T):
                 _t = _pc()
@@ -1598,6 +1771,9 @@ def train(
                 # Route progress per finished episode drives the entropy schedule.
                 for i in np.nonzero(dones)[0]:
                     inf = infos[i] or {}
+                    resets_total += 1
+                    whiteouts += 1 if inf.get("end_reason") == "whiteout" else 0
+                    resets_route += 1 if str(inf.get("state", "")).startswith(ROUTE_PREFIX) else 0   # the NEW episode's start
                     ms_stats.add_episode(inf.get("ended_start_stage"), inf.get("ended_furthest"),
                                          inf.get("ended_best_path"), partial=bool(inf.get("partial_episode")))
                     if inf.get("partial_episode"):
@@ -1701,6 +1877,16 @@ def train(
             }
             if entropy_guard is not None:
                 extra["entropy_boost"] = 1.0 if entropy_boosted else 0.0
+            if cfg.terminate_on_whiteout:
+                extra["whiteout_episodes"] = int(whiteouts)   # episodes ended by a white-out (true terminations) this update
+                extra["episodes_ended"] = int(resets_total)
+            if route_archive is not None:
+                counts = route_archive.counts()
+                extra["route_ckpt_size"] = int(sum(counts.values()))
+                extra["route_ckpt_max_bucket"] = int(max(counts)) if counts else 0
+                extra["route_ckpt_buckets"] = {str(b): n for b, n in counts.items()}   # states per progress bucket
+                extra["route_ckpt_resets"] = int(resets_route)
+                extra["route_ckpt_reset_share"] = round(resets_route / resets_total, 4) if resets_total else 0.0
             ms_payload = ms_stats.end_update([i.get("cur_furthest") for i in live_infos])
             extra.update(ms_payload)
             if hp.aux_coef > 0:
@@ -1780,7 +1966,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
