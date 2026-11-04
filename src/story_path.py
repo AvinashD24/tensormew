@@ -22,7 +22,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import numpy as np
 
 
 @dataclass(frozen=True)
@@ -82,8 +81,9 @@ def story_fraction(state, seen_maps=None) -> float:
     return sum(milestones_done(state, seen_maps)) / float(MILESTONE_COUNT)
 
 
-def story_features(state, seen_maps=None) -> np.ndarray:
+def story_features(state, seen_maps=None) -> "np.ndarray":
     """STORY_FEATURE_DIM floats: which milestones are done, plus the current map id. No direction, no distance."""
+    import numpy as np   # lazy: tools.cloud_train_deep imports src.train_config -> dwell -> story_path under a bare WSL python
     done = milestones_done(state, seen_maps)
     g, n = _map_of(state)
     return np.asarray([1.0 if d else 0.0 for d in done] + [g / 32.0, n / 32.0], dtype=np.float64)
