@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 import unittest
 from collections import deque
 from pathlib import Path
@@ -61,15 +62,17 @@ class PathFixture(unittest.TestCase):
 
 
 class ProgressMeasureTests(PathFixture):
-    def test_zero_at_start_and_319_in_front_of_falkner(self):
-        self.assertEqual(rg.path_total(), 319.0)
+    def test_zero_at_start_and_309_in_front_of_falkner(self):
+        from src.story_path import STORY_PATH_STEPS
+        self.assertEqual(STORY_PATH_STEPS, 309)
+        self.assertEqual(rg.path_total(), float(STORY_PATH_STEPS))
         self.assertEqual(pp.progress(st(rg.PATH_START)), 0.0)
-        self.assertEqual(pp.progress(st(self.path[-1])), 319.0)
-        self.assertEqual(len(self.path), 320)
+        self.assertEqual(pp.progress(st(self.path[-1])), 309.0)
+        self.assertEqual(len(self.path), 310)
 
     def test_rises_by_exactly_one_per_step_along_the_whole_real_path(self):
         values = [pp.progress(st(n)) for n in self.path]
-        self.assertEqual(values, [float(i) for i in range(320)])
+        self.assertEqual(values, [float(i) for i in range(310)])
 
     def test_path_passes_every_story_milestone_map_in_order(self):
         from src.story_path import MILESTONES
@@ -94,11 +97,11 @@ class ProgressMeasureTests(PathFixture):
 
 
 class RewardTests(PathFixture):
-    def test_full_path_pays_scale_times_319(self):
+    def test_full_path_pays_scale_times_309(self):
         tr, paid = self.run_walk(self.path)
-        self.assertAlmostEqual(sum(paid), SCALE * 319, places=6)
+        self.assertAlmostEqual(sum(paid), SCALE * 309, places=6)
         self.assertTrue(all(abs(p - SCALE) < 1e-9 for p in paid))
-        self.assertEqual(tr.gained, 319.0)
+        self.assertEqual(tr.gained, 309.0)
 
     def test_stepping_back_pays_nothing_and_forward_again_pays_nothing_until_a_new_best(self):
         p = self.path
@@ -149,7 +152,7 @@ class RewardTests(PathFixture):
         self.assertEqual(tr.update(st(p[150]), st(p[149])), 0.0)
         self.assertAlmostEqual(tr.update(st(p[149]), st(p[151])), SCALE)    # only beyond the start's own best
         total = sum(tr.update(st(a), st(b)) for a, b in zip(p[151:], p[152:]))
-        self.assertAlmostEqual(total + SCALE, SCALE * (319 - 150))
+        self.assertAlmostEqual(total + SCALE, SCALE * (309 - 150))
 
     def test_off_graph_start_pays_nothing_for_the_first_known_tile(self):
         tr = pp.PathProgress(SCALE)
@@ -176,7 +179,8 @@ class ConfigTests(unittest.TestCase):
     def test_long_v3_keeps_path_progress_off(self):
         self.assertIn("long_v3", PRESETS)
         for name in PRESETS:
-            if name not in ("long_v4", "long_v5", "long_v6"):
+            m = re.fullmatch(r"long_v(\d+)", name)
+            if m is None or int(m.group(1)) < 4:   # long_v4 and every later long_vN turn the path reward on
                 self.assertFalse(load_config(name).path_progress, name)
         self.assertIsNone(t.worker_env_cfg(load_config("long_v3"), None)["path_progress"])
 

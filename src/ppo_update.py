@@ -53,6 +53,7 @@ class RolloutBatch:
     advantages: torch.Tensor  # (B, T)  raw (un-normalized) GAE advantages
     initial_hx: torch.Tensor | None = None  # (1, B, H) hidden state at the start of the rollout
     dones: torch.Tensor | None = None  # (B, T) bool: episode ended after step t -> hidden state reset before t + 1
+    masks: torch.Tensor | None = None  # (B, T, A) bool valid-action mask stored at rollout time (True = allowed); None = no masking
 
 
 class EntropySchedule:
@@ -292,6 +293,7 @@ def ppo_update(
         f_screens, f_rams = flat(batch.screens), flat(batch.rams)
         f_actions, f_logps = flat(batch.actions), flat(batch.old_logps)
         f_returns, f_adv, f_old_v = flat(returns), flat(adv), flat(old_values)
+        f_masks = flat(batch.masks) if batch.masks is not None else None
 
     # cuDNN's GRU only runs its backward pass in training mode (a GPU-only error: "cudnn RNN backward can only be
     # called in training mode"), so keep the module in train mode and freeze just BatchNorm for eval_refresh. There
@@ -330,21 +332,26 @@ def ppo_update(
                 hx = None if batch.initial_hx is None else to_dev(batch.initial_hx[:, idx, :])
                 mb_dones = None if batch.dones is None else to_dev(batch.dones[idx])
                 aux_raw = None
+                # The rollout's valid-action mask (src.battle_mask) enters the re-evaluation too; only passed when present.
+                mkw = {} if batch.masks is None else {"action_mask": to_dev(batch.masks[idx])}
                 if use_aux:
                     new_lp, entropy, v_pred, aux_raw = policy.evaluate_actions_sequence(
-                        s, r, a, hx, dones=mb_dones, return_aux=True
+                        s, r, a, hx, dones=mb_dones, return_aux=True, **mkw
                     )
                 elif mb_dones is None:
-                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx)
+                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx, **mkw)
                 else:
-                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx, dones=mb_dones)
+                    new_lp, entropy, v_pred = policy.evaluate_actions_sequence(s, r, a, hx, dones=mb_dones, **mkw)
             else:
                 s = to_dev(f_screens[idx], True)
                 r = to_dev(f_rams[idx])
                 a = to_dev(f_actions[idx])
                 old_lp = to_dev(f_logps[idx])
                 mb_adv, mb_ret, mb_old_v = to_dev(f_adv[idx]), to_dev(f_returns[idx]), to_dev(f_old_v[idx])
-                new_lp, entropy, v_pred = policy.evaluate_actions(s, r, a)
+                if f_masks is None:
+                    new_lp, entropy, v_pred = policy.evaluate_actions(s, r, a)
+                else:
+                    new_lp, entropy, v_pred = policy.evaluate_actions(s, r, a, action_mask=to_dev(f_masks[idx]))
 
             log_ratio = new_lp - old_lp
             ratio = torch.exp(log_ratio)

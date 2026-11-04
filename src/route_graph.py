@@ -2,15 +2,17 @@
 
 The graph holds every walkable tile of the route maps (New Bark -> Route 29 -> Cherrygrove -> Route 30 -> Route 31
 -> Violet gatehouse -> Violet City -> Violet Gym), read from the ROM, with single-step edges (map connections and
-warps, ledges and cut trees respected) and a BFS distance field to the single goal: the tile in front of Falkner.
+warps, ledge jumps and cut trees respected) and a BFS distance field to the single goal: the tile in front of Falkner.
 
 ``route_potential`` = -(steps to Falkner). The trainer only uses it when ``TrainConfig.goal_potential`` is True,
 as a reward ``ROUTE_PROGRESS_WEIGHT * (Phi' - Phi)`` for ablations ("is the oracle shaping better?"). The default
 runs do not use it, and the policy is never told the direction or distance (the old ``route_features`` and
 ``next_direction`` observation was removed: it was an oracle, not reinforcement learning).
 
-``path_progress`` / ``path_total`` expose the same distance field as "tiles of the 319-step path already covered" for the
+``path_progress`` / ``path_total`` expose the same distance field as "steps of the 309-step path already covered" for the
 ``long_v4`` best-ever reward (``src.path_progress``); that reward is also reward shaping only, never an observation.
+One step is one action: a ledge jump (two tiles) is one step, so the 309 steps cover 311 tiles (see ``_HOP_DIRS``).
+Before the ledge fix the graph had no jump edges, no sideways walking along ledge rows and a 319-step route.
 
 Buildings next to the route (houses, marts, Pokecenters) are included as dead-end spurs so entering one lowers Phi
 by the walk back out. The graph is built lazily, once per process.
@@ -22,6 +24,14 @@ import threading
 from collections import deque
 
 from src.collision import (
+    COLL_HOP_DOWN,
+    COLL_HOP_DOWN_LEFT,
+    COLL_HOP_DOWN_RIGHT,
+    COLL_HOP_LEFT,
+    COLL_HOP_RIGHT,
+    COLL_HOP_UP,
+    COLL_HOP_UP_LEFT,
+    COLL_HOP_UP_RIGHT,
     COLL_WARP_CARPET_DOWN,
     COLL_WARP_CARPET_LEFT,
     COLL_WARP_CARPET_RIGHT,
@@ -53,6 +63,24 @@ _CARPET_DIR = {
     COLL_WARP_CARPET_RIGHT: "right",
 }
 _CONN_SIDE = {"up": "north", "down": "south", "left": "west", "right": "east"}
+
+# Ledges (Pokemon Crystal, verified in the emulator on Route 29 and in the ROM collision grids of every route map):
+# a hop tile is a normal walkable tile you may step onto from above or from the side and walk along sideways. While
+# STANDING on it, pressing a hop direction of the tile jumps TWO tiles that way (over the cliff-face wall tile that the
+# map always places on the far side) and lands there. Nothing can be walked up a ledge: the tile beyond a hop tile is a
+# wall, so the way back is only through a gap in the ledge row, and entering a hop tile against its own hop
+# direction is also refused here as a belt-and-braces rule. One jump is one action, so BFS distance drops by one.
+_HOP_DIRS = {
+    COLL_HOP_DOWN: ("down",),
+    COLL_HOP_UP: ("up",),
+    COLL_HOP_LEFT: ("left",),
+    COLL_HOP_RIGHT: ("right",),
+    COLL_HOP_DOWN_LEFT: ("down", "left"),
+    COLL_HOP_DOWN_RIGHT: ("down", "right"),
+    COLL_HOP_UP_LEFT: ("up", "left"),
+    COLL_HOP_UP_RIGHT: ("up", "right"),
+}
+_OPPOSITE = {"up": "down", "down": "up", "left": "right", "right": "left"}
 _HEADER_SIZE = 9
 _TILESET_SIZE = 15
 
@@ -174,6 +202,10 @@ class _Graph:
         if warp is not None and _CARPET_DIR.get(m.cells[(x, y)]) == direction:
             return warp  # a carpet warp fires when you press its arrow while standing on it
         dx, dy = _DIRS[direction]
+        if direction in _HOP_DIRS.get(m.cells[(x, y)], ()):
+            land = m.cells.get((x + 2 * dx, y + 2 * dy))   # ledge jump: two tiles, same map, onto a walkable tile
+            if land is not None and (mid, x + 2 * dx, y + 2 * dy) not in self.warp_at and walkable(land):
+                return (mid, x + 2 * dx, y + 2 * dy)
         nx, ny = x + dx, y + dy
         if 0 <= nx < m.w and 0 <= ny < m.h:
             target = (mid, nx, ny)
@@ -202,7 +234,12 @@ class _Graph:
             return None
         if target in self.warp_at and tile not in _CARPET_DIR:
             return self.warp_at[target]  # stepping onto a door or stairs warps at once
-        if not walkable(tile, direction):
+        hops = _HOP_DIRS.get(tile)
+        if hops is not None:
+            # A ledge tile can be entered from above and from the side, never against its own hop direction.
+            if _OPPOSITE[direction] in hops or not walkable(tile):
+                return None
+        elif not walkable(tile, direction):
             return None
         return target   # a carpet mat is walked onto first; pressing its arrow there is the warp (top of this method)
 

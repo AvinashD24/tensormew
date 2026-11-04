@@ -25,7 +25,7 @@ class WorldLayoutTests(unittest.TestCase):
         self.assertEqual([s["n"] for s in data["stars"]], list(range(1, 9)))
         self.assertEqual(sum(s["reward"] for s in data["stars"]), 140)   # 5+10+10+10+5+15+15 plus 70 for the badge and event
         self.assertEqual(len(data["legs"]), 1)
-        self.assertEqual(data["legs"][0]["steps"], 319)
+        self.assertEqual(data["legs"][0]["steps"], 309)
         blob = json.dumps(data["stars"]).lower()
         for word in ("elm", "egg", " rival"):
             self.assertNotIn(word, blob)

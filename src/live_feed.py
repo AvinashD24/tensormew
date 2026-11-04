@@ -111,6 +111,7 @@ class LiveFeed:
         self._last_comp = self._blank_comp()
         self._milestones: dict[str, Any] | None = None   # latest milestone reach rates (src.milestone_stats), compact
         self._records: dict[str, Any] | None = None      # fastest-to-milestone records (MilestoneRecords.snapshot), compact
+        self._eval: dict[str, Any] | None = None         # latest periodic from-start evaluation (long_v8), compact; None = none yet
         self._upd_records: list[dict[str, Any]] = []     # record events of the running update (go into history.jsonl)
         self._last_screens: np.ndarray | None = None
         self.num_envs = num_envs
@@ -421,6 +422,12 @@ class LiveFeed:
         self._event("milestone", text, env=ev.get("env"), rec=ev)
         self.flush()
 
+    def set_eval(self, payload: dict[str, Any], text: str | None = None) -> None:
+        """Latest periodic from-start evaluation (``eval_*`` fields, long_v8): kept in state.json and announced as an event."""
+        self._eval = dict(payload)
+        if text:
+            self._event("eval", text)
+
     def set_records(self, snapshot: dict[str, Any] | None, new_events: Sequence[dict[str, Any]] | None = None) -> None:
         """Records snapshot for state.json plus this update's new record events (written to the history record)."""
         self._records = snapshot
@@ -545,6 +552,7 @@ class LiveFeed:
             "fun": self.fun_payload(),
             "milestones": self._milestones,
             "records": self._records,
+            "eval": self._eval,
             "species_names": self._species_names(),
             "envs": self._envs,
             "trails": trails,

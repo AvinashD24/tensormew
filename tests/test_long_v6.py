@@ -688,7 +688,7 @@ def st2(node, **kw):
 
 
 class RetreatRealRouteTests(PathFixture):
-    """The real 319-step route: the retreat cost never triggers on it, but does in the Route 29 west corridor."""
+    """The real 309-step route: the retreat cost never triggers on it, but does in the Route 29 west corridor."""
 
     def tracker(self, **kw):
         return pp.PathProgress(SCALE, retreat_frac=kw.pop("frac", FRAC), retreat_budget=kw.pop("budget", 15.0))
@@ -711,12 +711,12 @@ class RetreatRealRouteTests(PathFixture):
             n = [o for o in self.g.fwd[n] if o is not None and self.d.get(o, 1e9) == self.d[n] - 1][0]
         return self.path.index(n), self.bfs(n, e)
 
-    def test_zero_retreat_cost_walking_the_full_319_step_path(self):
+    def test_zero_retreat_cost_walking_the_full_309_step_path(self):
         tr, paid, cost = self.walk(self.path)
-        self.assertEqual(len(cost), 319)
+        self.assertEqual(len(cost), 309)
         self.assertTrue(all(c == 0.0 for c in cost))
         self.assertEqual(tr.retreat_spent, 0.0)
-        self.assertAlmostEqual(sum(paid), SCALE * 319)
+        self.assertAlmostEqual(sum(paid), SCALE * 309)
 
     def test_walking_into_the_route_29_west_corridor_and_back_costs_only_the_way_out(self):
         i, walk_in = self.corridor()

@@ -51,6 +51,10 @@ TOTAL_STORY_REWARD = sum(m.reward for m in MILESTONES) + BADGE_REWARD + sum(KEY_
 
 STORY_FEATURE_DIM = MILESTONE_COUNT + 2   # milestone done bits + map group / number (scaled)
 START_MAP = (24, 4)                        # New Bark Town, where states/new_bark_outside.state starts
+# Length of the minimal story path in ACTIONS (BFS over the ROM graph, ledge jumps = one action), New Bark start tile ->
+# the tile in front of Falkner. Hard-coded here so the cloud launcher and the dashboard need no ROM; tests/test_route_graph.py
+# asserts it equals ``route_graph.path_total()``. It was 319 before the ledge fix (no jump edges in the graph).
+STORY_PATH_STEPS = 309
 
 
 def _map_of(state) -> tuple[int, int]:

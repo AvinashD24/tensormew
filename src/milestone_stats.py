@@ -10,7 +10,7 @@ Definitions (``MILESTONES`` order, milestone ``i`` has story stage ``i + 1``, se
 * it REACHED milestone ``i`` when its furthest stage was ``>= i + 1``;
 * ``reach[i] = reached / eligible`` over the finished episodes of the window (None when nothing was eligible);
 * ``envs_at[i]`` = share of ALL envs whose running episode is currently at or above stage ``i + 1``;
-* ``best_path`` = best path progress (tiles of the 319-tile story path, ``src.path_progress``) of each finished episode.
+* ``best_path`` = best path progress (tiles of the 309-tile story path, ``src.path_progress``) of each finished episode.
 
 Staggered first episodes that were cut short (``partial``) are skipped, like the route-progress signal does.  No numpy.
 """
@@ -183,3 +183,80 @@ class MilestoneRecords:
             pass
         rec.load_events(events)
         return rec
+
+
+# --------------------------------------------------------------------------------------------- learned vs head start
+SOURCES = ("base", "route", "swarm", "battle")   # reset sources, in dashboard order ("other" = any other named start state)
+SOURCE_LABELS = {"base": "Base start", "route": "Route checkpoint", "swarm": "Swarm archive", "battle": "Battle archive",
+                 "other": "Other start state"}
+_SOURCE_PREFIX = (("swarm:", "swarm"), ("battle:", "battle"), ("route:", "route"))
+
+
+def source_of(state_name) -> str:
+    """Reset source of an episode from its start-state name: ``swarm:..`` / ``battle:..`` / ``route:..`` archive states,
+    the plain New Bark start (``base``), or ``other`` for any other named start state."""
+    s = str(state_name or "")
+    for prefix, src in _SOURCE_PREFIX:
+        if s.startswith(prefix):
+            return src
+    return "base" if is_base_start(s) else "other"
+
+
+class SourceSplitStats:
+    """Per reset source: how many episodes, mean path-progress GAIN and milestone reach rates (long_v7 ``source_split_metrics``).
+
+    The mean return and the overall reach rate mix episodes that start at New Bark with episodes that start from an archived
+    state closer to the goal (a head start).  Split by source, the ``base`` row is the honest learned-from-scratch measure:
+
+    * ``gain`` = best path progress minus the progress the episode STARTED at (>= 0), mean per source;
+    * ``reach[i]`` counts only milestones NOT already passed at the start (``start_stage <= i``), like ``MilestoneStats``.
+
+    Payload keys (each a dict source -> ``{"n", "gain", "reach", "elig"}``): ``src_split`` (this update's window) and
+    ``src_split_cum`` (the whole run).  Staggered partial first episodes are skipped.  No numpy.
+    """
+
+    def __init__(self, n: int = MILESTONE_COUNT):
+        self.n = int(n)
+        self.cum: dict[str, dict] = {}
+        self._reset_window()
+
+    def _reset_window(self) -> None:
+        self.win: dict[str, dict] = {}
+
+    def _slot(self, table: dict, src: str) -> dict:
+        if src not in table:
+            table[src] = {"n": 0, "gain_sum": 0.0, "gain_n": 0, "reached": [0] * self.n, "eligible": [0] * self.n}
+        return table[src]
+
+    def add_episode(self, source: str, start_stage, furthest, best_path=None, start_path=None, partial: bool = False) -> bool:
+        if partial or start_stage is None or furthest is None:
+            return False
+        start_stage, furthest = int(start_stage), int(furthest)
+        gain = None
+        if best_path is not None and start_path is not None:
+            gain = max(0.0, float(best_path) - float(start_path))
+        for table in (self.win, self.cum):
+            slot = self._slot(table, source)
+            slot["n"] += 1
+            if gain is not None:
+                slot["gain_sum"] += gain
+                slot["gain_n"] += 1
+            for i in range(self.n):
+                if start_stage <= i:
+                    slot["eligible"][i] += 1
+                    if furthest >= i + 1:
+                        slot["reached"][i] += 1
+        return True
+
+    @staticmethod
+    def _payload(table: dict) -> dict:
+        out = {}
+        for src, s in table.items():
+            out[src] = {"n": s["n"], "gain": round(s["gain_sum"] / s["gain_n"], 2) if s["gain_n"] else None,
+                        "reach": _rates(s["reached"], s["eligible"]), "elig": list(s["eligible"])}
+        return out
+
+    def end_update(self) -> dict:
+        out = {"src_split": self._payload(self.win), "src_split_cum": self._payload(self.cum)}
+        self._reset_window()
+        return out

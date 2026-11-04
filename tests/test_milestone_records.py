@@ -183,7 +183,7 @@ class EventDerivationTests(unittest.TestCase):
         self.assertEqual(by("abias")[0]["u"], 15)
         self.assertEqual([e["u"] for e in by("boost")], [30, 33])
         self.assertIn("Cherrygrove", by("map")[0]["x"])
-        self.assertTrue(by("path")[-1]["x"].endswith("40/319 tiles"))
+        self.assertTrue(by("path")[-1]["x"].endswith("40/309 tiles"))
         self.assertEqual(len(out["comps"]), 40)
 
     def test_spike_gets_likely_cause_and_component_deltas(self):

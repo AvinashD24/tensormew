@@ -27,6 +27,7 @@ TYPES = ("ms", "rec", "path", "map", "wo", "abias", "boost", "intr", "ecoef", "b
 # Cause priority when a spike coincides with an event (first = most likely to explain a jump).
 CAUSE_ORDER = ("wo", "ms", "rec", "path", "map", "badge", "lvl", "dex", "abias", "boost", "intr", "ecoef", "rck")
 SPIKE_METRICS = (("mean_reward", "reward"), ("entropy", "entropy"), ("value_loss", "value loss"))
+PATH_TOTAL = 309         # steps of the minimal story path (= src.story_path.STORY_PATH_STEPS, asserted in tests; 319 before the ledge fix)
 PATH_STEP = 3            # emit a "best path progress" event only for gains of at least this many tiles
 INTR_STEPS = (0.75, 0.5, 0.25, 0.1)
 SPIKE_SIGMA = 3.0
@@ -114,7 +115,7 @@ def derive(records: list[dict]) -> dict:
             if path_emit is None:
                 path_emit = pb
             elif pb >= path_emit + PATH_STEP:
-                add(u, "path", f"New best path progress: {pb:g}/319 tiles", tiles=pb, prev=path_emit)
+                add(u, "path", f"New best path progress: {pb:g}/{PATH_TOTAL} tiles", tiles=pb, prev=path_emit)
                 path_emit = pb
         # (3) new maps
         mp = _num(m.get("maps_discovered"))

@@ -125,6 +125,13 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .msrow .msbar i { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
 .msrow .msbar .cum { background: var(--accent2); opacity: .45; } .msrow .msbar .rec { background: var(--accent); height: 8px; top: 4px; }
 .msrow .msv { color: var(--muted); white-space: nowrap; }
+.splitTbl { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+.splitTbl th, .splitTbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--panel2); vertical-align: top; }
+.splitTbl th { color: var(--muted); font-weight: 500; } .splitTbl .num { text-align: right; white-space: nowrap; }
+@media (max-width: 640px) { .splitTbl { display: block; overflow-x: auto; } }
+.evalWrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+.evalWrap svg { flex: 1 1 240px; min-width: 200px; max-width: 420px; height: 84px; background: var(--panel2); border-radius: 6px; }
+.evalWrap .splitTbl { flex: 1 1 260px; width: auto; }
 @media (max-width: 640px) { .msrow { grid-template-columns: 92px 1fr; } .msrow .msv { grid-column: 1 / -1; } }
 .comp .ctot { text-align: right; color: var(--muted); }
 .comp .none { color: var(--muted); font-size: 12px; }
@@ -376,6 +383,16 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
     <section class="card" id="msCard" style="margin-bottom:14px" aria-labelledby="msH">
       <h2 id="msH">Milestone reach rate <span class="sub" id="msSub"></span></h2>
       <div id="msBody"></div>
+    </section>
+
+    <section class="card" id="splitCard" style="margin-bottom:14px" aria-labelledby="splitH">
+      <h2 id="splitH">Learned progress vs head start <span class="sub" id="splitSub"></span></h2>
+      <div id="splitBody"></div>
+    </section>
+
+    <section class="card" id="evalCard" style="margin-bottom:14px" aria-labelledby="evalH" hidden>
+      <h2 id="evalH">From-start evaluation <span class="sub" id="evalSub"></span></h2>
+      <div id="evalBody"></div>
     </section>
 
     <section class="card" style="margin-bottom:14px">
@@ -684,6 +701,7 @@ const COMP = {
   interaction: ["talking", "#ec4899"], event: ["story events", "#eab308"], badge: ["badges", "#f59e0b"], catch: ["catches", "#14b8a6"],
   level: ["level-ups", "#84cc16"], battle: ["battles won", "#ef4444"], damage: ["damage taken", "#be123c"], heal: ["healing", "#10b981"],
   idle_press: ["no-effect A/B presses", "#fb7185"], dialogue_loop: ["dialogue-loop penalty", "#e11d48"], retreat: ["retreat (moving off the route)", "#ea580c"], stagnation: ["stagnation (no new best)", "#a16207"], dwell: ["dwell (same-spot) penalty", "#d97706"], loop: ["tile-revisit (loop) penalty", "#b45309"],
+  lowhp: ["low-HP exposure", "#f43f5e"], survive: ["battles won healthy", "#22d3ee"], potion: ["healing item used", "#34d399"],
   whiteout: ["white-outs", "#c026d3"], behind_map: ["finished-map penalty", "#78716c"], other: ["other", "#64748b"],
 };
 const EXPLORE = ["tile", "neighbor", "map", "warp"];
@@ -776,6 +794,63 @@ function renderMilestones() {
     const c = cum[k], r = rec.rate[k];
     return `<div class="msrow" title="Share of finished episodes (that started before this milestone) that reached it"><span>${nm}</span><div class="msbar" role="img" aria-label="${nm}: ${pct(c)} of all episodes, ${pct(r)} recently"><i class="cum" style="width:${(c || 0) * 100}%"></i><i class="rec" style="width:${(r || 0) * 100}%"></i></div><span class="msv">${pct(c)} all · ${pct(r)} recent · ${pct(at[k])} of envs now</span></div>`;
   }).join("") + (last.path_best_mean != null ? `<div class="note" style="color:var(--muted);margin-top:4px">Best path progress per finished episode, last update: mean ${last.path_best_mean}, max ${last.path_best_max} of 319 tiles.</div>` : "");
+}
+
+/* ---------- learned progress vs head start (trainer fields src_split / src_split_cum, long_v7; older runs have none) ---------- */
+const SPLIT_ROWS = [["base", "Base start", "from scratch: the honest learned measure"], ["route", "Route checkpoint", "starts partway along the route"],
+                    ["swarm", "Swarm archive", "starts at a map another agent reached"], ["battle", "Battle archive", "starts inside a battle"], ["other", "Other start", ""]];
+function splitAgg(from, to) {             // window aggregate of the per-update split: n, gain-weighted by n, reach weighted by eligible
+  const acc = {};
+  for (let i = Math.max(0, from); i < Math.min(metrics.length, to); i++) {
+    const s = metrics[i].src_split; if (!s || typeof s !== "object") continue;
+    for (const [k, v] of Object.entries(s)) {
+      const a = acc[k] || (acc[k] = { n: 0, g: 0, gn: 0, r: MS_NAMES.map(() => 0), e: MS_NAMES.map(() => 0) });
+      a.n += v.n || 0; if (v.gain != null) { a.g += v.gain * v.n; a.gn += v.n; }
+      MS_NAMES.forEach((_, j) => { const rr = (v.reach || [])[j], el = (v.elig || [])[j]; if (rr != null && el > 0) { a.r[j] += rr * el; a.e[j] += el; } });
+    }
+  }
+  return acc;
+}
+function renderSplit() {
+  const body = $("splitBody"), sub = $("splitSub"), n = metrics.length;
+  let last = null; for (let i = n - 1; i >= 0; i--) if (metrics[i].src_split_cum && typeof metrics[i].src_split_cum === "object") { last = metrics[i]; break; }
+  if (!last) { sub.textContent = ""; body.innerHTML = `<div class="none">Not recorded in this run. Runs launched with <code>long_v7</code> log, for each way an episode can start, how far it got beyond its starting point, so you can tell learned progress from a head start.</div>`; return; }
+  const cum = last.src_split_cum, rec = splitAgg(n - 32, n);
+  const pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
+  const reachTxt = (r, e) => { const out = []; MS_NAMES.slice(0, 4).forEach((nm, j) => { if (e[j] > 0) out.push(`${nm} ${pct(r[j] / e[j])}`); }); return out.length ? out.join(" · ") : "no eligible episodes"; };
+  sub.textContent = `gain = best path progress minus the progress the episode started at · all episodes so far, last 32 updates in brackets`;
+  const rows = SPLIT_ROWS.filter(([k]) => cum[k]).map(([k, label, hint]) => {
+    const c = cum[k], r = rec[k];
+    const e = c.elig || [], rr = (c.reach || []).map((v, j) => (v == null ? 0 : v * e[j]));
+    const gainRec = r && r.gn ? r.g / r.gn : null;
+    const bold = k === "base" ? ` style="font-weight:600"` : "";
+    return `<tr${bold} title="${hint}"><td>${label}</td><td class="num">${c.n}</td><td class="num">${c.gain == null ? "–" : c.gain.toFixed(1)}${gainRec == null ? "" : ` <span style="color:var(--muted)">(${gainRec.toFixed(1)})</span>`}</td><td>${reachTxt(rr, e)}</td></tr>`;
+  }).join("");
+  body.innerHTML = `<table class="splitTbl"><thead><tr><th>Episodes that started from</th><th class="num">episodes</th><th class="num">mean gain (tiles)</th><th>reached, among episodes that had not passed it at the start</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div class="note" style="color:var(--muted);margin-top:6px">The <b>Base start</b> row is the learned-from-scratch measure. If the other rows gain far more, the overall reach rate is mostly the head start from archived resets, not learning.</div>`;
+}
+
+/* ---------- from-start evaluation (trainer fields eval_*, long_v8, only on evaluation updates; the card stays hidden for older runs) ---------- */
+function renderEval() {
+  const card = $("evalCard"), body = $("evalBody"), sub = $("evalSub");
+  const evs = metrics.filter(m => m && m.eval_update != null && okv(m.eval_best_progress_mean));
+  const planned = !!(live && live.run && live.run.config && live.run.config.periodic_eval);
+  if (!evs.length && !planned) { card.hidden = true; return; }
+  card.hidden = false;
+  if (!evs.length) { sub.textContent = ""; body.innerHTML = `<div class="none">Waiting for the first evaluation (every ${(live.run.config.eval_every) || "N"} updates): the current policy plays a few episodes from the base start state, with no archive resets.</div>`; return; }
+  const last = evs[evs.length - 1], pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
+  sub.textContent = `update ${last.eval_update} · ${last.eval_episodes} episodes from the base start, sampled like training · ${evs.length} evaluation${evs.length > 1 ? "s" : ""}`;
+  const W = 300, H = 84, pad = 6, ymax = Math.max(1, ...evs.map(e => e.eval_best_progress_max ?? e.eval_best_progress_mean));
+  const x0 = evs[0].eval_update, xs = Math.max(1, last.eval_update - x0);
+  const X = (u) => pad + (evs.length > 1 ? (u - x0) / xs : 0.5) * (W - 2 * pad), Y = (v) => H - pad - (v / ymax) * (H - 2 * pad);
+  const line = (key) => evs.filter(e => okv(e[key])).map(e => `${X(e.eval_update).toFixed(1)},${Y(e[key]).toFixed(1)}`).join(" ");
+  const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Best path progress in tiles at each from-start evaluation: mean (solid) and best episode (dashed). Latest mean ${fmt(last.eval_best_progress_mean, 1)}, max ${fmt(last.eval_best_progress_max, 1)} tiles."><polyline points="${line("eval_best_progress_max")}" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/><polyline points="${line("eval_best_progress_mean")}" fill="none" stroke="var(--accent)" stroke-width="2"/>${evs.map(e => `<circle cx="${X(e.eval_update).toFixed(1)}" cy="${Y(e.eval_best_progress_mean).toFixed(1)}" r="2.5" fill="var(--accent)"><title>update ${e.eval_update}: mean ${fmt(e.eval_best_progress_mean, 1)}, max ${fmt(e.eval_best_progress_max, 1)}</title></circle>`).join("")}<text x="${pad}" y="11" font-size="9" fill="var(--muted)">best path progress (tiles), max ${fmt(ymax, 0)}</text></svg>`;
+  const reach = last.eval_ms_reach || [], steps = last.eval_ms_steps || [];
+  const rows = MS_NAMES.map((nm, k) => reach[k] == null ? "" : `<tr><td>${nm}</td><td class="num">${pct(reach[k])}</td><td class="num">${steps[k] == null ? "–" : Math.round(steps[k])}</td></tr>`).join("");
+  body.innerHTML = `<div class="evalWrap">${svg}<table class="splitTbl"><thead><tr><th>Latest evaluation</th><th class="num">reached</th><th class="num">mean steps</th></tr></thead><tbody>` +
+    `<tr style="font-weight:600"><td>Best progress, mean / max</td><td class="num" colspan="2">${fmt(last.eval_best_progress_mean, 1)} / ${fmt(last.eval_best_progress_max, 1)} tiles</td></tr>` +
+    `<tr><td>White-outs</td><td class="num" colspan="2">${pct(last.eval_whiteout_frac)}</td></tr><tr><td>Mean return</td><td class="num" colspan="2">${fmt(last.eval_return_mean, 1)}</td></tr>${rows}</tbody></table></div>` +
+    `<div class="note" style="color:var(--muted);margin-top:6px">Unlike the training episodes, these start from the base start state only (no checkpoint, swarm or battle resets), so the line is the learned-from-scratch curve.</div>`;
 }
 
 /* ---------- smoothing, reward verdict, PPO health, "is it learning?" ---------- */
@@ -1156,7 +1231,7 @@ function renderAll() {
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
   renderKpis(); renderCharts(); renderPpo(); renderLearning(); $("diag").innerHTML = diagnostics();
-  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderMilestones(); renderRecords(); renderFun(); renderEvLegend(); renderWhy();
+  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderMilestones(); renderSplit(); renderEval(); renderRecords(); renderFun(); renderEvLegend(); renderWhy();
 }
 /* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
 let world = null;

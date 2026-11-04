@@ -1,16 +1,17 @@
 """Dense "best-ever" path-progress reward (``long_v4``): reward shaping, NOT an observation.
 
 The minimal story path (New Bark -> Route 29 -> Cherrygrove -> Route 30 -> Route 31 -> Violet gate -> Violet City ->
-Violet Gym -> the tile in front of Falkner) is 319 steps long. ``progress(position)`` is how many of those steps are
-already behind the agent: ``319 - BFS steps still to go`` over the ROM map graph (``src.route_graph``, warps and
-doors included, ledges respected). Off-path tiles take the progress of the path tile they branch from minus the
+Violet Gym -> the tile in front of Falkner) is 309 steps long (``src.story_path.STORY_PATH_STEPS``; 319 before the
+ledge fix, when the graph had no ledge-jump edges). ``progress(position)`` is how many of those steps are already
+behind the agent: ``309 - BFS steps still to go`` over the ROM map graph (``src.route_graph``, warps and doors
+included, ledge jumps as one step, ledges never climbed). Off-path tiles take the progress of the path tile they branch from minus the
 walk back, so dead ends and buildings never score above their junction.
 
 Per step the reward is ``scale * max(0, progress - best_progress)`` and ``best_progress`` only ever rises:
 
 * a new best pays the improvement once; stepping back pays nothing and costs nothing, stepping forward again pays
   nothing until the old best is passed. Over an episode the payments telescope to ``scale * (final best - start
-  progress)``, at most ``scale * 319`` (about 25.5 at the default 0.08), so it cannot be farmed by oscillating,
+  progress)``, at most ``scale * 309`` (about 24.7 at the default 0.08), so it cannot be farmed by oscillating,
   circling or walking in and out of buildings;
 * ``best_progress`` starts at the progress of the actual start state (after jitter, from the archive too), so a
   mid-route start pays nothing for the progress it already has;
@@ -26,11 +27,11 @@ from __future__ import annotations
 from src.dwell import POKECENTER_MAPS
 from src.ram_parser import dialogue_open
 
-DEFAULT_SCALE = 0.08   # reward per path tile gained; the whole path pays about 25.5 vs ~140 of milestone bonuses
+DEFAULT_SCALE = 0.08   # reward per path tile gained; the whole path pays about 24.7 vs ~140 of milestone bonuses
 
 
 def progress(state) -> float | None:
-    """Path progress of ``state`` in tiles (0 at the start, ~319 in front of Falkner), or None when unknown."""
+    """Path progress of ``state`` in tiles (0 at the start, 309 in front of Falkner), or None when unknown."""
     try:
         from src import route_graph
         return route_graph.path_progress(state)

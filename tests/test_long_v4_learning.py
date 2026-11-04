@@ -201,7 +201,7 @@ class HorizonTests(unittest.TestCase):
         h3, h4 = 1 / (1 - v3.ppo.gamma), 1 / (1 - v4.ppo.gamma)
         self.assertAlmostEqual(h3, 333.3, places=0)
         self.assertAlmostEqual(h4, 1000.0, places=0)
-        self.assertGreater(h4, 319)                                   # longer than the 319-step story path
+        self.assertGreater(h4, 309)                                   # longer than the 309-step story path
         self.assertGreater(v4.ppo.gamma ** 1000, 0.3)                 # a milestone 1000 steps ahead still counts
         self.assertLess(v3.ppo.gamma ** 1000, 0.06)
 
@@ -392,7 +392,7 @@ class ExploreBudgetTests(unittest.TestCase):
 
     def test_extrinsic_outweighs_the_capped_exploration_on_a_full_path(self):
         cfg = load_config("long_v4")
-        full_path = 0.08 * 319 + 140 + 60                                  # path + milestones + badge
+        full_path = 0.08 * 309 + 140 + 60                                  # path + milestones + badge
         self.assertGreater(full_path, 10 * cfg.explore_budget)
 
     @unittest.skipUnless(HAVE_ROM, "needs the ROM")

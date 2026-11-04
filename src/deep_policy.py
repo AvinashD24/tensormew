@@ -197,6 +197,18 @@ if TORCH_AVAILABLE:
         def set_battle_a_bias(self, value: float) -> None:
             self.battle_a_bias = float(value)
 
+        @staticmethod
+        def _mask_logits(logits: torch.Tensor, action_mask) -> torch.Tensor:
+            """Valid-action masking (``src.battle_mask``): masked logits become a large negative number, so the softmax,
+            the sampled action, the log-prob AND the entropy all describe the masked distribution. ``action_mask`` is a
+            boolean tensor / array broadcastable to ``logits`` (True = allowed) or None (no-op). Called in every logit
+            path (act, forward, evaluate_actions*), always with the mask stored in the rollout, so the rollout log-prob
+            and the PPO re-evaluation agree."""
+            if action_mask is None:
+                return logits
+            mask = torch.as_tensor(action_mask, device=logits.device).to(torch.bool)
+            return logits.masked_fill(~mask.reshape(logits.shape), -1e9)
+
         def _bias_logits(self, logits: torch.Tensor, ram_obs: torch.Tensor) -> torch.Tensor:
             """Add ``battle_a_bias`` to the A logit of every sample whose in-battle flag is set (no-op at 0)."""
             bias = self.battle_a_bias
@@ -216,8 +228,9 @@ if TORCH_AVAILABLE:
             screen: torch.Tensor,
             ram_obs: torch.Tensor,
             hx: torch.Tensor | None = None,
+            action_mask=None,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
-            """Forward pass returning (action_logits, value)."""
+            """Forward pass returning (action_logits, value). ``action_mask`` (bool, True = allowed) masks the logits."""
             vis_feat = self.vision_trunk(screen)
             ram_feat = self.ram_trunk(ram_obs)
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
@@ -231,7 +244,7 @@ if TORCH_AVAILABLE:
             else:
                 out = fused
 
-            logits = self._bias_logits(self.actor(out), ram_obs)
+            logits = self._mask_logits(self._bias_logits(self.actor(out), ram_obs), action_mask)
             value = self.critic(out).squeeze(-1)
             return logits, value
 
@@ -240,6 +253,7 @@ if TORCH_AVAILABLE:
             screen: torch.Tensor,
             ram_obs: torch.Tensor,
             hx: torch.Tensor | None = None,
+            action_mask=None,
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
             """Recurrent forward pass returning (action_logits, value, new_hx)."""
             vis_feat = self.vision_trunk(screen)
@@ -256,7 +270,7 @@ if TORCH_AVAILABLE:
                 out = fused
                 new_hx = None
 
-            logits = self._bias_logits(self.actor(out), ram_obs)
+            logits = self._mask_logits(self._bias_logits(self.actor(out), ram_obs), action_mask)
             value = self.critic(out).squeeze(-1)
             return logits, value, new_hx
 
@@ -268,8 +282,10 @@ if TORCH_AVAILABLE:
             ram_np: np.ndarray,
             deterministic: bool = False,
             device: str = "cpu",
+            action_mask=None,
         ) -> Tuple[int, float, float]:
-            """Take numpy screen (144, 160, 3) and the RAM vector (obs_dim,) and return (action, logp, value)."""
+            """Take numpy screen (144, 160, 3) and the RAM vector (obs_dim,) and return (action, logp, value).
+            ``action_mask`` (bool (num_actions,), True = allowed) restricts sampling / argmax and the returned log-prob."""
             self.eval()
             # Format screen: (H, W, C) -> (1, C, H, W) normalized to [0, 1]
             if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
@@ -285,7 +301,7 @@ if TORCH_AVAILABLE:
             )
             ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
 
-            logits, value = self.forward(screen_t, ram_t)
+            logits, value = self.forward(screen_t, ram_t, action_mask=action_mask)
             dist = Categorical(logits=logits)
             if deterministic:
                 action = torch.argmax(logits, dim=-1)
@@ -347,13 +363,13 @@ if TORCH_AVAILABLE:
             return p, next_hx
 
         def evaluate_actions(
-            self, screen: torch.Tensor, ram_obs: torch.Tensor, actions: torch.Tensor
+            self, screen: torch.Tensor, ram_obs: torch.Tensor, actions: torch.Tensor, action_mask=None
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            """Evaluate actions for PPO loss updates."""
+            """Evaluate actions for PPO loss updates (``action_mask``: the mask stored with the rollout step)."""
             if screen.dim() == 5:
                 # Sequential evaluation (B, T, C, H, W)
-                return self.evaluate_actions_sequence(screen, ram_obs, actions)
-            logits, values = self.forward(screen, ram_obs)
+                return self.evaluate_actions_sequence(screen, ram_obs, actions, action_mask=action_mask)
+            logits, values = self.forward(screen, ram_obs, action_mask=action_mask)
             dist = Categorical(logits=logits)
             log_probs = dist.log_prob(actions)
             entropy = dist.entropy()
@@ -367,6 +383,7 @@ if TORCH_AVAILABLE:
             hx: torch.Tensor | None = None,
             dones: torch.Tensor | None = None,
             return_aux: bool = False,
+            action_mask=None,
         ):
             """Evaluate sequential trajectory chunk for recurrent PPO loss updates.
 
@@ -410,7 +427,8 @@ if TORCH_AVAILABLE:
 
             logits = self._bias_logits(self.actor(out), ram_flat)
             values = self.critic(out).squeeze(-1).reshape(B, T)
-            dist = Categorical(logits=logits.reshape(B, T, self.num_actions))
+            logits = self._mask_logits(logits.reshape(B, T, self.num_actions), action_mask)   # (B, T, A) mask from the rollout
+            dist = Categorical(logits=logits)
             log_probs = dist.log_prob(actions)
             entropy = dist.entropy()
             if return_aux:

@@ -58,7 +58,10 @@ import torch
 import torch.optim as optim
 
 from src.battle_obs import equip_supplies, heal_item_count
-from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
+from src.periodic_eval import EVAL_STATE, aggregate, episode_record, is_eval_update
+from src.battle_mask import N_ACTIONS as MASK_N_ACTIONS
+from src.battle_mask import all_true as mask_all_true, battle_action_mask, pack_mask, unpack_mask
+from src.deep_policy import BATTLE_FLAG_INDEX, CheckpointIncompatibleError, SpatialVisionPolicy
 from src.dialogue_loop import DialogueLoopTracker
 from src.stagnation import StagnationTracker
 from src.dwell import DwellTracker
@@ -69,8 +72,9 @@ from src.entropy_guard import EntropyGuard, anneal_fraction
 from src.idle_press import IdlePressTracker
 from src.path_progress import PathProgress
 from src.emulator import Emulator
+from src.heal_care import HealCareTracker, is_heal_trip
 from src.heal_reward import heal_payment
-from src.milestone_stats import MilestoneRecords, MilestoneStats, is_base_start
+from src.milestone_stats import MilestoneRecords, MilestoneStats, SourceSplitStats, is_base_start, source_of
 from src.live_feed import LiveFeed
 from src.macros import Macros
 from src.mover import walkable
@@ -598,6 +602,9 @@ class EnvWorker:
         # long_v6: stagnation penalty (src.stagnation, OFF without params), white-out as a true episode end.
         self.stagnation = StagnationTracker.from_params(cfg.get("stagnation"))
         self.terminate_on_whiteout = bool(cfg.get("terminate_on_whiteout", False))
+        # long_v8: valid-action mask of the CURRENT observation (src.battle_mask), refreshed by get_obs; OFF = all True.
+        self.action_mask = bool(cfg.get("action_mask", False))
+        self.last_mask = mask_all_true()
         # long_v5 anti-collapse (all OFF when absent from cfg): no-effect A / B press cost (src.idle_press), and the
         # wall-bump / tile-revisit penalties switched off while the path reward is on.
         self.idle_press = IdlePressTracker.from_params(cfg.get("idle_press"))
@@ -605,7 +612,12 @@ class EnvWorker:
         self.disable_loop = bool(cfg.get("disable_loop_penalty", False))
         # long_v6: repeated effect-less dialogue cost (src.dialogue_loop), OFF when cfg has no "dialogue_loop" params.
         self.dialogue_loop = DialogueLoopTracker.from_params(cfg.get("dialogue_loop"))
-        self._last_stage = 0  # stage already archived / seen at the start of the episode
+        # long_v7 healing care (src.heal_care; OFF when cfg has no "heal_care" params / "heal_trip_exempt").
+        self.heal_care = HealCareTracker.from_params(cfg.get("heal_care"))
+        self.heal_trip_exempt = bool(cfg.get("heal_trip_exempt", False))
+        self.heal_trip_threshold = float(cfg.get("heal_trip_threshold", 0.3))
+        self._ep_start_path: float | None = None   # path progress at the start of the running episode (source-split metrics)
+        self._last_stage = 0 # stage already archived / seen at the start of the episode
         self._pending_stage: int | None = None  # stage entered while mid-cutscene: snapshot once the screen is calm
         self._pending_events: set = set()
 
@@ -658,6 +670,8 @@ class EnvWorker:
         self.seen_maps.add((st.map_group, st.map_number))
         self.tile_visit_counts[tile] = self.tile_visit_counts.get(tile, 0) + 1
         ram_vec = observe(st, self.visited, deep=True, seen_maps=self.seen_maps)
+        if self.action_mask:
+            self.last_mask = battle_action_mask(self.emu, st)   # only reads the tilemap while battle_mode != 0
         return self._screen(), ram_vec, st
 
     def _peek_obs(self, st):
@@ -739,6 +753,7 @@ class EnvWorker:
             self.dwell.reset(st)
         if self.path_progress is not None:
             self.path_progress.reset(st)   # the start state's own progress (archive / jitter) is never paid
+            self._ep_start_path = self.path_progress.best
             # The route checkpoint's own bucket is already in the archive: save again only for a higher one.
             self._route_saved_bucket = bucket_of(self.path_progress.best, self.route_every)
         if self.idle_press is not None:
@@ -747,6 +762,8 @@ class EnvWorker:
             self.dialogue_loop.reset()
         if self.stagnation is not None:
             self.stagnation.reset()
+        if self.heal_care is not None:
+            self.heal_care.reset()
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
@@ -939,6 +956,13 @@ class EnvWorker:
         if self.dialogue_loop is not None:
             dlg_pen = self.dialogue_loop.update(before, after, exec_idx == ACTIONS.index("a"))   # <= 0 (long_v6)
         self._maybe_save_route(after)
+        if self.heal_trip_exempt and is_heal_trip(after, self.heal_trip_threshold):
+            # long_v7: walking to heal is never a retreat / stall / dwell: those three costs are off while the lead is low or
+            # the agent is in a Center / Mart (the retreat budget spent on this step is handed back).
+            if retreat_pen and self.path_progress is not None:
+                self.path_progress.retreat_spent = max(0.0, self.path_progress.retreat_spent + retreat_pen)
+            retreat_pen = dwell_pen = stag_pen = 0.0
+        heal_care_comps = self.heal_care.update(before, after) if self.heal_care is not None else None
         momentum = 0.02 if (action_name == self.last_dir and moved) else 0.0
         momentum = budget_pay(self.budget, "explore", momentum) if self._budget_ok else momentum
         self.last_dir = action_name if moved else None
@@ -957,6 +981,10 @@ class EnvWorker:
         if self.stagnation is not None:
             comps["stagnation"] = stag_pen
         step_rew += curiosity + loop + momentum + dwell_pen + path_rew + idle_pen + dlg_pen + retreat_pen + stag_pen
+        if heal_care_comps:
+            for k, v in heal_care_comps.items():   # long_v7: "lowhp" (<= 0), "survive" / "potion" (>= 0)
+                comps[k] = comps.get(k, 0.0) + v
+                step_rew += v
 
         # No termination on milestones or on the badge; the episode ends on the step limit (a time limit, not a goal) or,
         # with ``terminate_on_whiteout`` (long_v6), on a white-out: a TRUE termination (not truncated, so the trainer does
@@ -982,6 +1010,7 @@ class EnvWorker:
         ended_partial = self._partial and not terminated   # a white-out is a real episode end, not a stagger cut
         ended_ms = (self._ep_start_stage, self._ep_furthest,
                     None if self.path_progress is None else self.path_progress.best) if done else None
+        ended_start_path = self._ep_start_path if done else None
         self._maybe_archive(after)
         final_obs = self._peek_obs(after) if truncated else None
         if done:
@@ -1021,8 +1050,11 @@ class EnvWorker:
                 "mo": int(getattr(st_now, "money", 0)),
             },
         }
+        if self.action_mask:
+            info_out["amask"] = pack_mask(self.last_mask)   # valid actions of the NEXT observation (the new episode's after a reset)
         if ended_ms is not None:   # the finished episode's milestone summary (src.milestone_stats)
             info_out["ended_start_stage"], info_out["ended_furthest"], info_out["ended_best_path"] = ended_ms
+            info_out["ended_start_path"] = ended_start_path   # path progress the episode started at (source-split gain)
         if ms_new:
             info_out["ms_new"] = ms_new
         if final_obs is not None:
@@ -1070,6 +1102,8 @@ def _worker_fn(pipe, seed: int, start_states: list[str], max_steps: int, env_cfg
                 pipe.send(worker.reset())
             elif cmd == "STEP":
                 pipe.send(worker.step(int(data_arg)))
+            elif cmd == "MASK":   # valid-action mask of the current observation (after a RESET), packed bits
+                pipe.send(pack_mask(worker.last_mask))
             elif cmd == "INTRINSIC":   # no reply: the parent does not wait for one
                 worker.set_intrinsic_scale(float(data_arg))
             elif cmd == "CLOSE":
@@ -1123,6 +1157,8 @@ class VectorEnv:
         self.procs = []
         self.last_infos: list[dict | None] = [None] * num_envs  # per-env telemetry from the latest step()
         self.last_truncated = np.zeros(num_envs, dtype=bool)
+        self.use_mask = bool((env_cfg or {}).get("action_mask", False))   # long_v8: per-env valid-action masks
+        self.last_masks = np.ones((num_envs, MASK_N_ACTIONS), dtype=bool)   # (num_envs, 6), True = allowed
         self.last_final: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self._closed = False
         try:
@@ -1183,6 +1219,11 @@ class VectorEnv:
                 s, r = self._recv(i)
                 screens.append(s)
                 rams.append(r)
+            if getattr(self, "use_mask", False):   # valid-action masks of the first observations (workers answer MASK after a RESET)
+                for i in range(len(self.pipes)):
+                    self._send(i, ("MASK", None))
+                for i in range(len(self.pipes)):
+                    self.last_masks[i] = unpack_mask(self._recv(i))
         except BaseException:  # includes Ctrl+C: never leave workers (and their emulators) behind
             self.close()
             raise
@@ -1210,6 +1251,8 @@ class VectorEnv:
                 self.last_final[i] = final
             self.last_truncated[i] = bool(info.get("truncated", False))
             self.last_infos[i] = info
+            if getattr(self, "use_mask", False):
+                self.last_masks[i] = unpack_mask(info.get("amask", 63))   # 63 = all six actions allowed
             screens.append(s)
             rams.append(r)
             rews.append(rew)
@@ -1303,10 +1346,11 @@ def warmup_scaler(policy, vec_env, scaler, screens, rams, hx, rollouts: int, rol
     for _ in range(steps):
         s = torch.from_numpy(screens).to(device).permute(0, 3, 1, 2).contiguous().float().div_(255.0)
         r = torch.from_numpy(rams).float().to(device)
+        mkw = {"action_mask": torch.from_numpy(vec_env.last_masks).to(device)} if getattr(vec_env, "use_mask", False) else {}
         if policy.use_gru:
-            logits, _val, next_hx = policy.forward_recurrent(s, r, hx)
+            logits, _val, next_hx = policy.forward_recurrent(s, r, hx, **mkw)
         else:
-            logits, _val = policy(s, r)
+            logits, _val = policy(s, r, **mkw)
             next_hx = None
         actions = torch.distributions.Categorical(logits=logits).sample().cpu().numpy()
         screens, rams, rews, dones, _maps, _badges = vec_env.step(actions)
@@ -1321,6 +1365,88 @@ def warmup_scaler(policy, vec_env, scaler, screens, rams, hx, rollouts: int, rol
     info = {"steps": steps, "mean_reward": total / n_env / max(1, int(rollouts)),
             "std_before": std_before, "std_after": scaler.std if scaler is not None else 1.0}
     return screens, rams, hx, info
+
+
+EVAL_WORKER_INDEX = 9999   # RNG stream index of the evaluation env (training envs use 0..envs-1)
+
+
+def eval_env_cfg(cfg: TrainConfig) -> dict:
+    """Env config of the periodic-evaluation worker (long_v8): the training env config with every non-base start source
+    switched off (no archives / checkpoints / swarm, no stagger offset, no length jitter, no start jitter) and its own seed."""
+    env = worker_env_cfg(cfg, None, None, None)
+    env.update({"swarm_dir": None, "swarm_prob": 0.0, "battle_dir": None, "battle_prob": 0.0, "route_dir": None,
+                "route_prob": 0.0, "stagger_episodes": False, "episode_len_jitter": 0.0, "jitter_max": 0,
+                "stage_balanced": False, "num_envs": 0, "seed": int(cfg.seed) + 104729})
+    return env
+
+
+class PeriodicEvaluator:
+    """From-start evaluation of the CURRENT policy on one dedicated in-process env (``periodic_eval``; see ``src.periodic_eval``).
+
+    Isolation (checked by tests/test_periodic_eval.py): its own emulator and ``EnvWorker`` (no archives, so nothing is
+    written), its own ``torch.Generator`` for sampling (the global torch / numpy RNGs, which drive the PPO minibatch
+    shuffles and the rollout sampling, are not consumed), its own GRU state, ``torch.no_grad()`` and eval mode (no BatchNorm
+    statistic or parameter changes), and it never touches the reward scaler, the progress tracker or any counter.
+    The early battle A-bias is switched off for the evaluation and restored afterwards.
+    """
+
+    def __init__(self, cfg: TrainConfig, device):
+        self.cfg, self.device = cfg, device
+        self.worker = None
+        self.failures = 0
+
+    def _worker(self):
+        if self.worker is None:   # created lazily: no second emulator exists until the first evaluation
+            self.worker = EnvWorker(EVAL_WORKER_INDEX, [EVAL_STATE], int(self.cfg.eval_max_steps), eval_env_cfg(self.cfg))
+        return self.worker
+
+    @torch.no_grad()
+    def run(self, policy, update: int) -> dict:
+        t0 = time.time()
+        w = self._worker()
+        gen = torch.Generator(device="cpu")
+        gen.manual_seed(int(self.cfg.seed) * 1000003 + int(update))
+        saved_bias, was_training = float(policy.battle_a_bias), policy.training
+        policy.set_battle_a_bias(0.0)
+        policy.eval()
+        try:
+            episodes = []
+            screen, ram = w.reset()   # the first episode always starts from the base start state
+            for _ in range(int(self.cfg.eval_episodes)):
+                hx = torch.zeros(1, 1, policy.gru_hidden_dim, device=self.device) if policy.use_gru else None
+                ret, ms_steps, n_steps = 0.0, {}, 0
+                while True:
+                    s = torch.from_numpy(np.ascontiguousarray(screen)).to(self.device).permute(2, 0, 1).unsqueeze(0).float().div_(255.0)
+                    r = torch.from_numpy(np.asarray(ram)).float().to(self.device).unsqueeze(0)
+                    mkw = {"action_mask": torch.from_numpy(w.last_mask.copy()).to(self.device).unsqueeze(0)} if w.action_mask else {}
+                    if policy.use_gru:
+                        logits, _v, hx = policy.forward_recurrent(s, r, hx, **mkw)
+                    else:
+                        logits, _v = policy(s, r, **mkw)
+                    probs = torch.softmax(logits.float(), dim=-1).cpu()
+                    act = int(torch.multinomial(probs, 1, generator=gen).item())
+                    screen, ram, rew, done, _maps, _badges, info = w.step(act)
+                    ret += float(rew)
+                    n_steps += 1
+                    for m_idx, m_steps, _base in (info.get("ms_new") or []):
+                        ms_steps.setdefault(int(m_idx), int(m_steps))
+                    if done:
+                        # w.step() already started the next episode (a fresh base-start reset): its first obs is (screen, ram)
+                        episodes.append(episode_record(ret, n_steps, info.get("ended_furthest"), info.get("ended_best_path"),
+                                                       info.get("end_reason"), ms_steps))
+                        break
+        finally:
+            policy.set_battle_a_bias(saved_bias)
+            policy.train(was_training)
+        return aggregate(episodes, MILESTONE_COUNT, update, time.time() - t0)
+
+    def close(self) -> None:
+        if self.worker is not None:
+            try:
+                self.worker.close()
+            except Exception:
+                pass
+            self.worker = None
 
 
 def fit_minibatches(envs: int, num_minibatches: int) -> int:
@@ -1486,6 +1612,10 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "heal_budget": cfg.heal_budget,
         "battle_lowhp_weight": cfg.battle_lowhp_weight if cfg.battle_archive else 0.0,
         "battle_lowhp_threshold": cfg.battle_lowhp_threshold,
+        "heal_care": cfg.heal_care_params(),
+        "heal_trip_exempt": cfg.heal_trip_exempt,
+        "heal_trip_threshold": cfg.lowhp_exposure_threshold,
+        "action_mask": cfg.battle_action_mask,
     }
 
 
@@ -1639,9 +1769,18 @@ def train(
             f"terminate on white-out={cfg.terminate_on_whiteout}",
             flush=True,
         )
+    if cfg.source_split_metrics or cfg.heal_care_params() or cfg.heal_trip_exempt:
+        print(
+            f"[long_v7] source-split metrics={cfg.source_split_metrics} | "
+            f"low-HP exposure={'%g->%g/step (ramp %d) below %.0f%% HP, budget %g' % (cfg.lowhp_exposure_min, cfg.lowhp_exposure_max, cfg.lowhp_exposure_ramp, 100 * cfg.lowhp_exposure_threshold, cfg.lowhp_exposure_budget) if cfg.lowhp_exposure_penalty else 'off'} | "
+            f"battle-survive bonus={'+%g above %.0f%% HP, budget %g' % (cfg.battle_survive_amount, 100 * cfg.battle_survive_threshold, cfg.battle_survive_budget) if cfg.battle_survive_bonus else 'off'} | "
+            f"potion-use reward={'+%g below %.0f%% HP, budget %g' % (cfg.potion_use_amount, 100 * cfg.potion_use_threshold, cfg.potion_use_budget) if cfg.potion_use_reward else 'off'} | "
+            f"heal-trip exemption={cfg.heal_trip_exempt}",
+            flush=True,
+        )
     if cfg.path_progress:
         print(f"[path progress] +{cfg.path_progress_scale} per tile of new best progress along the story path "
-              f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * 319:.1f} for the whole path)",
+              f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * 309:.1f} for the whole path)",
               flush=True)
     vec_env = VectorEnv(num_envs=num_envs, start_states=states, max_steps=cfg.max_steps,
                         env_cfg=worker_env_cfg(cfg, swarm_dir, battle_dir, route_dir))
@@ -1701,8 +1840,13 @@ def train(
     buf_trunc = torch.zeros((T, B), dtype=torch.bool)
     buf_boot = torch.zeros((T, B), dtype=torch.float32)
     buf_raw = torch.zeros((T, B), dtype=torch.float32)  # unscaled rewards, for logging
+    use_mask = bool(cfg.battle_action_mask)
+    # long_v8: the valid-action mask each step's action was sampled under; stored so the PPO update re-applies the SAME mask.
+    buf_masks = torch.ones((B, T, MASK_N_ACTIONS), dtype=torch.bool) if use_mask else None
+    evaluator = PeriodicEvaluator(cfg, device) if cfg.periodic_eval else None   # long_v8: from-start evaluation, own env
 
     ms_stats = MilestoneStats()
+    split_stats = SourceSplitStats() if cfg.source_split_metrics else None   # long_v7: learned vs head start, by reset source
     # Fastest-to-milestone records (steps from the base start state); rebuilt from this run's history.jsonl on resume.
     ms_records = (MilestoneRecords.from_history(history_dir / "history.jsonl")
                   if (resumed and history_dir is not None) else MilestoneRecords())
@@ -1748,6 +1892,8 @@ def train(
             policy.eval()
             phase = {"infer": 0.0, "env": 0.0, "feed": 0.0, "trunc": 0.0, "buf": 0.0}
             whiteouts = 0   # episodes ended by a white-out in this rollout (terminate_on_whiteout)
+            mask_battle_steps = mask_active_steps = 0   # long_v8: env-steps in battle / of those with at least one masked action
+            mask_valid_sum = 0.0                        # sum over those steps of the fraction of allowed actions
             resets_total = resets_route = 0   # resets in this rollout, and how many of them loaded a route checkpoint
             _pc = time.perf_counter
             for step in range(T):
@@ -1757,11 +1903,14 @@ def train(
                 )
                 rams_t = torch.from_numpy(rams_cur).float().to(device)
 
+                # Valid-action mask of THIS observation (set by the previous step()/reset()); copied because step() overwrites it.
+                step_mask_np = vec_env.last_masks.copy() if use_mask else None
+                mkw = {"action_mask": torch.from_numpy(step_mask_np).to(device)} if use_mask else {}
                 with torch.no_grad():
                     if policy.use_gru:
-                        logits, val, next_hx = policy.forward_recurrent(screens_t, rams_t, hx)
+                        logits, val, next_hx = policy.forward_recurrent(screens_t, rams_t, hx, **mkw)
                     else:
-                        logits, val = policy(screens_t, rams_t)
+                        logits, val = policy(screens_t, rams_t, **mkw)
                         next_hx = None
 
                     dist = torch.distributions.Categorical(logits=logits)
@@ -1798,6 +1947,10 @@ def train(
                     resets_route += 1 if str(inf.get("state", "")).startswith(ROUTE_PREFIX) else 0   # the NEW episode's start
                     ms_stats.add_episode(inf.get("ended_start_stage"), inf.get("ended_furthest"),
                                          inf.get("ended_best_path"), partial=bool(inf.get("partial_episode")))
+                    if split_stats is not None:
+                        split_stats.add_episode(source_of(inf.get("ended_state")), inf.get("ended_start_stage"),
+                                                inf.get("ended_furthest"), inf.get("ended_best_path"),
+                                                inf.get("ended_start_path"), partial=bool(inf.get("partial_episode")))
                     if inf.get("partial_episode"):
                         continue  # a staggered first episode cut short: not a full-length progress sample
                     progress.add(inf.get("ep_start_phi"), inf.get("route_phi"))
@@ -1824,6 +1977,13 @@ def train(
                 buf_rams[:, step] = rams_t.cpu()
                 buf_actions[:, step] = actions_t.cpu()
                 buf_logps[:, step] = logp_t.cpu()
+                if use_mask:
+                    buf_masks[:, step] = torch.from_numpy(step_mask_np)
+                    in_battle = rams_cur[:, BATTLE_FLAG_INDEX] > 0.5   # observation of THIS step (rams_cur is replaced below)
+                    nb = int(in_battle.sum())
+                    mask_battle_steps += nb
+                    mask_valid_sum += float(step_mask_np[in_battle].mean(axis=1).sum()) if nb else 0.0
+                    mask_active_steps += int((~step_mask_np[in_battle].all(axis=1)).sum()) if nb else 0
                 buf_raw[step] = torch.from_numpy(rews)
                 buf_rewards[step] = torch.from_numpy(scaler.scale(rews, dones) if scaler is not None else rews)
                 buf_dones[step] = torch.from_numpy(dones)
@@ -1855,6 +2015,7 @@ def train(
                 advantages=advantages.transpose(0, 1).contiguous(),
                 initial_hx=initial_hx,
                 dones=buf_dones.transpose(0, 1).contiguous(),
+                masks=buf_masks,
             )
             _t_upd0 = _pc()
             stats = ppo_update(policy, optimizer, batch, hp, entropy_coef=entropy_coef)
@@ -1871,6 +2032,17 @@ def train(
                 f"gae+batch {_t_upd0 - _t_roll:.1f}s | ppo update {_t_upd1 - _t_upd0:.1f}s",
                 flush=True,
             )
+            eval_payload = None
+            if evaluator is not None and is_eval_update(update, cfg.eval_every):   # long_v8: after dt, so dt excludes it
+                try:
+                    eval_payload = evaluator.run(policy, update)
+                    print(f"[eval] update {update}: best progress mean {eval_payload['eval_best_progress_mean']} / max "
+                          f"{eval_payload['eval_best_progress_max']}, white-outs {eval_payload['eval_whiteout_frac']:.0%}, "
+                          f"return {eval_payload['eval_return_mean']} ({cfg.eval_episodes} x {cfg.eval_max_steps} steps from "
+                          f"{EVAL_STATE}, {eval_payload['eval_seconds']}s)", flush=True)
+                except Exception as e:   # an evaluation problem must never stop the training
+                    evaluator.failures += 1
+                    print(f"[eval] WARNING: evaluation at update {update} failed ({e!r}); training continues", flush=True)
             max_maps = max(map_counts)
             max_badges = max(badges)
             cur_lr = optimizer.param_groups[0]["lr"]
@@ -1899,6 +2071,10 @@ def train(
             }
             if entropy_guard is not None:
                 extra["entropy_boost"] = 1.0 if entropy_boosted else 0.0
+            if use_mask:
+                extra["mask_battle_steps"] = int(mask_battle_steps)   # env-steps spent in battle this update
+                extra["mask_valid_frac"] = round(mask_valid_sum / mask_battle_steps, 4) if mask_battle_steps else 1.0
+                extra["mask_active_frac"] = round(mask_active_steps / mask_battle_steps, 4) if mask_battle_steps else 0.0
             if cfg.terminate_on_whiteout:
                 extra["whiteout_episodes"] = int(whiteouts)   # episodes ended by a white-out (true terminations) this update
                 extra["episodes_ended"] = int(resets_total)
@@ -1910,7 +2086,11 @@ def train(
                 extra["route_ckpt_resets"] = int(resets_route)
                 extra["route_ckpt_reset_share"] = round(resets_route / resets_total, 4) if resets_total else 0.0
             ms_payload = ms_stats.end_update([i.get("cur_furthest") for i in live_infos])
+            if split_stats is not None:
+                ms_payload.update(split_stats.end_update())
             extra.update(ms_payload)
+            if eval_payload:   # eval_* keys only on evaluation updates (metrics.jsonl, history.jsonl and state.json)
+                extra.update(eval_payload)
             if hp.aux_coef > 0:
                 extra["aux_map_loss"] = _finite_or_none(stats.get("aux_map_loss"))
                 extra["aux_hp_loss"] = _finite_or_none(stats.get("aux_hp_loss"))
@@ -1933,6 +2113,9 @@ def train(
             )
             if feed is not None:
                 feed.set_milestones(ms_payload)
+                if eval_payload:
+                    feed.set_eval(eval_payload, f"From-start evaluation at update {update}: best progress "
+                                  f"{eval_payload['eval_best_progress_mean']} (max {eval_payload['eval_best_progress_max']})")
                 feed.set_records(ms_records.snapshot(), ms_records.take_new())
                 feed.on_update(
                     update,
@@ -1983,13 +2166,15 @@ def train(
                 print(f"[checkpoint] WARNING: final save failed: {e}", flush=True)
         if feed is not None:
             feed.finish()
+        if evaluator is not None:
+            evaluator.close()
         vec_env.close()
 
 
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v7 = long_v6 + learned-vs-head-start metrics split by reset source and healing care: low-HP exposure cost, battle-survive and potion-use bonuses, heal-trip exemption from retreat/stagnation/dwell, stronger capped heal reward; long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)
@@ -2007,6 +2192,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sticky-prob", type=float, default=None)
     parser.add_argument("--jitter-max", type=int, default=None)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--eval-every", type=int, default=None, help="periodic from-start evaluation interval in updates (only used when the config has periodic_eval)")
+    parser.add_argument("--eval-episodes", type=int, default=None, help="episodes per from-start evaluation")
+    parser.add_argument("--eval-max-steps", type=int, default=None, help="steps per from-start evaluation episode")
     parser.add_argument("--state", default=None, help="start state used with --no-curriculum (default route29_entry)")
     parser.add_argument("--states", default="", help="comma-separated list of start states")
     parser.add_argument("--curriculum", action="store_const", const=True, default=None, dest="curriculum",
@@ -2048,8 +2236,11 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         "reward_scale": args.reward_scale,
         "bn_mode": args.bn_mode,
         "vf_clip": args.vf_clip,
+        "eval_every": args.eval_every,
+        "eval_episodes": args.eval_episodes,
+        "eval_max_steps": args.eval_max_steps,
     }
-    typed = {k: v for k, v in overrides.items() if v is not None}
+    typed ={k: v for k, v in overrides.items() if v is not None}
     if "save_path" not in typed and not getattr(args, "resume", False) and cfg.save_path == "logs/deep_policy.pt":
         # A fresh run must never reuse the shared default name: the cloud copy-back (or a second run) would overwrite
         # older weights. Give every run its own checkpoint, named after its run id.

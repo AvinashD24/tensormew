@@ -377,9 +377,143 @@ def evaluate(
     }
 
 
+# ----------------------------------------------------------------------------- learned vs head start (sampled, training env)
+def summarize_sampled(episodes: list[dict]) -> dict:
+    """Mean / median best path progress and per-milestone reach rate and first-reach step over sampled episodes."""
+    from src.milestone_stats import MILESTONE_LABELS
+
+    n = len(episodes)
+    best = sorted(float(e["best_path"]) for e in episodes if e.get("best_path") is not None)
+    gain = sorted(float(e["gain"]) for e in episodes if e.get("gain") is not None)
+
+    def med(v):
+        return float(np.median(v)) if v else None
+
+    out = {"episodes": n, "best_path_mean": float(np.mean(best)) if best else None, "best_path_median": med(best),
+           "gain_mean": float(np.mean(gain)) if gain else None, "whiteouts": sum(1 for e in episodes if e.get("whiteout")),
+           "milestones": {}}
+    for m, label in enumerate(MILESTONE_LABELS):
+        steps = [e["ms_steps"][str(m)] for e in episodes if str(m) in e.get("ms_steps", {})]
+        out["milestones"][label] = {"reached": len(steps), "rate": (len(steps) / n) if n else None,
+                                    "steps_mean": float(np.mean(steps)) if steps else None, "steps_median": med(steps)}
+    return out
+
+
+def run_sampled_episode(worker, net, seed: int, device: str = "cpu") -> dict:
+    """One STOCHASTIC episode (actions sampled from the policy, like training) in the real training ``EnvWorker``.
+
+    ``worker`` is a ``tools.train_deep_ppo.EnvWorker`` built without archives (always the base start state);
+    ``net`` a ``SpatialVisionPolicy`` or None (uniform random actions).  Records the best path progress, the gain over
+    the progress at the episode start, the step each milestone was first reached, white-out / end reason and a few
+    healing-diagnosis counters (steps with the lead below 30 % HP outside battle, heal payments, healing items used).
+    """
+    import torch
+
+    from src.battle_obs import heal_item_count
+
+    worker.rng = np.random.default_rng([int(seed), 7])
+    torch.manual_seed(int(seed))
+    screen, ram = worker.reset()
+    start_progress = worker.path_progress.best if worker.path_progress is not None else None
+    hx = None
+    ms_steps: dict[str, int] = {}
+    steps = lowhp_out = heal_events = items_used = 0
+    heal_reward = 0.0
+    prev_items = heal_item_count(worker.reader.parse(worker.emu.frame))
+    min_lead = 1.0
+    info: dict = {}
+    done = False
+    t0 = time.time()
+    while not done:
+        if net is None:
+            act = int(worker.rng.integers(0, 6))
+        else:
+            with torch.inference_mode():
+                s_t = (torch.from_numpy(screen).to(device).permute(2, 0, 1).unsqueeze(0).float().div_(255.0)
+                       .contiguous(memory_format=torch.channels_last))
+                r_t = torch.from_numpy(ram).float().to(device).unsqueeze(0)
+                if getattr(net, "use_gru", False):
+                    logits, _, hx = net.forward_recurrent(s_t, r_t, hx)
+                else:
+                    logits, _ = net(s_t, r_t)
+                act = int(torch.distributions.Categorical(logits=logits).sample().item())
+        screen, ram, _rew, done, _maps, _badges, info = worker.step(act)
+        steps += 1
+        for m_idx, m_steps, _base in (info.get("ms_new") or []):
+            ms_steps.setdefault(str(int(m_idx)), int(m_steps))
+        comps = info.get("reward_components") or {}
+        if comps.get("heal", 0.0) > 0:
+            heal_events += 1
+            heal_reward += float(comps["heal"])
+        if not done:   # after a done the info describes the NEW episode's first observation
+            fun = info.get("fun") or {}
+            ph = fun.get("ph") or []
+            if ph and ph[0][1] > 0:
+                frac = ph[0][0] / ph[0][1]
+                min_lead = min(min_lead, frac)
+                if frac < 0.3 and not fun.get("bm"):
+                    lowhp_out += 1
+            items = heal_item_count(worker.reader.parse(worker.emu.frame))
+            if items < prev_items:
+                items_used += prev_items - items
+            prev_items = items
+    best = info.get("ended_best_path")
+    return {"seed": int(seed), "steps": steps, "start_progress": start_progress, "best_path": best,
+            "gain": (None if best is None or start_progress is None else float(best) - float(start_progress)),
+            "ms_steps": ms_steps, "end_reason": info.get("end_reason"), "whiteout": info.get("end_reason") == "whiteout",
+            "lowhp_steps_outside_battle": lowhp_out, "heal_events": heal_events, "heal_reward": round(heal_reward, 3),
+            "heal_items_used": items_used, "min_lead_hp": round(min_lead, 3), "seconds": round(time.time() - t0, 1)}
+
+
+def sampled_eval_main(args) -> int:
+    """``--sampled``: evaluate a checkpoint (or ``--random-init`` weights) with sampled actions in the training env."""
+    import torch
+
+    torch.set_num_threads(6)
+    from src.deep_policy import SpatialVisionPolicy
+    from src.rl_env import ACTIONS, DEEP_OBS_DIM
+    from src.train_config import load_config
+    from tools.train_deep_ppo import EnvWorker, worker_env_cfg
+
+    cfg = load_config(args.config)
+    if getattr(args, "uniform_random", False):
+        net, label = None, "uniform-random"   # equivalent to an untrained net whose logits are ~flat; ~3x faster on CPU
+    elif args.random_init:
+        torch.manual_seed(args.seed)
+        net = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=len(ACTIONS), use_gru=cfg.recurrent,
+                                  gru_hidden_dim=512, aux_heads=bool(cfg.aux_loss and cfg.recurrent))
+        label = "random-init"
+    else:
+        net = SpatialVisionPolicy.load(args.checkpoint, device=args.device, check_schema=True)
+        label = str(args.checkpoint)
+    if net is not None:
+        net.set_battle_a_bias(0.0)
+        net.eval()
+        net.vision_trunk = net.vision_trunk.to(memory_format=torch.channels_last)   # ~30 % faster CPU inference
+    ecfg = worker_env_cfg(cfg, None, None, None)
+    ecfg.update({"stagger_episodes": False, "episode_len_jitter": 0.0, "seed": args.seed})
+    worker = EnvWorker(0, [args.start_state], args.max_steps, ecfg)
+    episodes = []
+    try:
+        for i in range(args.episodes):
+            ep = run_sampled_episode(worker, net, args.seed + i, args.device)
+            episodes.append(ep)
+            print(f"ep {i} seed {ep['seed']}: best {ep['best_path']} (gain {ep['gain']}) ms {ep['ms_steps']} "
+                  f"end {ep['end_reason']} steps {ep['steps']} lowHP-out {ep['lowhp_steps_outside_battle']} "
+                  f"heals {ep['heal_events']} items {ep['heal_items_used']} ({ep['seconds']}s)", flush=True)
+            out = {"label": label, "start_state": args.start_state, "max_steps": args.max_steps, "seed": args.seed,
+                   "config": cfg.name, "episodes": episodes, "summary": summarize_sampled(episodes)}
+            Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+            (Path(args.out_dir) / f"{args.name or 'sampled'}.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+    finally:
+        worker.close()
+    print(json.dumps(summarize_sampled(episodes), indent=1))
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Greedy evaluation of a SpatialVisionPolicy checkpoint")
-    ap.add_argument("--checkpoint", required=True)
+    ap.add_argument("--checkpoint", default=None)
     ap.add_argument("--start-state", default="new_bark_outside")
     ap.add_argument("--episodes", type=int, default=8)
     ap.add_argument("--max-steps", type=int, default=1500)
@@ -388,9 +522,20 @@ def main(argv=None) -> int:
     ap.add_argument("--name", default=None, help="output name: logs/eval/<name>.json (default: checkpoint stem)")
     ap.add_argument("--out-dir", default="logs/eval")
     ap.add_argument("--device", default="cpu")
+    ap.add_argument("--sampled", action="store_true",
+                    help="learned-vs-head-start mode: stochastic actions in the real training env from the base start state")
+    ap.add_argument("--random-init", action="store_true", help="with --sampled: untrained random-weight policy (baseline)")
+    ap.add_argument("--uniform-random", action="store_true", help="with --sampled: uniform random actions, no network (fast baseline)")
+    ap.add_argument("--config", default="long_v6", help="with --sampled: preset whose environment / reward settings are used")
     args = ap.parse_args(argv)
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if args.sampled:
+        if not (args.random_init or args.uniform_random or args.checkpoint):
+            ap.error("--sampled needs --checkpoint, --random-init or --uniform-random")
+        return sampled_eval_main(args)
+    if not args.checkpoint:
+        ap.error("--checkpoint is required")
 
     from src.deep_policy import SpatialVisionPolicy
 

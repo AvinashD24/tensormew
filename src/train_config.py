@@ -1,6 +1,8 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v6`` (``long_v5`` plus a route-checkpoint archive that restarts episodes along the agents' own best
+Presets: ``long_v8`` (``long_v7`` plus valid-action masking of provably-no-op buttons in battle menus and a periodic from-start
+evaluation), ``long_v7`` (``long_v6`` plus learned-vs-head-start metrics split by reset source and healing-care reward terms),
+``long_v6`` (``long_v5`` plus a route-checkpoint archive that restarts episodes along the agents' own best
 route progress, a dialogue-loop penalty and a reward-scaler warm-up rollout, after v5-1 got stuck at the end of Route 29),
 ``long_v5`` (``long_v4`` plus anti-collapse changes after the v4-1 run collapsed to pressing A: wall-bump and
 tile-revisit penalties off while the path reward is on, a small penalty for A / B presses that change nothing, a 0.3
@@ -27,12 +29,13 @@ from pathlib import Path
 from src import dialogue_loop as _dialogue_loop
 from src import dwell as _dwell
 from src import entropy_guard as _entropy_guard
+from src import heal_care as _heal_care
 from src import idle_press as _idle_press
 from src import path_progress as _path_progress
 from src import route_ckpt as _route_ckpt
 from src import stagnation as _stagnation
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6", "long_v7", "long_v8")
 
 
 class ConfigError(ValueError):
@@ -107,7 +110,7 @@ class TrainConfig:
     # it is an oracle (a hand-computed gradient toward the goal) kept only for ablations / debugging.
     goal_potential: bool = False
     # Dense path-progress reward (OFF by default, ON in long_v4; see src.path_progress): path_progress_scale per tile of
-    # NEW best progress along the 319-step story path (BFS over the ROM graph), once per tile, never negative. Reward
+    # NEW best progress along the 309-step story path (BFS over the ROM graph), once per tile, never negative. Reward
     # shaping only: nothing is added to the observation. Not combinable with the older goal_potential.
     path_progress: bool = False
     path_progress_scale: float = 0.08
@@ -210,6 +213,43 @@ class TrainConfig:
     # A white-out (the whole party fainted) ENDS the episode as a true termination (done, not a time-limit truncation:
     # no value bootstrap) instead of teleporting the agent and continuing. The -15 white-out penalty is the terminal reward.
     terminate_on_whiteout: bool = False
+    # --- long_v7 fields (all OFF / unchanged by default and in every older preset) ---
+    # Learned-vs-head-start diagnostics (src.milestone_stats.SourceSplitStats): per reset source (base start / route
+    # checkpoint / swarm / battle archive) the episode count, mean path-progress gain and milestone reach rates.
+    source_split_metrics: bool = False
+    # Healing care (src.heal_care; reward only, nothing scripted).  Low-HP exposure: a cost per overworld step while the lead
+    # is below lowhp_exposure_threshold HP, ramping min -> max over ramp consecutive steps, at most budget per episode, free in
+    # Pokemon Center / Mart maps and while healing.
+    lowhp_exposure_penalty: bool = False
+    lowhp_exposure_threshold: float = _heal_care.EXPOSURE_THRESHOLD
+    lowhp_exposure_min: float = _heal_care.EXPOSURE_MIN
+    lowhp_exposure_max: float = _heal_care.EXPOSURE_MAX
+    lowhp_exposure_ramp: int = _heal_care.EXPOSURE_RAMP
+    lowhp_exposure_budget: float = _heal_care.EXPOSURE_BUDGET
+    # Bonus for WINNING a battle with the lead above battle_survive_threshold HP (<= battle_survive_budget per episode).
+    battle_survive_bonus: bool = False
+    battle_survive_amount: float = _heal_care.SURVIVE_BONUS
+    battle_survive_threshold: float = _heal_care.SURVIVE_THRESHOLD
+    battle_survive_budget: float = _heal_care.SURVIVE_BUDGET
+    # Bonus for using a healing item that restores HP while the lead is below potion_use_threshold HP.
+    potion_use_reward: bool = False
+    potion_use_amount: float = _heal_care.POTION_BONUS
+    potion_use_threshold: float = _heal_care.POTION_THRESHOLD
+    potion_use_budget: float = _heal_care.POTION_BUDGET
+    # While the lead is below lowhp_exposure_threshold HP (or in a Pokemon Center / Mart map) the retreat cost, stagnation
+    # penalty and dwell penalty are switched off, so walking back to heal is never punished.
+    heal_trip_exempt: bool = False
+    # --- long_v8 fields (all OFF / unchanged by default and in every older preset) ---
+    # Valid-action masking in battles (src.battle_mask; Huang & Ontanon 2020): buttons that provably do nothing in the
+    # visible battle menu / text box are masked out of the policy's logits (rollout and PPO update use the same stored mask).
+    battle_action_mask: bool = False
+    # Periodic from-start evaluation: every eval_every updates the CURRENT policy plays eval_episodes episodes of
+    # eval_max_steps steps from the BASE start state on one dedicated env (stochastic like training); it touches no training
+    # state, archive or statistic. Logged as eval_* metrics on that update only.
+    periodic_eval: bool = False
+    eval_every: int = 50
+    eval_episodes: int = 4
+    eval_max_steps: int = 1024
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -320,6 +360,13 @@ class TrainConfig:
             errs.append("stagnation_penalty needs path_progress (new-best signal) and dwell_penalty (level exemption, no double count)")
         if self.warmup_rollout < 0:
             errs.append(f"warmup_rollout must be >= 0 (got {self.warmup_rollout})")
+        errs.extend(_heal_care.validate_params(
+            self.lowhp_exposure_threshold, self.lowhp_exposure_min, self.lowhp_exposure_max, self.lowhp_exposure_ramp,
+            self.lowhp_exposure_budget, self.battle_survive_amount, self.battle_survive_threshold,
+            self.battle_survive_budget, self.potion_use_amount, self.potion_use_threshold, self.potion_use_budget))
+        if self.eval_every < 1 or self.eval_episodes < 1 or self.eval_max_steps < 1:
+            errs.append(f"eval_every / eval_episodes / eval_max_steps must be >= 1 (got {self.eval_every} / "
+                        f"{self.eval_episodes} / {self.eval_max_steps})")
         errs.extend(_idle_press.validate_params(self.idle_press_cost, self.idle_press_budget))
         errs.extend(_entropy_guard.validate_params(
             self.entropy_boost_threshold, self.entropy_boost_until, self.entropy_boost_coef, self.entropy_boost_margin))
@@ -361,6 +408,20 @@ class TrainConfig:
         return {"after": self.stagnation_after, "min_penalty": self.stagnation_min,
                 "max_penalty": self.stagnation_max, "ramp_steps": self.stagnation_ramp,
                 "budget": self.stagnation_budget}
+
+    def heal_care_params(self) -> dict | None:
+        """Keyword arguments for ``src.heal_care.HealCareTracker``, or None when every healing-care term is off."""
+        if not (self.lowhp_exposure_penalty or self.battle_survive_bonus or self.potion_use_reward):
+            return None
+        return {
+            "exposure": self.lowhp_exposure_penalty, "threshold": self.lowhp_exposure_threshold,
+            "e_min": self.lowhp_exposure_min, "e_max": self.lowhp_exposure_max, "ramp": self.lowhp_exposure_ramp,
+            "e_budget": self.lowhp_exposure_budget,
+            "survive": self.battle_survive_bonus, "s_bonus": self.battle_survive_amount,
+            "s_threshold": self.battle_survive_threshold, "s_budget": self.battle_survive_budget,
+            "potion": self.potion_use_reward, "p_bonus": self.potion_use_amount,
+            "p_threshold": self.potion_use_threshold, "p_budget": self.potion_use_budget,
+        }
 
     def dialogue_loop_params(self) -> dict | None:
         """Keyword arguments for ``src.dialogue_loop.DialogueLoopTracker``, or None when the penalty is off."""
@@ -439,7 +500,7 @@ def long_v2() -> TrainConfig:
 
     No route oracle, learned battles, minimal story path (Route 29 -> Cherrygrove -> Route 30 -> Route 31 ->
     Violet City -> Violet Gym -> Falkner). Compared to ``long_v1``: more entropy for longer (menu navigation in
-    battle has to be discovered), a longer episode cap (the path is ~320 steps but battles cost steps), 32 envs x 256
+    battle has to be discovered), a longer episode cap (the path is 309 steps but battles cost steps), 32 envs x 256
     steps per update, lr decaying to 0.33x, ~800 updates (~6 h on a 4090 pod). The swarm archive (first env to reach a
     new stage saves a state, 30% of resets load one) supplies later-stage starts; stages are cut by map, not by flags.
     """
@@ -496,14 +557,14 @@ def long_v3() -> TrainConfig:
 def long_v4() -> TrainConfig:
     """``long_v3`` plus the dense best-ever path-progress reward and the learning-speed changes below.
 
-    ``path_progress`` pays ``path_progress_scale`` (0.08) per tile of NEW best progress along the 319-step minimal
+    ``path_progress`` pays ``path_progress_scale`` (0.08) per tile of NEW best progress along the 309-step minimal
     story path (``src.path_progress``): monotone per episode, nothing for stepping back, nothing for re-walking, the
-    start state's own progress is free, a new best resets the dwell window. The whole path pays about 25.5 in total,
+    start state's own progress is free, a new best resets the dwell window. The whole path pays about 24.7 in total,
     next to ~140 of milestone bonuses. Reward-only: the observation is exactly ``long_v3``'s.
 
     Added on top (each behind its own flag/field; literature in ``research/analysis/design_hardcoded_vs_learned.md``):
 
-    * horizon: ``gamma`` 0.997 -> 0.999 (horizon 1000 steps instead of 333: the story path is 319 steps but an episode
+    * horizon: ``gamma`` 0.997 -> 0.999 (horizon 1000 steps instead of 333: the story path is 309 steps but an episode
       is up to 2048 steps with battles; 0.997**1000 = 0.05 hides the last milestones from the start, 0.999**1000 =
       0.37). RND (Burda et al. 2018) used gamma_E = 0.999 and found it clearly better than 0.99. ``gae_lambda`` stays 0.95
       (OpenAI Five, Pleines et al. 2025). The recurrent state is carried across rollouts and the whole 256-step rollout
@@ -540,7 +601,7 @@ def long_v5() -> TrainConfig:
     """``long_v4`` plus anti-collapse changes (each behind its own flag, so they can be ablated).
 
     Live evidence (run v4-1, ``long_v4``, 75 updates, 24 envs): the policy collapsed to pressing A (58 % of actions),
-    entropy 1.78 -> 1.12 (update 38) -> 0.40 (update 75), path progress mean best only 8-22 of 319 tiles. An A press
+    entropy 1.78 -> 1.12 (update 38) -> 0.40 (update 75), path progress mean best only 8-22 of 319 tiles (the route length before the ledge fix; 309 now). An A press
     does not move the character, so it avoids the movement-linked ``bump`` (-37 per update) and ``loop`` (-54)
     penalties, while the path reward (0.08 / tile) was tiny next to them; with a low entropy coefficient (0.01 -> 0.001)
     and gamma 0.999 PPO locked the cheapest behaviour in. Changes:
@@ -549,7 +610,7 @@ def long_v5() -> TrainConfig:
        cover idling and wall hugging). Step, damage and whiteout stay;
     2. ``idle_press_penalty``: 0.015 per A / B press in the overworld that changes nothing observable (no dialogue,
        battle, position, party / bag / flag change), at most 10 per episode (``src.idle_press``);
-    3. ``path_progress_scale`` 0.08 -> 0.3 (the whole 319-tile path pays ~96 instead of ~25.5, next to ~140 of
+    3. ``path_progress_scale`` 0.08 -> 0.3 (the whole 309-tile path pays ~93 instead of ~24.7, next to ~140 of
        milestone bonuses and an exploration cap of 12);
     4. entropy: start 0.02 (was 0.01), floor 0.005 (was 0.001), and the anneal cannot run faster than
        update / 1200 (``entropy_anneal_updates``); the safety net ``entropy_boost`` raises the coefficient to 0.05 while
@@ -627,6 +688,61 @@ def long_v6() -> TrainConfig:
     return cfg
 
 
+def long_v7() -> TrainConfig:
+    """``long_v6`` plus two groups of changes, after run v6-1 (update ~400) showed 43-63 % of the episodes ending in a
+    white-out, a lead below 30 % HP in about half of the snapshots, and no way to tell learned progress from the head start
+    of the checkpoint resets:
+
+    1. ``source_split_metrics`` (``src.milestone_stats.SourceSplitStats``): per reset source (base start / route checkpoint /
+       swarm / battle) episode count, mean path-progress gain and milestone reach rates.  The base-start row is the honest
+       learned-from-scratch measure.  Diagnostics only.
+    2. Healing (``src.heal_care`` + ``src.heal_reward``; reward and curriculum only, nothing scripted): heal reward scale
+       4 -> 6 (budget 8 -> 10 per episode, still capped: Pleines et al. 2025 report an uncapped heal reward being exploited);
+       ``lowhp_exposure_penalty`` (0.002 -> 0.01 per overworld step while the lead is below 30 % HP, ramp 128 steps, <= 6 per
+       episode, free in Centers / Marts and while healing); ``battle_survive_bonus`` (+0.5 per battle won with the lead above
+       50 % HP, <= 3 per episode); ``potion_use_reward`` (+1 for a healing item that restores HP while the lead is below 50 %,
+       <= 3 per episode); ``heal_trip_exempt`` (retreat, stagnation and dwell costs off while the lead is below 30 % HP or in
+       a Center / Mart); low-HP-with-Potions battle-archive weight 3 -> 6 and threshold 40 % -> 50 %.
+
+    Everything else is ``long_v6``.
+    """
+    cfg = long_v6()
+    cfg.name = "long_v7"
+    cfg.source_split_metrics = True
+    cfg.heal_reward_scale = 6.0
+    cfg.heal_budget = 10.0
+    cfg.lowhp_exposure_penalty = True
+    cfg.battle_survive_bonus = True
+    cfg.potion_use_reward = True
+    cfg.heal_trip_exempt = True
+    cfg.battle_lowhp_weight = 6.0
+    cfg.battle_lowhp_threshold = 0.5
+    return cfg
+
+
+def long_v8() -> TrainConfig:
+    """``long_v7`` plus two changes (each behind its own flag, so they can be ablated):
+
+    1. ``battle_action_mask`` (``src.battle_mask``): in a battle, the buttons that provably do nothing in the visible
+       screen (grid-edge directions and B in the FIGHT/PKMN/PACK/RUN menu, left/right in the move list and the party list,
+       every direction in a plain text box) are masked out of the logits (Huang & Ontanon 2020), so exploration is not
+       spent on them. The mask is stored with the rollout and used again in the PPO update; checkpoints are unchanged.
+    2. ``periodic_eval`` (every 50 updates, 4 episodes of 1024 steps from ``new_bark_outside`` on a dedicated env,
+       stochastic like training): the honest learned-from-scratch curve, logged as ``eval_*`` metrics and shown in the
+       dashboard. No training state, archive or running statistic is touched by it.
+
+    Everything else is ``long_v7``.
+    """
+    cfg = long_v7()
+    cfg.name = "long_v8"
+    cfg.battle_action_mask = True
+    cfg.periodic_eval = True
+    cfg.eval_every = 50
+    cfg.eval_episodes = 4
+    cfg.eval_max_steps = 1024
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
@@ -644,6 +760,10 @@ def preset(name: str) -> TrainConfig:
         return long_v5()
     if name == "long_v6":
         return long_v6()
+    if name == "long_v7":
+        return long_v7()
+    if name == "long_v8":
+        return long_v8()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

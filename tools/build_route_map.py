@@ -22,6 +22,7 @@ from src.collision import is_cut_tree  # noqa: E402
 from src.falkner_nav import violet_gym_step  # noqa: E402
 from src.mover import walkable  # noqa: E402
 from src.return_nav import _Rom  # noqa: E402
+from src.route_graph import _HOP_DIRS, _OPPOSITE  # noqa: E402  (ledge rules shared with the reward graph)
 
 JOHTO = "TilesetJohtoColl"
 # id -> (symbol prefix, collision tileset, display name, outdoor?)
@@ -42,7 +43,7 @@ MAPS = {
 DIRS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 GRASS = {0x10, 0x14, 0x18, 0x1C}
 WATER = {0x21, 0x29}
-LEDGE = {0x41, 0x42, 0x43, 0x44, 0x50, 0x51, 0x52, 0x53}
+LEDGE = set(_HOP_DIRS)   # the hop tiles 0xa0-0xa7 (jumpable ledges); the old 0x41-0x53 set were conveyor-style walk tiles
 # Trainer and NPC tiles are not modelled: battles are sparse rewards, not walls. (falkner_nav
 # walls off (5, 23) on Route 30, but that tile is the only way past the y=24 ledge row.)
 NPC_BLOCKS: dict[tuple[int, int], set] = {}
@@ -108,12 +109,22 @@ class Graph:
         if (x, y) in NPC_BLOCKS.get(mid, ()):
             return False
         c = self.cells[mid].get((x, y))
-        return c is not None and walkable(c, d)
+        if c is None:
+            return False
+        hops = _HOP_DIRS.get(c)
+        if hops is not None:   # a ledge tile: enter from above or the side, never against its hop direction
+            return _OPPOSITE[d] not in hops and walkable(c)
+        return walkable(c, d)
 
     def step(self, node, d):
         mid, x, y = node
         w, h = self.size[mid]
         dx, dy = DIRS[d]
+        here = self.cells[mid].get((x, y))
+        if here is not None and d in _HOP_DIRS.get(here, ()):   # standing on a ledge: the hop jumps two tiles
+            land = (mid, x + 2 * dx, y + 2 * dy)
+            if land not in self.warp_at and self.walk_ok(mid, land[1], land[2], d) and (x + 2 * dx, y + 2 * dy) in self.cells[mid]:
+                return land
         nx, ny = x + dx, y + dy
         if 0 <= nx < w and 0 <= ny < h:
             target = (mid, nx, ny)
