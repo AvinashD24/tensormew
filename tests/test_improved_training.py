@@ -5,7 +5,8 @@ import torch
 
 from src.deep_policy import SpatialVisionPolicy
 from src.ram_parser import GameState
-from src.rl_env import intrinsic_curiosity_reward, observe, quest_goal_vector
+from src.deep_policy import CheckpointIncompatibleError
+from src.rl_env import DEEP_OBS_DIM, intrinsic_curiosity_reward, observe
 
 
 class ImprovedTrainingTests(unittest.TestCase):
@@ -22,74 +23,46 @@ class ImprovedTrainingTests(unittest.TestCase):
         self.assertGreater(r1, r4)
         self.assertGreater(r4, r9)
 
-    def test_quest_goal_vector_progression(self):
-        # Phase 1: New Bark Town / Route 29 -> Goal is reach Cherrygrove [1, 0, 0, 0]
-        s1 = GameState.from_dict({
-            "map_group": 24, "map_number": 4, "x": 5, "y": 5, "event_flags": [0] * 300
-        })
-        v1 = quest_goal_vector(s1)
-        np.testing.assert_array_equal(v1, [1.0, 0.0, 0.0, 0.0])
-
-        # Phase 2: Route 30 -> Goal is get Mystery Egg [0, 1, 0, 0]
-        s2 = GameState.from_dict({
-            "map_group": 26, "map_number": 1, "x": 10, "y": 10, "event_flags": [0] * 300
-        })
-        v2 = quest_goal_vector(s2)
-        np.testing.assert_array_equal(v2, [0.0, 1.0, 0.0, 0.0])
-
-        # Phase 3: Got egg from Mr. Pokemon, rival not beaten -> Goal is beat Rival [0, 0, 1, 0]
-        # Flag 30: EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON (byte 3, bit 6)
-        flags = [0] * 300
-        flags[30 // 8] |= (1 << (30 % 8))
-        s3 = GameState.from_dict({
-            "map_group": 26, "map_number": 3, "x": 33, "y": 6, "event_flags": flags, "cherrygrove_scene": 1
-        })
-        v3 = quest_goal_vector(s3)
-        np.testing.assert_array_equal(v3, [0.0, 0.0, 1.0, 0.0])
-
-        # Phase 4: Beat rival, egg not delivered -> Goal is deliver egg to Elm [0, 0, 0, 1]
-        s4 = GameState.from_dict({
-            "map_group": 26, "map_number": 3, "x": 35, "y": 6, "event_flags": flags, "cherrygrove_scene": 0
-        })
-        v4 = quest_goal_vector(s4)
-        np.testing.assert_array_equal(v4, [0.0, 0.0, 0.0, 1.0])
-
-    def test_observe_goal_conditioning_dimensions(self):
+    def test_deep_observation_has_no_oracle_and_the_right_width(self):
         s = GameState.from_dict({
             "map_group": 24, "map_number": 4, "x": 5, "y": 5, "tiles": {}, "event_flags": [0] * 300
         })
-        # Standard legacy base observe: 17 dims
-        obs17 = observe(s, set(), include_goals=False)
+        obs17 = observe(s, set())
         self.assertEqual(len(obs17), 17)
+        deep = observe(s, set(), deep=True)
+        self.assertEqual(len(deep), DEEP_OBS_DIM)
+        self.assertEqual(DEEP_OBS_DIM, 77)
+        np.testing.assert_array_equal(deep[:16], obs17[:16])
 
-        # Goal-conditioned observe: 21 dims (17 base + 4 goals)
-        obs21 = observe(s, set(), include_goals=True)
-        self.assertEqual(len(obs21), 21)
-        np.testing.assert_array_equal(obs21[:17], obs17)
-        np.testing.assert_array_equal(obs21[17:], [1.0, 0.0, 0.0, 0.0])
-
-    def test_load_17_dim_checkpoint_into_21_dim_policy(self):
-        # Create and save a 17-dim model checkpoint
+    def test_old_dim_checkpoint_is_refused_with_a_clear_error(self):
         old_policy = SpatialVisionPolicy(obs_dim=17, num_actions=5, use_gru=True)
-        with tempfile.NamedTemporaryFile(suffix=".pt") as tmp:
-            old_policy.save(tmp.name)
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/old.pt"
+            old_policy.save(path)
+            with self.assertRaises(CheckpointIncompatibleError) as ctx:
+                SpatialVisionPolicy.load(path, device="cpu", override_obs_dim=DEEP_OBS_DIM, check_schema=True)
+            self.assertIn("Retrain from scratch", str(ctx.exception))
+            with self.assertRaises(CheckpointIncompatibleError):
+                SpatialVisionPolicy.load(path, device="cpu", override_obs_dim=DEEP_OBS_DIM)  # no silent zero-padding
 
-            # Load into 21-dim policy with override_obs_dim=21
-            new_policy = SpatialVisionPolicy.load(tmp.name, device="cpu", override_obs_dim=21)
-            self.assertEqual(new_policy.obs_dim, 21)
-            self.assertTrue(new_policy.use_gru)
+    def test_v1_30_dim_five_action_checkpoint_is_refused(self):
+        v1 = SpatialVisionPolicy(obs_dim=30, num_actions=5, use_gru=True)
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/v1.pt"
+            blob = {"state_dict": v1.state_dict(), "obs_dim": 30, "num_actions": 5, "use_gru": True,
+                    "gru_hidden_dim": 512, "model_type": "SpatialVisionPolicy"}  # a v1 file: no obs_schema key
+            torch.save(blob, path)
+            with self.assertRaises(CheckpointIncompatibleError):
+                SpatialVisionPolicy.load(path, device="cpu", check_schema=True)
 
-            # Verify that original weights for features 0..16 were preserved exactly
-            old_w = old_policy.ram_trunk[0].weight.data
-            new_w = new_policy.ram_trunk[0].weight.data
-            torch.testing.assert_close(new_w[:, :17], old_w)
-
-            # Verify forward pass works on 21-dim RAM vector
-            screen = torch.zeros(2, 3, 144, 160)
-            ram21 = torch.zeros(2, 21)
-            logits, val = new_policy(screen, ram21)
-            self.assertEqual(logits.shape, (2, 5))
-            self.assertEqual(val.shape, (2,))
+    def test_current_checkpoint_round_trips_with_schema_check(self):
+        pol = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=6, use_gru=True)
+        with tempfile.TemporaryDirectory() as d:
+            path = f"{d}/new.pt"
+            pol.save(path)
+            loaded = SpatialVisionPolicy.load(path, device="cpu", override_obs_dim=DEEP_OBS_DIM, check_schema=True)
+            self.assertEqual(loaded.obs_dim, DEEP_OBS_DIM)
+            self.assertEqual(loaded.num_actions, 6)
 
 
 if __name__ == "__main__":

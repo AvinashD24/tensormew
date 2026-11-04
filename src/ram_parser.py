@@ -90,6 +90,20 @@ SYMBOLS: tuple[Sym, ...] = (
     Sym("wElmsLabSceneID", required=False),
     Sym("wOtherTrainerClass", required=False),
     Sym("wItems", size=41, required=False),
+    # Battle detail for the learned-battle observation (src/battle_obs.py). All optional: a missing symbol reads as 0.
+    Sym("wBattleType", required=False),
+    Sym("wBattleMonSpecies", required=False),
+    Sym("wBattleMonMoves", size=4, required=False),
+    Sym("wBattleMonPP", size=4, required=False),
+    Sym("wBattleMonLevel", required=False),
+    Sym("wBattleMonStatus", required=False),
+    Sym("wEnemyMonLevel", required=False),
+    Sym("wEnemyMonStatus", required=False),
+    Sym("wBattleMenuCursorPosition", required=False),
+    Sym("wCurMoveNum", required=False),
+    Sym("wMenuCursorY", required=False),
+    Sym("wMenuCursorX", required=False),
+    Sym("wBalls", size=25, required=False),
 )
 
 
@@ -141,6 +155,21 @@ class GameState:
     items: tuple[int, ...] = ()
     pokedex_seen: tuple[int, ...] = ()  # not round-tripped through to_dict (dashboard stats only)
     enemy_mon_species: int = 0  # wEnemyMonSpecies: valid for wild and trainer battles
+    # Battle detail (learned-battle observation). Valid only while battle_mode != 0.
+    battle_type: int = 0
+    battle_mon_species: int = 0
+    battle_mon_moves: tuple[int, ...] = ()
+    battle_mon_pp: tuple[int, ...] = ()
+    battle_mon_level: int = 0
+    battle_mon_status: int = 0
+    enemy_level: int = 0
+    enemy_status: int = 0
+    battle_menu_cursor: int = 0  # wBattleMenuCursorPosition: 1 FIGHT, 2 PKMN (grid), 3 PACK, 4 RUN
+    cur_move_num: int = 0
+    menu_cursor_y: int = 0
+    menu_cursor_x: int = 0
+    balls: tuple[int, ...] = ()  # raw wBalls pocket (item id, count pairs)
+    item_counts: tuple[int, ...] = ()  # quantity of each entry of ``items`` (same order)
 
     @property
     def is_trainer_battle(self) -> bool:
@@ -273,6 +302,21 @@ class GameState:
             "elms_lab_scene": self.elms_lab_scene,
             "other_trainer_class": self.other_trainer_class,
             "items": list(self.items),
+            "item_counts": list(self.item_counts),
+            "enemy_mon_species": self.enemy_mon_species,
+            "battle_type": self.battle_type,
+            "battle_mon_species": self.battle_mon_species,
+            "battle_mon_moves": list(self.battle_mon_moves),
+            "battle_mon_pp": list(self.battle_mon_pp),
+            "battle_mon_level": self.battle_mon_level,
+            "battle_mon_status": self.battle_mon_status,
+            "enemy_level": self.enemy_level,
+            "enemy_status": self.enemy_status,
+            "battle_menu_cursor": self.battle_menu_cursor,
+            "cur_move_num": self.cur_move_num,
+            "menu_cursor_y": self.menu_cursor_y,
+            "menu_cursor_x": self.menu_cursor_x,
+            "balls": list(self.balls),
         }
 
 
@@ -324,6 +368,21 @@ class GameState:
             elms_lab_scene=int(d.get("elms_lab_scene", 0)),
             other_trainer_class=int(d.get("other_trainer_class", 0)),
             items=tuple(int(x) for x in (d.get("items") or [])),
+            item_counts=tuple(int(x) for x in (d.get("item_counts") or [])),
+            enemy_mon_species=int(d.get("enemy_mon_species", 0)),
+            battle_type=int(d.get("battle_type", 0)),
+            battle_mon_species=int(d.get("battle_mon_species", 0)),
+            battle_mon_moves=tuple(int(x) for x in (d.get("battle_mon_moves") or [])),
+            battle_mon_pp=tuple(int(x) for x in (d.get("battle_mon_pp") or [])),
+            battle_mon_level=int(d.get("battle_mon_level", 0)),
+            battle_mon_status=int(d.get("battle_mon_status", 0)),
+            enemy_level=int(d.get("enemy_level", 0)),
+            enemy_status=int(d.get("enemy_status", 0)),
+            battle_menu_cursor=int(d.get("battle_menu_cursor", 0)),
+            cur_move_num=int(d.get("cur_move_num", 0)),
+            menu_cursor_y=int(d.get("menu_cursor_y", 0)),
+            menu_cursor_x=int(d.get("menu_cursor_x", 0)),
+            balls=tuple(int(x) for x in (d.get("balls") or [])),
         )
 
 
@@ -344,6 +403,10 @@ class GameState:
                 f"time={when} {options_text(self.options)}{quest_suffix}",
             ]
         )
+
+
+def _tup(v) -> tuple[int, ...]:
+    return tuple(int(b) for b in v) if isinstance(v, tuple) else (int(v),)
 
 
 class RamParser:
@@ -410,6 +473,7 @@ class RamParser:
             pokedex_raw = (int(pokedex_raw),) if pokedex_raw else ()
         items_raw = raw.get("wItems", ())
         items: list[int] = []
+        item_counts: list[int] = []
         if isinstance(items_raw, tuple) and len(items_raw) >= 2:
             num = int(raw.get("wNumItems", 0))
             for i in range(min(num, len(items_raw) // 2)):
@@ -417,6 +481,7 @@ class RamParser:
                 if item_id == 255:
                     break
                 items.append(item_id)
+                item_counts.append(items_raw[i * 2 + 1])
         return GameState(
             map_group=int(raw["wMapGroup"]),
             map_number=int(raw["wMapNumber"]),
@@ -468,5 +533,19 @@ class RamParser:
             elms_lab_scene=int(raw.get("wElmsLabSceneID", 0)),
             other_trainer_class=int(raw.get("wOtherTrainerClass", 0)),
             items=tuple(items),
+            battle_type=int(raw.get("wBattleType", 0)),
+            battle_mon_species=int(raw.get("wBattleMonSpecies", 0)),
+            battle_mon_moves=_tup(raw.get("wBattleMonMoves", ())),
+            battle_mon_pp=_tup(raw.get("wBattleMonPP", ())),
+            battle_mon_level=int(raw.get("wBattleMonLevel", 0)),
+            battle_mon_status=int(raw.get("wBattleMonStatus", 0)),
+            enemy_level=int(raw.get("wEnemyMonLevel", 0)),
+            enemy_status=int(raw.get("wEnemyMonStatus", 0)),
+            battle_menu_cursor=int(raw.get("wBattleMenuCursorPosition", 0)),
+            cur_move_num=int(raw.get("wCurMoveNum", 0)),
+            menu_cursor_y=int(raw.get("wMenuCursorY", 0)),
+            menu_cursor_x=int(raw.get("wMenuCursorX", 0)),
+            balls=_tup(raw.get("wBalls", ())),
+            item_counts=tuple(item_counts),
         )
 

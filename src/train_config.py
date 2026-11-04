@@ -1,6 +1,8 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``blueprint_v1`` (defaults from the long-horizon research) and ``legacy`` (the old trainer).
+Presets: ``long_v2`` (fresh from-scratch run, no oracle, learned battles; the recommended one), and the older
+``blueprint_v1`` / ``long_v1`` / ``legacy`` (same environment and observation now, only the hyperparameters and start
+states differ; their old curriculum start states carry egg / rival flags from the removed errand and are LEGACY).
 The PPO fields mirror ``src.ppo_update.PPOHParams`` as plain values so this module has no heavy imports.
 """
 
@@ -11,7 +13,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2")
 
 
 class ConfigError(ValueError):
@@ -63,6 +65,9 @@ class TrainConfig:
     start_states: list[str] = field(default_factory=list)
     stage_balanced: bool = True
     swarm: bool = True
+    # OPTIONAL tile-level potential toward Falkner (BFS steps, src.route_graph). OFF by default and in every preset:
+    # it is an oracle (a hand-computed gradient toward the goal) kept only for ablations / debugging.
+    goal_potential: bool = False
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -141,7 +146,7 @@ def blueprint_v1() -> TrainConfig:
 
 
 def long_v1() -> TrainConfig:
-    """Unattended ~6 hour cloud run from a fresh policy: New Bark start, no curriculum (the swarm archive supplies
+    """LEGACY (same environment as long_v2 now; kept for its hyperparameters). Unattended ~6 hour cloud run from a fresh policy: New Bark start, no curriculum (the swarm archive supplies
     later stages), 32 envs x 256 steps = 8192 samples per update, lr decaying to a third, a longer episode cap so a
     full egg round trip fits, and about 800 updates (~26 s each on a 4090 pod, ~5.8 h). Override with --updates."""
     cfg = TrainConfig(
@@ -160,6 +165,33 @@ def long_v1() -> TrainConfig:
     return cfg
 
 
+def long_v2() -> TrainConfig:
+    """Fresh from-scratch run from ``states/new_bark_outside.state`` (Cyndaquil, outside New Bark Town).
+
+    No route oracle, learned battles, minimal story path (Route 29 -> Cherrygrove -> Route 30 -> Route 31 ->
+    Violet City -> Violet Gym -> Falkner). Compared to ``long_v1``: more entropy for longer (menu navigation in
+    battle has to be discovered), a longer episode cap (the path is ~320 steps but battles cost steps), 32 envs x 256
+    steps per update, lr decaying to 0.33x, ~800 updates (~6 h on a 4090 pod). The swarm archive (first env to reach a
+    new stage saves a state, 30% of resets load one) supplies later-stage starts; stages are cut by map, not by flags.
+    """
+    cfg = TrainConfig(
+        name="long_v2",
+        envs=32,
+        rollout_steps=256,
+        updates=800,
+        max_steps=2048,
+        lr=3e-4,
+        lr_end_frac=0.33,
+        entropy_start=0.04,
+        entropy_end=0.01,
+        start_states=["new_bark_outside"],
+        sticky_prob=0.1,
+        jitter_max=6,
+    )
+    cfg.ppo.num_minibatches = 8  # 4 envs x 256 steps = 1024 sequences per minibatch
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
@@ -167,6 +199,8 @@ def preset(name: str) -> TrainConfig:
         return legacy()
     if name == "long_v1":
         return long_v1()
+    if name == "long_v2":
+        return long_v2()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

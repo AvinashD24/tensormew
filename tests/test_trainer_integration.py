@@ -356,7 +356,7 @@ class OptimizerSidecarTests(unittest.TestCase):
             t.save_checkpoint(policy, torch.optim.SGD(policy.parameters(), lr=0.1), path, 0)
             blob = torch.load(str(path), map_location="cpu")
             self.assertEqual(set(blob), {"state_dict", "obs_dim", "num_actions", "param_count", "use_gru",
-                                         "gru_hidden_dim", "model_type"})
+                                         "gru_hidden_dim", "model_type", "obs_schema"})
 
 
 @unittest.skipUnless(HAVE_ROM, "needs the ROM")
@@ -450,11 +450,11 @@ class EnvWorkerEmulatorTests(unittest.TestCase):
         self.assertGreater(len(starts), 1)
 
     def test_stage_balanced_computes_stage_per_state(self):
-        w = t.EnvWorker(0, [self.STATE, "mystery_egg_received"], 10, {"stage_balanced": True})
+        w = t.EnvWorker(0, [self.STATE, "agent_map_26_3"], 10, {"stage_balanced": True})
         try:
-            self.assertEqual(sorted(w.selector.by_stage), [0, 1])  # before the egg / holding the egg
+            self.assertEqual(sorted(w.selector.by_stage), [0, 2])  # New Bark / Cherrygrove (a story map)
             names = [w.selector.pick() for _ in range(4)]
-            self.assertEqual(sorted(names), sorted([self.STATE, "mystery_egg_received"] * 2))
+            self.assertEqual(sorted(names), sorted([self.STATE, "agent_map_26_3"] * 2))
         finally:
             w.close()
 
@@ -578,8 +578,7 @@ class WorkerInteractionRewardTests(unittest.TestCase):
 
     def run_one(self, before, after, action, ints, warps):
         from unittest import mock
-        with mock.patch.object(t, "dialogue_open", lambda s: s.dlg), \
-                mock.patch.object(t, "_route_covered", lambda s: s.map_group == 24):
+        with mock.patch.object(t, "dialogue_open", lambda s: s.dlg):
             comps = {}
             return t.worker_interaction_reward(before, after, action, ints, warps, comps), comps
 
@@ -593,19 +592,25 @@ class WorkerInteractionRewardTests(unittest.TestCase):
         r3, _ = self.run_one(self.S(), self.S(dialogue=True), 2, set(), set())  # not an A press
         self.assertEqual(r3, 0.0)
 
-    def test_new_warp_pays_only_when_a_map_is_uncovered(self):
+    def test_new_warp_pays_once_per_edge(self):
         ints, warps = set(), set()
         r, c = self.run_one(self.S((26, 3)), self.S((26, 4)), 0, ints, warps)
         self.assertEqual(r, 1.0)
         self.assertEqual(c["warp"], 1.0)
         r, _ = self.run_one(self.S((26, 3)), self.S((26, 4)), 0, ints, warps)
         self.assertEqual(r, 0.0)  # same edge again
-        r, _ = self.run_one(self.S((24, 4)), self.S((24, 5)), 0, set(), set())
-        self.assertEqual(r, 0.0)  # both maps covered by the route graph
+
+    def test_interaction_and_warp_are_explore_budgeted(self):
+        ints, warps, budget = set(), set(), {"explore": 29.9}
+        from unittest import mock
+        with mock.patch.object(t, "dialogue_open", lambda s: s.dlg):
+            r = t.worker_interaction_reward(self.S((26, 3)), self.S((26, 4), dialogue=False), 0, ints, warps, {}, budget)
+        self.assertAlmostEqual(r, 0.1)
 
 
 class RestoredStageStatesTests(unittest.TestCase):
-    EXPECTED = {"stage2_violet": 2, "stage2_gym_entered": 2, "stage3_falkner_beaten": 3}
+    # story stage = position along the minimal path: Violet City 6, Violet Gym 7, Falkner beaten 8 (= MILESTONE_COUNT)
+    EXPECTED = {"stage2_violet": 6, "stage2_gym_entered": 7, "stage3_falkner_beaten": 8}
 
     def test_files_exist_and_curriculum_lists_them(self):
         from src.states import StateRegistry
@@ -615,11 +620,11 @@ class RestoredStageStatesTests(unittest.TestCase):
             self.assertIn(name, t.CURRICULUM_STATES)
 
     @unittest.skipUnless(HAVE_ROM, "needs the ROM")
-    def test_route_graph_reports_stages_2_2_3(self):
+    def test_story_path_reports_the_stage_of_each_state(self):
         w = t.EnvWorker(0, list(self.EXPECTED), 10, {"stage_balanced": True})
         try:
             self.assertEqual(w._stage_of_states(sorted(self.EXPECTED)), self.EXPECTED)
-            self.assertEqual(sorted(w.selector.by_stage), [2, 3])
+            self.assertEqual(sorted(w.selector.by_stage), [6, 7, 8])
         finally:
             w.close()
 
@@ -630,7 +635,7 @@ class EnvWorkerQuestAndBumpTests(unittest.TestCase):
         w = t.EnvWorker(0, ["stage2_violet"], 50, {})
         try:
             w.reset()
-            self.assertGreaterEqual(t.route_graph.current_stage(w.reader.parse(w.emu.frame)), 2)
+            self.assertGreaterEqual(t.current_stage(w.reader.parse(w.emu.frame)), 6)
             for a in (0, 0):
                 *_, rew, done, _, _, info = w.step(a)
                 self.assertFalse(done)
@@ -657,12 +662,12 @@ class EnvWorkerQuestAndBumpTests(unittest.TestCase):
                 st = w.reader.parse(w.emu.frame)
                 w._last_stage = 0
                 from unittest import mock
-                with mock.patch.object(t.route_graph, "current_stage", lambda s: 2), \
+                with mock.patch.object(t, "current_stage", lambda s: 2), \
                         mock.patch.object(t, "dialogue_open", lambda s: True):
                     w._maybe_archive(st)
                     self.assertEqual(w.archive.keys(), [])  # deferred while the dialogue is open
                 self.assertEqual(w._pending_stage, 2)
-                with mock.patch.object(t.route_graph, "current_stage", lambda s: 2):
+                with mock.patch.object(t, "current_stage", lambda s: 2):
                     w._maybe_archive(st)
                     w._maybe_archive(st)  # staying in stage 2 does not save again
                 self.assertEqual(w.archive.keys(), ["stage2_0"])

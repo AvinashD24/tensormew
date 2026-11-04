@@ -141,10 +141,10 @@ def run_segment(
                     mover.stuck += 1
                     last_direction = None
                 else:
-                    if direction == "a":
-                        machine.press("a", frames=8)
+                    if direction in ("a", "b"):
+                        machine.press(direction, frames=8)
                         machine.tick(12, render=False)
-                        path_result = ActionResult(True, "policy pressed a", frames=20)
+                        path_result = ActionResult(True, f"policy pressed {direction}", frames=20)
                         last_moved = False
                     else:
                         path_result = mover.run_path([direction])

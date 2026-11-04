@@ -2,7 +2,12 @@
 
 Combines a ResNet-18 style convolutional visual backbone over the raw Game Boy
 144x160 RGB screen buffer with a multi-layer RAM embedding trunk to produce
-spatially-aware, quest-aware action distributions and value estimates.
+spatially-aware action distributions and value estimates.
+
+Checkpoints are tied to the observation / action layout (``OBS_SCHEMA`` below). The v2 layout removed the route
+oracle (next-step direction and distance-to-goal features), added battle features and the B button, so old
+checkpoints cannot be loaded; ``SpatialVisionPolicy.load`` raises ``CheckpointIncompatibleError`` instead of
+producing silent garbage.
 """
 
 from __future__ import annotations
@@ -21,6 +26,13 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
     nn = object  # type: ignore
+
+# Layout of the RAM vector and the action set a checkpoint was trained with (src.rl_env.OBS_SCHEMA mirrors this).
+OBS_SCHEMA = "v2-no-oracle-learned-battles"
+
+
+class CheckpointIncompatibleError(RuntimeError):
+    """The checkpoint was trained with a different observation / action layout than this code uses."""
 
 
 if TORCH_AVAILABLE:
@@ -97,8 +109,8 @@ if TORCH_AVAILABLE:
 
         def __init__(
             self,
-            obs_dim: int = 21,
-            num_actions: int = 5,
+            obs_dim: int = 77,
+            num_actions: int = 6,
             ram_hidden_dim: int = 256,
             fusion_dim: int = 512,
             use_gru: bool = False,
@@ -218,7 +230,7 @@ if TORCH_AVAILABLE:
             deterministic: bool = False,
             device: str = "cpu",
         ) -> Tuple[int, float, float]:
-            """Take numpy screen (144, 160, 3) and ram (17,) and return (action, logp, value)."""
+            """Take numpy screen (144, 160, 3) and the RAM vector (obs_dim,) and return (action, logp, value)."""
             self.eval()
             # Format screen: (H, W, C) -> (1, C, H, W) normalized to [0, 1]
             if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
@@ -372,6 +384,7 @@ if TORCH_AVAILABLE:
                     "use_gru": self.use_gru,
                     "gru_hidden_dim": self.gru_hidden_dim,
                     "model_type": "SpatialVisionPolicy",
+                    "obs_schema": OBS_SCHEMA,
                 },
                 str(path),
             )
@@ -383,7 +396,11 @@ if TORCH_AVAILABLE:
             device: str = "cpu",
             override_use_gru: bool | None = None,
             override_obs_dim: int | None = None,
+            check_schema: bool = False,
         ) -> "SpatialVisionPolicy":
+            """Load a checkpoint. ``check_schema=True`` (trainer, evaluator, play_live) rejects checkpoints from another
+            observation / action layout with ``CheckpointIncompatibleError``. ``override_obs_dim`` must equal the saved
+            width (zero-padding old checkpoints is no longer offered: the new features change the meaning of columns)."""
             p = Path(path)
             if not p.exists():
                 fallback = Path("models") / p.name
@@ -395,6 +412,27 @@ if TORCH_AVAILABLE:
             gru_hidden_dim = checkpoint.get("gru_hidden_dim", 512)
             checkpoint_obs_dim = checkpoint.get("obs_dim", 17)
             target_obs_dim = checkpoint_obs_dim if override_obs_dim is None else override_obs_dim
+            schema = checkpoint.get("obs_schema")
+            if check_schema:
+                # Only checkpoints written by this code carry the schema; anything else (v1 had 30-dim RAM vectors
+                # with the route oracle and 5 actions) would load into a different input layout.
+                if schema is not None and schema != OBS_SCHEMA:
+                    raise CheckpointIncompatibleError(
+                        f"{p}: checkpoint observation schema '{schema}' != current '{OBS_SCHEMA}'. Retrain from scratch "
+                        "(old checkpoints used the route oracle and scripted battles and cannot be loaded)."
+                    )
+                if schema is None and (checkpoint_obs_dim != target_obs_dim or checkpoint.get("num_actions", 5) != 6):
+                    raise CheckpointIncompatibleError(
+                        f"{p}: old checkpoint (obs_dim={checkpoint_obs_dim}, num_actions={checkpoint.get('num_actions', 5)}) "
+                        f"is incompatible with the current layout (obs_dim={target_obs_dim}, num_actions=6, schema "
+                        f"'{OBS_SCHEMA}'): the route oracle features were removed, battle features and the B button were "
+                        "added. Retrain from scratch (--config long_v2)."
+                    )
+            if override_obs_dim is not None and checkpoint_obs_dim != override_obs_dim:
+                raise CheckpointIncompatibleError(
+                    f"{p}: checkpoint obs_dim {checkpoint_obs_dim} != expected {override_obs_dim}; observation layouts "
+                    "are not interchangeable. Retrain from scratch."
+                )
 
             model = cls(
                 obs_dim=target_obs_dim,
@@ -404,13 +442,6 @@ if TORCH_AVAILABLE:
             )
 
             state_dict = checkpoint["state_dict"]
-            if target_obs_dim > checkpoint_obs_dim and "ram_trunk.0.weight" in state_dict:
-                old_w = state_dict["ram_trunk.0.weight"]
-                new_w = torch.zeros(old_w.shape[0], target_obs_dim, device=old_w.device, dtype=old_w.dtype)
-                new_w[:, :old_w.shape[1]] = old_w
-                torch.nn.init.orthogonal_(new_w[:, old_w.shape[1]:], gain=0.1)
-                state_dict["ram_trunk.0.weight"] = new_w
-
             strict = (use_gru == saved_use_gru)
             model.load_state_dict(state_dict, strict=strict)
             model.to(device)

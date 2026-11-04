@@ -149,6 +149,7 @@ class LiveFeed:
         self._wild = self._trn = self._whiteouts = self._max_level = self._max_money = 0
         self._first_map: dict[str, tuple[int, str]] = {}   # map key -> (feed step first entered, name)
         self._fun_prev: list[dict[str, Any] | None] = [None] * num_envs
+        self._env_party: dict[int, list[list[int]]] = {}
 
         self._last_frame_t = 0.0
         self._last_state_t = 0.0
@@ -334,6 +335,15 @@ class LiveFeed:
         self._dex_own |= own
         self._dex_seen |= seen
         levels = f.get("pl") or ()
+        hps = f.get("ph") or ()
+        party = []
+        for k, sp in enumerate(f.get("ps") or ()):
+            if k < 6 and 1 <= int(sp) <= 251:
+                row = [int(sp), int(levels[k]) if k < len(levels) else 0]
+                if k < len(hps) and int(hps[k][1]) > 0:
+                    row += [int(hps[k][0]), int(hps[k][1])]
+                party.append(row)
+        self._env_party[i] = party
         if levels:
             self._max_level = max(self._max_level, int(max(levels)))
         self._max_money = max(self._max_money, int(f.get("mo", 0)))
@@ -342,7 +352,7 @@ class LiveFeed:
                              "kind": 1 if prev is None else prev.get("kind", 1)}
 
     def _species_names(self) -> dict[str, str]:
-        ids = set(self._enc) | set(self._got)
+        ids = set(self._enc) | set(self._got) | {r[0] for p in self._env_party.values() for r in p}
         return {str(sp): get_species_name(sp) for sp in ids}
 
     def fun_payload(self) -> dict[str, Any] | None:
@@ -350,7 +360,13 @@ class LiveFeed:
         if not self._fun_on:
             return None
         first = sorted(self._first_map.values())[-6:]
+        # Showcase party = the env whose strongest Pokemon is highest (ties: higher level sum, then lower env id).
+        best = max(self._env_party.items(), key=lambda kv: (max((r[1] for r in kv[1]), default=0),
+                                                            sum(r[1] for r in kv[1]), -kv[0]), default=None)
         return {
+            "party": best[1] if best and best[1] else [], "pe": best[0] if best else 0,
+            # species battled but not (yet) in the Pokedex-owned set: drawn as silhouettes
+            "unowned": sorted(sp for sp in self._enc if sp not in self._dex_own),
             "enc": {str(k): v for k, v in self._enc.items()},
             "got": {str(k): v for k, v in self._got.items()},
             "seen": len(self._dex_seen), "own": len(self._dex_own),

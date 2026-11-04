@@ -196,6 +196,23 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 .mon .ct { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .mon .ct i { font-style: normal; color: var(--good); }
 .mon > div { min-width: 0; }
+.mon.unk { border-style: dashed; }
+.spr { width: 56px; height: 56px; flex: none; image-rendering: pixelated; background: transparent; }
+.spr.sil { filter: brightness(0); opacity: .3; }
+:root[data-theme="dark"] .spr.sil { filter: brightness(0) invert(1); opacity: .22; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .spr.sil { filter: brightness(0) invert(1); opacity: .22; } }
+.spr.fb { display: flex; align-items: center; justify-content: center; font: 600 11px var(--mono); color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; }
+.party { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px; }
+.slot { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 4px; text-align: center; min-width: 0; }
+.slot.empty { opacity: .35; border-style: dashed; }
+.slot .spr { display: block; margin: 0 auto; }
+.slot .nm { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .lv { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.slot .hp { height: 5px; border-radius: 3px; background: var(--border); margin: 4px 4px 0; overflow: hidden; }
+.slot .hp i { display: block; height: 100%; background: var(--good); }
+.slot .hp.mid i { background: var(--warn); } .slot .hp.low i { background: var(--bad); }
+.partyhd { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+@media (max-width: 640px) { .party { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 1000px) { .grid2, .cov, .grid2 .stack { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .kpi .value { font-size: 24px; } .envs { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
@@ -696,17 +713,34 @@ function funFacts(f, nm) {
   if (f.money) out.push(`Richest agent ever held $${Number(f.money).toLocaleString()}.`);
   return out.slice(0, 5);
 }
+function spr(id, name, sil) {
+  const alt = sil ? "Unobtained " + name : name;
+  return `<img class="spr${sil ? " sil" : ""}" src="/sprites/${id}.png" width="56" height="56" loading="lazy" alt="${escH(alt)}" onerror="this.outerHTML='<span class=&quot;spr fb&quot; role=&quot;img&quot; aria-label=&quot;${escH(alt)}&quot;>#${id}</span>'">`;
+}
+function partyHtml(f, nm) {
+  const p = f.party; if (!Array.isArray(p) || !p.length) return "";
+  const slots = [];
+  for (let k = 0; k < 6; k++) {
+    const r = p[k];
+    if (!r) { slots.push(`<div class="slot empty" aria-label="Empty slot"><span class="spr" style="display:block;margin:0 auto"></span><div class="nm">&nbsp;</div><div class="lv">&nbsp;</div></div>`); continue; }
+    const name = nm[r[0]] || "Pokémon #" + r[0];
+    let hp = "";
+    if (r.length >= 4 && r[3] > 0) { const q = clamp(r[2] / r[3], 0, 1); hp = `<div class="hp${q < .2 ? " low" : q < .5 ? " mid" : ""}" role="img" aria-label="HP ${r[2]} of ${r[3]}" title="HP ${r[2]}/${r[3]}"><i style="width:${(q * 100).toFixed(0)}%"></i></div>`; }
+    slots.push(`<div class="slot" title="${escH(name)} (#${r[0]})">${spr(r[0], name)}<div class="nm">${escH(name)}</div><div class="lv">${r[1] ? "Lv " + r[1] : "&nbsp;"}</div>${hp}</div>`);
+  }
+  return `<div class="partyhd">Party of the most advanced agent (env ${f.pe || 0}, highest top level)</div><div class="party">${slots.join("")}</div>`;
+}
 function renderFun() {
   const f = live && live.fun, body = $("funBody");
   if (!f) { $("funSub").textContent = ""; body.innerHTML = `<div class="note" style="color:var(--muted)">No Pokémon data yet. Older runs and fresh starts do not record it.</div>`; return; }
-  const nm = live.species_names || {}, ids = new Set([...Object.keys(f.enc || {}), ...Object.keys(f.got || {})]);
+  const nm = live.species_names || {}, ids = new Set([...Object.keys(f.enc || {}), ...Object.keys(f.got || {})]), unowned = new Set(f.unowned || []);
   const rows = [...ids].map((id) => ({ id: Number(id), e: (f.enc || {})[id] || 0, g: (f.got || {})[id] || 0 })).sort((a, b) => (b.e + b.g * 3) - (a.e + a.g * 3) || a.id - b.id);
   const st = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
   const cap = 48;
   $("funSub").textContent = `${rows.length} species met`;
-  body.innerHTML = `<div class="dexhead">${st(f.seen || 0, "Dex seen")}${st(f.own || 0, "Dex owned")}${st(((f.wild || 0) + (f.trn || 0)).toLocaleString(), "Battles")}${st(Object.values(f.got || {}).reduce((a, b) => a + b, 0).toLocaleString(), "Catches")}${st(f.wo || 0, "White-outs")}${st(f.lvl || 0, "Top level")}</div>`
+  body.innerHTML = partyHtml(f, nm) + `<div class="dexhead">${st(f.seen || 0, "Dex seen")}${st(f.own || 0, "Dex owned")}${st(((f.wild || 0) + (f.trn || 0)).toLocaleString(), "Battles")}${st(Object.values(f.got || {}).reduce((a, b) => a + b, 0).toLocaleString(), "Catches")}${st(f.wo || 0, "White-outs")}${st(f.lvl || 0, "Top level")}</div>`
     + `<ul class="facts">${funFacts(f, nm).map((t) => `<li>${t}</li>`).join("")}</ul>`
-    + (rows.length ? `<div class="dex">${rows.slice(0, cap).map((r) => `<div class="mon${r.g ? " own" : ""}" title="#${r.id}"><div><div class="nm">${escH(nm[r.id] || "#" + r.id)}</div><div class="ct"><span class="no">#${r.id}</span> &middot; battled ${r.e.toLocaleString()}${r.g ? ` &middot; <i>caught ${r.g.toLocaleString()}</i>` : ""}</div></div></div>`).join("")}</div>${rows.length > cap ? `<div class="note" style="color:var(--muted);margin-top:6px">+${rows.length - cap} more</div>` : ""}` : "");
+    + (rows.length ? `<div class="dex">${rows.slice(0, cap).map((r) => `<div class="mon${r.g ? " own" : unowned.has(r.id) ? " unk" : ""}" title="#${r.id}${r.g || !unowned.has(r.id) ? "" : " (seen, not caught)"}">${spr(r.id, nm[r.id] || "Pokémon #" + r.id, !r.g && unowned.has(r.id))}<div><div class="nm">${escH(nm[r.id] || "#" + r.id)}</div><div class="ct"><span class="no">#${r.id}</span> &middot; battled ${r.e.toLocaleString()}${r.g ? ` &middot; <i>caught ${r.g.toLocaleString()}</i>` : ""}</div></div></div>`).join("")}</div>${rows.length > cap ? `<div class="note" style="color:var(--muted);margin-top:6px">+${rows.length - cap} more</div>` : ""}` : "");
 }
 function renderAll() {
   const has = metrics.length || live;

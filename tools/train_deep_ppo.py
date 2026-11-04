@@ -4,12 +4,17 @@ Parallel PyBoy processes step the game and stream raw screen buffers (144x160x3)
 one policy process that does batched inference and the PPO update (``src.ppo_update``: env-wise minibatches, GAE with
 truncation bootstrapping, entropy schedule).
 
-Every knob lives in ``src.train_config.TrainConfig``.  ``--config`` picks a preset (``blueprint_v1``, ``legacy``) or a
-JSON file; every other CLI flag defaults to None and overrides the config only when it is typed.
+Every knob lives in ``src.train_config.TrainConfig``.  ``--config`` picks a preset (``long_v2`` for a fresh run from
+the New Bark start state; ``blueprint_v1``, ``long_v1``, ``legacy`` are older presets) or a JSON file; every other CLI
+flag defaults to None and overrides the config only when it is typed.
+
+What the policy controls (nothing here is scripted any more): movement, A / B, and the whole battle (menus, moves,
+items, switching) with raw button presses.  Only overworld dialogue is auto-advanced with ``mash_text``.  There is no
+route oracle in the observation (``src.rl_env.observe(deep=True)``: state, story milestones, battle features).
 
 Training-only environment features (all off in ``--config legacy``):
-- sticky actions: with probability ``sticky_prob`` the executed action repeats the previous executed move; PPO stores
-  the action the policy sampled;
+- sticky actions: with probability ``sticky_prob`` the executed action repeats the previous executed move (never in
+  battle, where a repeated direction would corrupt menu navigation); PPO stores the action the policy sampled;
 - start jitter: 0..``jitter_max`` random safe moves after each reset (no reward, nothing added to the seen sets);
 - stage-balanced start states: each story stage is sampled evenly;
 - swarm archive (optional, file based): the first env to reach a new stage or key event saves its emulator state under
@@ -35,9 +40,8 @@ import numpy as np
 import torch
 import torch.optim as optim
 
-from src import route_graph
-from src.battle import tactical_battle_step
-from src.deep_policy import SpatialVisionPolicy
+from src.battle_obs import equip_supplies
+from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
 from src.emulator import Emulator
 from src.live_feed import LiveFeed
 from src.macros import Macros
@@ -48,9 +52,11 @@ from src.ppo_update import (  # noqa: F401
 from src.ram_parser import RamParser, dialogue_open
 from src.rl_env import (
     ACTIONS,
+    BUTTON_ACTIONS,
     DEEP_OBS_DIM,
-    KEY_EVENT_REWARDS,
+    N_ACTIONS,
     NEW_INTERACTION_REWARD,
+    POKECENTER_MAPS,
     budget_pay,
     NEW_WARP_REWARD,
     StepInfo,
@@ -62,6 +68,7 @@ from src.rl_env import (
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.story_flags import REVERSE_EVENT_FLAGS
+from src.story_path import KEY_EVENT_REWARDS, current_stage, progress_potential
 from src.terminal_monitor import TerminalMonitor
 from src.train_config import ConfigError, TrainConfig, apply_overrides, dump_effective_config, load_config
 
@@ -108,12 +115,13 @@ SCREEN_SHAPE = (3, 144, 160)
 
 
 # --------------------------------------------------------------------------------------------- pure helpers
-def pick_executed_action(act_idx: int, last_move: int | None, sticky_prob: float, rng) -> int:
+def pick_executed_action(act_idx: int, last_move: int | None, sticky_prob: float, rng, in_battle: bool = False) -> int:
     """Sticky actions: with probability ``sticky_prob`` repeat the previous executed movement (index < 4).
 
     ``act_idx`` is what the policy sampled (and what PPO stores); the return value is what the game executes.
+    Never sticky in battle: repeating a direction there would move a menu cursor the policy did not ask to move.
     """
-    if sticky_prob > 0.0 and last_move is not None and rng.random() < sticky_prob:
+    if not in_battle and sticky_prob > 0.0 and last_move is not None and rng.random() < sticky_prob:
         return int(last_move)
     return int(act_idx)
 
@@ -253,21 +261,9 @@ class RouteProgressTracker:
         self.fracs.extend(float(x) for x in state.get("fracs", []))
 
 
-def _route_covered(state) -> bool:
-    try:
-        return bool(route_graph.covers_map((state.map_group, state.map_number)))
-    except Exception:
-        return False
-
-
-def _route_phi(state) -> float | None:
-    """Route potential of ``state``, or None off the route graph."""
-    if not _route_covered(state):
-        return None
-    try:
-        return float(route_graph.route_potential(state))
-    except Exception:
-        return None
+def _story_phi(state, seen_maps) -> float:
+    """-(story milestones left): the progress signal of the entropy schedule (0 = the whole path is done)."""
+    return float(progress_potential(state, seen_maps))
 
 
 def _progress_reward_takes_budget() -> bool:
@@ -279,33 +275,35 @@ def _progress_reward_takes_budget() -> bool:
 
 
 def worker_interaction_reward(before, after, action_idx: int, seen_interactions: set, seen_warps: set,
-                              components: dict | None = None) -> float:
-    """The one-time payments ``CrystalEnv`` makes outside ``progress_reward``.
+                              components: dict | None = None, budget: dict | None = None) -> float:
+    """The one-time exploration payments ``CrystalEnv`` makes outside ``progress_reward`` (explore-budgeted).
 
     +NEW_INTERACTION_REWARD for the first A press that opens a script from a (tile, facing); +NEW_WARP_REWARD for the
-    first map-to-map edge, only where the route graph does not cover both maps (the route reward pays there).
+    first map-to-map edge.
     """
     bonus = 0.0
     busy = before.battle_mode != 0 or dialogue_open(before)
-    if action_idx == 4 and not busy and dialogue_open(after):
+    if action_idx == ACTIONS.index("a") and not busy and dialogue_open(after):
         full_hp_center = False
-        if (before.map_group, before.map_number) in ((26, 5), (10, 10), (10, 13)):  # no bonus when nothing to heal
+        if (before.map_group, before.map_number) in POKECENTER_MAPS:  # no bonus when nothing to heal
             hp_b = getattr(before, "party_hp", ()) or ()
             full_hp_center = bool(hp_b) and sum(p[0] for p in hp_b) >= sum(p[1] for p in hp_b)
         key = (before.map_group, before.map_number, before.x, before.y, before.facing)
         if not full_hp_center and key not in seen_interactions:
             seen_interactions.add(key)
-            bonus += NEW_INTERACTION_REWARD
+            pay = budget_pay(budget, "explore", NEW_INTERACTION_REWARD)
+            bonus += pay
             if components is not None:
-                components["interaction"] = components.get("interaction", 0.0) + NEW_INTERACTION_REWARD
+                components["interaction"] = components.get("interaction", 0.0) + pay
     before_map, after_map = (before.map_group, before.map_number), (after.map_group, after.map_number)
-    if before_map != after_map and not (_route_covered(before) and _route_covered(after)):
+    if before_map != after_map:
         edge = (before_map, after_map)
         if edge not in seen_warps:
             seen_warps.add(edge)
-            bonus += NEW_WARP_REWARD
+            pay = budget_pay(budget, "explore", NEW_WARP_REWARD)
+            bonus += pay
             if components is not None:
-                components["warp"] = components.get("warp", 0.0) + NEW_WARP_REWARD
+                components["warp"] = components.get("warp", 0.0) + pay
     return bonus
 
 
@@ -314,7 +312,7 @@ class EnvWorker:
     """One headless PyBoy instance with the training reward, sticky actions, start jitter and swarm sharing.
 
     ``cfg`` keys (all optional): ``sticky_prob``, ``jitter_max``, ``stage_balanced``, ``swarm_dir``, ``swarm_prob``,
-    ``seed``.  Call ``reset()`` before the first ``step()``.
+    ``seed``, ``goal_potential`` (optional tile potential toward Falkner, default off).  Call ``reset()`` before the first ``step()``.
     """
 
     def __init__(self, index: int, start_states: list[str], max_steps: int, cfg: dict | None = None):
@@ -352,6 +350,7 @@ class EnvWorker:
         self.last_dir: str | None = None
         self.last_move: int | None = None
         self.state_name = names[0]
+        self.goal_potential = bool(cfg.get("goal_potential", False))  # OPTIONAL oracle shaping, default OFF
         self.start_phi: float | None = None
         self._event_snapshot: set = set()
         self.seen_interactions: set = set()
@@ -372,18 +371,12 @@ class EnvWorker:
         stages = {}
         for name in names:
             self.emu.load_state(self._state_bytes(name))
-            stages[name] = int(route_graph.current_stage(self.reader.parse(self.emu.frame)))
+            stages[name] = int(current_stage(self.reader.parse(self.emu.frame)))
         return stages
 
     def _equip_balls(self) -> None:
-        try:
-            b1, a1 = self.emu.symbol("wNumBalls")
-            b2, a2 = self.emu.symbol("wBalls")
-            if self.emu.read(b1, a1, 1)[0] == 0:
-                self.emu.write(b1, a1, bytes([1]))
-                self.emu.write(b2, a2, bytes([5, 10, 255]))
-        except Exception:
-            pass
+        """Hard-coded start supplies (10 Poke Balls, 5 Potions) so catching and healing can be learned from episode one."""
+        equip_supplies(self.emu)
 
     def _load(self, name: str) -> bytes:
         """Load a start state (or an archived ``swarm:<key>`` state) into the emulator; returns its bytes."""
@@ -409,12 +402,12 @@ class EnvWorker:
         self.seen_tiles.add(tile)
         self.seen_maps.add((st.map_group, st.map_number))
         self.tile_visit_counts[tile] = self.tile_visit_counts.get(tile, 0) + 1
-        ram_vec = observe(st, self.visited, include_goals=True, include_route=True)
+        ram_vec = observe(st, self.visited, deep=True, seen_maps=self.seen_maps)
         return self._screen(), ram_vec, st
 
     def _peek_obs(self, st):
         """Observation of ``st`` without touching the visit bookkeeping (the final obs of a truncated episode)."""
-        return self._screen(), observe(st, self.visited, include_goals=True, include_route=True)
+        return self._screen(), observe(st, self.visited, deep=True, seen_maps=self.seen_maps)
 
     # -- episode control
     def _jitter(self, data: bytes) -> None:
@@ -454,15 +447,12 @@ class EnvWorker:
         for species_id in getattr(st, "party_species", ()):
             if species_id and species_id != 255:
                 self.caught_counts[species_id] = self.caught_counts.get(species_id, 0) + 1
-        try:
-            self._last_stage = int(route_graph.current_stage(st))
-        except Exception:
-            self._last_stage = 0
+        self._last_stage = int(current_stage(st))
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
-        self.start_phi = _route_phi(st)
-        screen, ram_vec, _ = self.get_obs()
+        screen, ram_vec, _ = self.get_obs()  # also records the start map as seen (it must not pay a milestone)
+        self.start_phi = _story_phi(st, self.seen_maps)
         return screen, ram_vec
 
     def _maybe_archive(self, after) -> None:
@@ -474,7 +464,7 @@ class EnvWorker:
         new = self.seen_events - self._event_snapshot
         self._event_snapshot = set(self.seen_events)
         self._pending_events |= {fid for fid in new if fid in KEY_EVENT_IDS}
-        stage = int(route_graph.current_stage(after))
+        stage = int(current_stage(after))
         if stage > self._last_stage:
             self._pending_stage = stage if self._pending_stage is None else max(self._pending_stage, stage)
             self._last_stage = stage
@@ -491,23 +481,27 @@ class EnvWorker:
     # -- stepping
     def step(self, act_idx: int):
         """Execute one policy action; returns the 7-tuple the trainer expects (see ``VectorEnv.step``)."""
-        exec_idx = pick_executed_action(int(act_idx), self.last_move, self.sticky_prob, self.rng)
+        emu, stepper, macros, reader = self.emu, self.stepper, self.macros, self.reader
+        before = reader.parse(emu.frame)
+        exec_idx = pick_executed_action(int(act_idx), self.last_move, self.sticky_prob, self.rng,
+                                        in_battle=before.battle_mode != 0)
         if exec_idx < 4:
             self.last_move = exec_idx
         action_name = ACTIONS[exec_idx]
-        emu, stepper, macros, reader = self.emu, self.stepper, self.macros, self.reader
-        before = reader.parse(emu.frame)
         moved = False
 
-        # Handle in-game events
         if before.battle_mode != 0:
-            tactical_battle_step(before, macros)
+            # LEARNED BATTLE: the policy's button goes straight to the game (FIGHT / PKMN / PACK / RUN menus, the
+            # move list, item and party screens, every text box). No tactical script, no text mashing in battle.
+            emu.press(action_name, frames=8)
+            emu.tick(12, render=False)
             self.blocked_count = 0
         elif dialogue_open(before):
+            # Overworld dialogue ONLY is auto-advanced (episode feasibility: signs, NPC chatter, cutscenes, Nurse Joy).
             macros.mash_text(max_frames=80)
             self.blocked_count = 0
-        elif action_name == "a":
-            emu.press("a", frames=8)
+        elif action_name in BUTTON_ACTIONS:
+            emu.press(action_name, frames=8)
             emu.tick(12, render=False)
             moved = False
         else:
@@ -521,8 +515,8 @@ class EnvWorker:
                 self.blocked_count = 0
 
         busy = before.battle_mode != 0 or dialogue_open(before)
-        # An A press (talking to an NPC, reading a sign) never moves; it is not a wall bump.
-        if not moved and not busy and action_name != "a":
+        # An A / B press (talking to an NPC, reading a sign) never moves; it is not a wall bump.
+        if not moved and not busy and action_name not in BUTTON_ACTIONS:
             self.consecutive_bumps += 1
         else:
             self.consecutive_bumps = 0
@@ -540,33 +534,32 @@ class EnvWorker:
             before, after, moved, self.seen_tiles, self.seen_maps,
             unvisited_neighbor=unvisited_neighbor, caught_counts=self.caught_counts, seen_events=self.seen_events,
             seen_waypoints=self.seen_waypoints, info=StepInfo(consecutive_bumps=self.consecutive_bumps),
-            components=comps, **pr_kwargs,
+            components=comps, goal_potential=self.goal_potential, **pr_kwargs,
         )
-        step_rew += worker_interaction_reward(before, after, exec_idx, self.seen_interactions, self.seen_warps, comps)
-        # Curiosity and the momentum bonus are the fallback for areas the route graph does not cover.
-        covered = _route_covered(after)
+        step_rew += worker_interaction_reward(before, after, exec_idx, self.seen_interactions, self.seen_warps, comps,
+                                              self.budget if self._budget_ok else None)
+        # Count-based novelty (1/sqrt(visits)) and a small straight-line momentum bonus: generic exploration terms.
         v_count = self.tile_visit_counts.get((after.map_group, after.map_number, after.x, after.y), 0)
-        curiosity = 0.0 if covered else intrinsic_curiosity_reward(v_count, scale=0.08)
+        curiosity = intrinsic_curiosity_reward(v_count, scale=0.08)
         curiosity = budget_pay(self.budget, "explore", curiosity) if self._budget_ok else curiosity
         in_play = not busy and after.battle_mode == 0 and not dialogue_open(after)  # no loop penalty in fights/text
         loop = -0.02 * min(4.0, (v_count - 10) / 5.0) if (v_count > 12 and in_play) else 0.0  # anti-looping pacing
-        momentum = 0.02 if (not covered and action_name == self.last_dir and moved) else 0.0
+        momentum = 0.02 if (action_name == self.last_dir and moved) else 0.0
         momentum = budget_pay(self.budget, "explore", momentum) if self._budget_ok else momentum
         self.last_dir = action_name if moved else None
 
         comps["curiosity"], comps["loop"], comps["momentum"] = curiosity, loop, momentum
         step_rew += curiosity + loop + momentum
 
-        # No quest bonus and no termination on delivery: EVENT_GAVE_MYSTERY_EGG_TO_ELM already pays through the
-        # event flag, and ending the episode there would keep every episode from reaching stages 2-3.
+        # No termination on milestones or on the badge; the episode ends only on the step limit (a time limit, not a goal).
         self.steps += 1
         truncated = self.steps >= self.max_steps  # time limit, not a real end
         done = truncated
         ended_maps = len(self.seen_maps)
         ended_state = self.state_name
-        phi_end = _route_phi(after)
+        phi_end = _story_phi(after, self.seen_maps)
         phi_start = self.start_phi
-        stage_end = int(route_graph.current_stage(after))
+        stage_end = int(current_stage(after))
         self._maybe_archive(after)
         final_obs = self._peek_obs(after) if truncated else None
         if done:
@@ -583,8 +576,8 @@ class EnvWorker:
             "ended_maps": ended_maps,
             "ended_state": ended_state,
             "reward_components": {k: float(v) for k, v in comps.items()},
-            "route_phi": phi_end,  # route potential of the state this step's reward was computed on (None off-graph)
-            "ep_start_phi": phi_start,  # route potential at the start of the episode this step belongs to
+            "route_phi": phi_end,  # -(story milestones left) after this step (feeds the entropy schedule, not the policy)
+            "ep_start_phi": phi_start,  # the same quantity at the start of the episode this step belongs to
             "stage": stage_end,
             "truncated": bool(truncated),
             "executed_action": exec_idx,
@@ -594,6 +587,7 @@ class EnvWorker:
                 "es": int(getattr(st_now, "enemy_mon_species", 0)),
                 "ps": [int(v) for v in st_now.party_species],
                 "pl": [int(v) for v in (getattr(st_now, "party_levels", ()) or ())],
+                "ph": [[int(h[0]), int(h[1])] for h in (getattr(st_now, "party_hp", ()) or ())],
                 "dc": bytes(getattr(st_now, "pokedex_caught", ()) or ()),
                 "ds": bytes(getattr(st_now, "pokedex_seen", ()) or ()),
                 "mo": int(getattr(st_now, "money", 0)),
@@ -982,6 +976,7 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None) -> dict:
         "swarm_dir": str(swarm_dir) if (cfg.swarm and swarm_dir) else None,
         "swarm_prob": SWARM_SAMPLE_PROB,
         "seed": cfg.seed,
+        "goal_potential": cfg.goal_potential,
     }
 
 
@@ -1010,12 +1005,15 @@ def train(
     np.random.seed(cfg.seed)
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru}, config={cfg.name})...")
 
-    policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=5, use_gru=use_gru, gru_hidden_dim=512)
+    policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=N_ACTIONS, use_gru=use_gru, gru_hidden_dim=512)
     resumed = False
     sidecar = None
     if resume:
         try:
-            policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru, override_obs_dim=DEEP_OBS_DIM)
+            policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru,
+                                              override_obs_dim=DEEP_OBS_DIM, check_schema=True)
+        except CheckpointIncompatibleError as e:
+            raise RuntimeError(f"--resume: {e}") from e
         except Exception as e:
             raise RuntimeError(f"--resume: could not load checkpoint '{save_path}': {e}") from e
         resumed = True
@@ -1316,7 +1314,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (blueprint_v1, legacy) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v2 = fresh from-scratch run; blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)

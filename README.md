@@ -41,7 +41,7 @@ python -m tools.dashboard --demo        # no training needed: a synthetic run to
 saves to `logs/<run-id>.pt`; watch it in the dashboard from step 1.
 
 ```powershell
-python -m tools.train_deep_ppo --config blueprint_v1 --updates 3 --envs 4 --rollout 16 --max-steps 48 --no-curriculum --state new_bark_outside --run-id local-check
+python -m tools.train_deep_ppo --config long_v2 --updates 3 --envs 4 --rollout 16 --max-steps 48 --no-curriculum --state new_bark_outside --run-id local-check
 ```
 
 **3. Train on a GPU pod** (the real thing). First create a pod in the Runpod console, copy its SSH host and port from the
@@ -49,7 +49,7 @@ Connect tab (they change every time a pod starts), and keep your SSH key at `~/.
 (`chmod 600`). Then, from WSL in the repo folder (adjust host, port and run id):
 
 ```bash
-python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config blueprint_v1 \
+python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config long_v2 \
   --run-id my-run --updates 300 --envs 32 --no-curriculum --state new_bark_outside \
   --detach --watch --no-dashboard --sync-every 5
 ```
@@ -57,11 +57,15 @@ python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config blu
 This uploads the code, installs `pyboy` on the pod, trains there, and copies telemetry into `logs/` every 5 seconds so the
 dashboard from step 1 shows it live. The checkpoint comes back as `logs/my-run.pt` when the run ends.
 Use `--envs` up to the pod's core count (a 32 vCPU pod: 32). Each update takes roughly 25 s at 32 envs.
+`--config long_v2` is the fresh from-scratch preset (32 envs x 256 steps, 800 updates, New Bark start): no route
+oracle, and the agent plays its own battles. **Checkpoints from before this change cannot be loaded** (the observation
+lost the route direction/distance features, gained battle features, and the policy gained a B button); loading one
+raises `CheckpointIncompatibleError` telling you to retrain.
 
 **4. Resume a run from its checkpoint** (needs `logs/my-run.pt` and `logs/my-run.optim.pt` locally; the script uploads them):
 
 ```bash
-python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config blueprint_v1 \
+python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config long_v2 \
   --resume --save logs/my-run.pt --run-id my-run-2 --updates 200 --envs 32 --no-curriculum --state new_bark_outside \
   --detach --watch --no-dashboard
 ```
@@ -85,6 +89,17 @@ A stopped pod often cannot restart (its GPU gets taken), so copy results first a
 Troubleshooting: if the dashboard shows nothing, the run id folder under `logs/runs/` is the source of truth (pick it under
 **Source**). If a long cloud run dies, its latest checkpoint is on the pod in `/workspace/tensormew/logs/`; pull it with
 `rsync -az -e "ssh -i ~/.ssh/id_runpod -p <POD_PORT>" "root@<POD_IP>:/workspace/tensormew/logs/my-run*" logs/`.
+
+## What is hard-coded and what is learned
+
+The agent starts from `states/new_bark_outside.state` (Cyndaquil, outside New Bark Town). The policy gets the screen plus
+a RAM vector (position, map id, party, bag, which story milestones are done, battle facts) and presses six buttons
+(up/down/left/right/A/B). It is **not** told where to go and it plays **its own battles** (fight, move choice, switching,
+items, running). The goal is the minimal story path to the Zephyr Badge (Route 29 -> Cherrygrove -> Route 30 ->
+Route 31 -> Violet City -> Violet Gym -> Falkner); the Mystery Egg errand is not required. Still hard-coded by design:
+the start state, 10 Poke Balls + 5 Potions at every reset, auto-advanced *overworld* dialogue, and the reward terms.
+Details and reasoning: [`research/analysis/design_hardcoded_vs_learned.md`](research/analysis/design_hardcoded_vs_learned.md).
+The old BFS goal potential survives only as the opt-in `goal_potential` config flag (off in every preset).
 
 ## Training from scratch
 
@@ -141,7 +156,7 @@ free disk and python deps. The stock PyTorch image lacks `pyboy` and Ubuntu 24.0
 `pip install --break-system-packages pyboy==2.8.1` automatically (`tools/pod_bootstrap.sh` does the same by hand).
 `--envs` above the core count is capped with a warning. Skip with `--skip-preflight`.
 
-**Config.** `--config blueprint_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
+**Config.** `--config long_v2|blueprint_v1|long_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
 uploads a JSON file to the pod, and passes `--config` to the remote trainer.
 
 **Detached runs.** For multi-hour runs use `--detach`: the job runs under tmux (or `setsid nohup`) on the pod, logging
@@ -150,7 +165,7 @@ session or a sleeping laptop does not kill it. The script then polls and syncs t
 close the terminal, reconnect with the same pod address:
 
 ```bash
-python -m tools.cloud_train_deep --updates 400 --config blueprint_v1 --run-id v1 --detach --watch
+python -m tools.cloud_train_deep --updates 400 --config long_v2 --run-id v1 --detach --watch
 python -m tools.cloud_train_deep --attach --watch --save logs/v1.pt   # later: resume syncing, pull the checkpoint (each run saves to logs/<run-id>.pt)
 ```
 

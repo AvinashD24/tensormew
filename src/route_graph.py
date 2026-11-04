@@ -1,32 +1,22 @@
-"""One route graph for the early-game story, read from the ROM's maps.
+"""OPTIONAL tile-level goal potential for the minimal story path (OFF by default; never part of the observation).
 
-Merges the scripted navigators (`return_nav`: Mr. Pokémon -> Elm; `falkner_nav`: Elm -> Violet Gym; the
-Violet Pokécenter aide for the Togepi egg) into a single graph: every walkable tile of every route map is
-a node, edges are single steps (map connections and warps included, ledges and cut trees respected), and
-each story goal owns a BFS distance field over the whole graph.
+The graph holds every walkable tile of the route maps (New Bark -> Route 29 -> Cherrygrove -> Route 30 -> Route 31
+-> Violet gatehouse -> Violet City -> Violet Gym), read from the ROM, with single-step edges (map connections and
+warps, ledges and cut trees respected) and a BFS distance field to the single goal: the tile in front of Falkner.
 
-Stages (from event flags, mirroring `rl_env.story_objective_maps`) and their goals:
+``route_potential`` = -(steps to Falkner). The trainer only uses it when ``TrainConfig.goal_potential`` is True,
+as a reward ``ROUTE_PROGRESS_WEIGHT * (Phi' - Phi)`` for ablations ("is the oracle shaping better?"). The default
+runs do not use it, and the policy is never told the direction or distance (the old ``route_features`` and
+``next_direction`` observation was removed: it was an oracle, not reinforcement learning).
 
-    0 GET_EGG     tile below Mr. Pokémon in his house
-    1 RETURN_EGG  tile below Professor Elm in the lab
-    2 TO_GYM      tile below Falkner in Violet Gym
-    3 POST_GYM    tile below Elm's aide in the Violet Pokécenter (Togepi egg)
-
-``route_potential`` is Phi = -(steps remaining along the whole route to the final goal): the distance to the
-current goal plus the legs between the later goals. Finishing a goal therefore does not move Phi (the goal
-tile is the start of the next leg), and every step along a shortest path raises it by exactly 1, so a reward
-of ``w * (Phi' - Phi)`` telescopes around any loop. Maps off the graph give 0.0 / zero features.
-
-Buildings next to the route (houses, marts, other Pokécenters) are included as dead-end spurs so entering
-one lowers Phi by the walk back out instead of jumping it to 0. The graph is built lazily, once per process.
+Buildings next to the route (houses, marts, Pokecenters) are included as dead-end spurs so entering one lowers Phi
+by the walk back out. The graph is built lazily, once per process.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import deque
-
-import numpy as np
 
 from src.collision import (
     COLL_WARP_CARPET_DOWN,
@@ -37,23 +27,16 @@ from src.collision import (
 from src.mover import walkable
 from src.return_nav import ROM_PATH, SYM_PATH, _DIRS, _Rom, _signed
 
-STAGE_COUNT = 4
-ROUTE_FEATURE_DIM = 9   # stage one-hot (4) + next step up/down/left/right (4) + remaining distance / 400 (1)
-DIST_SCALE = 400.0       # about 2/3 of graph nodes are >= 100 steps from the goal, so /100 saturated
+STAGE_COUNT = 1
 UNREACHABLE_EXTRA = 5   # tiles on the graph with no path to the goal sit this far past the farthest reachable one
 
-STAGE_GET_EGG, STAGE_RETURN_EGG, STAGE_TO_GYM, STAGE_POST_GYM = range(4)
-
-# Maps the route walks through (the goals live in the last four). Outdoor maps join through connections.
+# Maps the route walks through. Outdoor maps join through connections; houses and shops are loaded as spurs.
 OUTDOOR_MAPS = ((24, 4), (24, 3), (26, 3), (26, 1), (26, 2), (10, 5))
-ROUTE_MAPS = OUTDOOR_MAPS + ((24, 5), (26, 10), (26, 11), (10, 7), (10, 10))
+ROUTE_MAPS = OUTDOOR_MAPS + ((26, 11), (10, 7))
 
-# Goals as (map, x, y): the tile in front of the NPC, as the navigators and play_live define them.
+# The one goal as (map, x, y): the tile in front of Falkner, who stands at (5, 1).
 GOALS = (
-    ((26, 10), 3, 6),   # Mr. Pokémon stands at (3, 5)
-    ((24, 5), 5, 3),    # Elm stands at (5, 2)
-    ((10, 7), 5, 2),    # Falkner stands at (5, 1)
-    ((10, 10), 4, 4),   # Elm's aide stands at (4, 3)
+    ((10, 7), 5, 2),
 )
 
 DIR_NAMES = tuple(_DIRS)            # ("up", "down", "left", "right"), the feature order
@@ -140,7 +123,6 @@ class _Graph:
             if leg is None:
                 raise RuntimeError(f"no route from goal {s} to goal {s + 1}")
             self.tail[s] = self.tail[s + 1] + leg
-        self._next: dict[tuple, int] = {}
 
     # --- loading ------------------------------------------------------------------------------
     def _load(self, mid):
@@ -258,37 +240,6 @@ class _Graph:
             d = self.max_dist[stage] + UNREACHABLE_EXTRA
         return -(d + self.tail[stage])
 
-    def next_direction(self, stage: int, node: Node):
-        """Index into (up, down, left, right) of the first step of a shortest path to the goal, or None."""
-        key = (stage, node)
-        hit = self._next.get(key, -1)
-        if hit != -1:
-            return hit
-        best = None
-        here = self.dist[stage].get(node)
-        outs = self.fwd.get(node)
-        if here is not None and here > 0 and outs is not None:
-            dist = self.dist[stage]
-            best_d = here
-            for i, dst in enumerate(outs):
-                if dst is None:
-                    continue
-                dd = dist.get(dst)
-                if dd is not None and dd < best_d:
-                    best, best_d = i, dd
-        self._next[key] = best
-        return best
-
-    def path_to_goal(self, stage: int, node: Node) -> list:
-        """Nodes of a shortest path from `node` to the stage's goal (inclusive), [] when none."""
-        path = [node]
-        while self.dist[stage].get(path[-1]) not in (0, None):
-            i = self.next_direction(stage, path[-1])
-            if i is None:
-                return []
-            path.append(self.fwd[path[-1]][i])
-        return path if self.dist[stage].get(path[-1]) == 0 else []
-
 
 _graph_lock = threading.Lock()
 _graph_cache: list = []  # [graph or None] once a load was attempted
@@ -308,20 +259,6 @@ def _graph() -> _Graph | None:
 
 
 # --- public API ---------------------------------------------------------------------------------
-def current_stage(state) -> int:
-    """Story stage from event flags: 0 get egg, 1 return egg, 2 to gym, 3 post gym (also once the Togepi egg is in)."""
-    has_event = getattr(state, "has_event", None)
-    if not callable(has_event):
-        return STAGE_GET_EGG
-    if not has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"):
-        return STAGE_GET_EGG
-    if not has_event("EVENT_GAVE_MYSTERY_EGG_TO_ELM"):
-        return STAGE_RETURN_EGG
-    if has_event("EVENT_BEAT_FALKNER"):
-        return STAGE_POST_GYM
-    return STAGE_TO_GYM
-
-
 def _map_id(state) -> tuple[int, int]:
     return int(getattr(state, "map_group", 0)), int(getattr(state, "map_number", 0))
 
@@ -336,39 +273,20 @@ def covers_map(map_id: tuple[int, int]) -> bool:
 
 
 def route_potential(state) -> float:
-    """Phi = -(steps remaining along the whole route); 0.0 off the graph."""
+    """Phi = -(steps to Falkner); 0.0 off the graph. Used only by the optional ``goal_potential`` reward."""
     g = _graph()
     if g is None:
         return 0.0
     node = _node(state)
     if node[0] not in g.maps:
         return 0.0
-    return float(g.potential(current_stage(state), node))
+    return float(g.potential(0, node))
 
 
 def goal_remaining(state) -> float | None:
-    """Steps to the current goal, or None when the position is off the graph or has no path."""
+    """Steps to Falkner, or None when the position is off the graph or has no path. Reporting / tests only."""
     g = _graph()
     if g is None:
         return None
-    d = g.goal_distance(current_stage(state), _node(state))
+    d = g.goal_distance(0, _node(state))
     return None if d is None else float(d)
-
-
-def route_features(state) -> np.ndarray:
-    """Stage one-hot, first step of the shortest path to the current goal, remaining distance / DIST_SCALE (400), clipped to [0, 1]."""
-    f = np.zeros(ROUTE_FEATURE_DIM, dtype=np.float32)
-    stage = current_stage(state)
-    f[stage] = 1.0
-    g = _graph()
-    if g is None:
-        return f
-    node = _node(state)
-    if node[0] not in g.maps:
-        return f
-    step = g.next_direction(stage, node)
-    if step is not None:
-        f[STAGE_COUNT + step] = 1.0
-    d = g.goal_distance(stage, node)
-    f[STAGE_COUNT + 4] = 1.0 if d is None else min(1.0, d / DIST_SCALE)
-    return f

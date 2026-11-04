@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+import urllib.error
 import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -56,6 +57,38 @@ class FunFactsTests(unittest.TestCase):
             self.assertEqual(rec["fun"]["wild"], 1)
             meta = json.loads((Path(tmp) / "h" / "meta.json").read_text())
             self.assertIn("16", meta["species_names"])
+
+    def test_party_payload_picks_strongest_env(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            feed = LiveFeed(Path(tmp) / "live", num_envs=2, action_names=["a"])
+            a, b = _info(), _info()
+            a["fun"].update(ps=[155, 0xFF], pl=[6], ph=[[10, 20]])
+            b["fun"].update(ps=[155, 16, 19, 0, 0, 0], pl=[12, 8, 3], ph=[[30, 40], [0, 0], [5, 5]])
+            feed.observe(infos=[a, b], actions=np.array([0, 0]), rewards=np.array([0.0, 0.0]), dones=np.array([False, False]))
+            f = feed.fun_payload()
+            self.assertEqual(f["pe"], 1)
+            self.assertEqual(f["party"], [[155, 12, 30, 40], [16, 8], [19, 3, 5, 5]])
+            self.assertIn("16", feed._species_names())
+            self.assertEqual(json.loads(json.dumps(f))["party"][1], [16, 8])
+
+    def test_sprite_route(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Path(tmp) / "live", Path(tmp) / "m.jsonl", Path(tmp)))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                r = urllib.request.urlopen(base + "/sprites/25.png", timeout=5)
+                self.assertEqual(r.headers["Content-Type"], "image/png")
+                self.assertEqual(r.read(4), b"\x89PNG")
+                with self.assertRaises(urllib.error.HTTPError) as ctx:
+                    urllib.request.urlopen(base + "/sprites/999.png", timeout=5)
+                self.assertEqual(ctx.exception.code, 404)
+                page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
+                for token in ("partyHtml", "/sprites/", "image-rendering: pixelated"):
+                    self.assertIn(token, page)
+            finally:
+                server.shutdown()
+                server.server_close()
 
     def test_no_fun_without_info(self):
         with tempfile.TemporaryDirectory() as tmp:

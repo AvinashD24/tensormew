@@ -1,4 +1,10 @@
-"""Live interactive evaluation: runs indefinitely until user closes the PyBoy window."""
+"""Live interactive evaluation: runs indefinitely until user closes the PyBoy window.
+
+The policy plays everything it controls in training: movement, A / B, and the WHOLE battle (menus, moves, items,
+switching). Only overworld dialogue is auto-advanced (``mash_text``), exactly as in training. There is no route
+compass, no scripted navigator and no scripted battle any more; the only assists left are the reflexive unstick /
+Cut / LLM-director helpers for when the agent is physically wedged.
+"""
 
 from __future__ import annotations
 
@@ -14,19 +20,16 @@ except ImportError:
     pass
 import numpy as np
 
-from src.battle import tactical_battle_step
 from src.collision import is_ledge
 from src.emulator import Emulator
 from src.macros import Macros
-from src.return_nav import egg_return_direction
-from src.falkner_nav import falkner_nav_direction
-from src.gym_prep import needs_training, prep_direction
 from src.unstick import Unsticker
 from src.mover import Mover, walkable
 from src.ppo import load_policy
 from src.ram_parser import RamParser, dialogue_open
 from src.local_nav import LocalNav
-from src.rl_env import ACTIONS, StepInfo, navigation_potential, observe, progress_reward
+from src.battle_obs import equip_supplies
+from src.rl_env import ACTIONS, BUTTON_ACTIONS, StepInfo, observe, progress_reward
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.live_status import (
@@ -46,16 +49,8 @@ _DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 
 
 def equip_balls(emu: Emulator, count: int = 10) -> None:
-    """Give player Pokéballs if currently holding none."""
-    try:
-        b1, a1 = emu.symbol("wNumBalls")
-        b2, a2 = emu.symbol("wBalls")
-        current = emu.read(b1, a1, 1)[0]
-        if current == 0:
-            emu.write(b1, a1, bytes([1]))
-            emu.write(b2, a2, bytes([5, count, 255]))
-    except Exception:
-        pass
+    """Give the player Poke Balls and 5 Potions (the same supplies as training) if the bag is short."""
+    equip_supplies(emu, balls=count)
 
 
 def _write_gif(frames, path, durations=None) -> None:
@@ -86,11 +81,6 @@ def main(argv=None) -> int:
         type=int,
         default=0,
         help="with --watch and --record-dir: also record a smooth GIF frame every N game frames in Violet City/the gym",
-    )
-    parser.add_argument(
-        "--post-egg-policy",
-        default=None,
-        help="optional .pt policy that takes over once the Mystery Egg is received (--policy plays until then)",
     )
     parser.add_argument(
         "--speed",
@@ -174,7 +164,7 @@ def main(argv=None) -> int:
         if policy_path and os.path.exists(policy_path):
             if policy_path.endswith(".pt"):
                 from src.deep_policy import SpatialVisionPolicy
-                policy = SpatialVisionPolicy.load(policy_path, device="cpu")
+                policy = SpatialVisionPolicy.load(policy_path, device="cpu", check_schema=True)
                 is_deep_policy = True
                 print(
                     f"Loaded {policy.param_count:,} parameter SpatialVisionPolicy "
@@ -185,12 +175,6 @@ def main(argv=None) -> int:
                 if policy is not None:
                     print(f"Loaded policy from {policy_path} ({policy.__class__.__name__})")
 
-        post_egg_policy = None
-        if args.post_egg_policy:
-            if not (is_deep_policy and os.path.exists(args.post_egg_policy)):
-                raise SystemExit("--post-egg-policy needs a .pt --policy and an existing .pt file")
-            post_egg_policy = SpatialVisionPolicy.load(args.post_egg_policy, device="cpu")
-            print(f"Post-egg policy {args.post_egg_policy} takes over at EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
         active_policy = policy
 
         visited: set[tuple[int, int, int, int]] = set()
@@ -274,58 +258,36 @@ def main(argv=None) -> int:
             seen_tiles.add(tile)
             seen_maps.add((state.map_group, state.map_number))
 
-            # 1. Battle Handling
+            # 1. Battle: the POLICY plays it, button by button (menus, moves, items, switching). Nothing is scripted.
             if state.battle_mode != 0:
                 blocked_count = 0
-                recurrent_hx = None
-                act_idx = getattr(state, "cur_battle_mon", 0)
-                act_idx = min(act_idx, len(state.party_hp) - 1) if state.party_hp else 0
-                b_cur = getattr(state, "battle_mon_hp", 0)
-                b_max = getattr(state, "battle_mon_max_hp", 0)
-                if b_max > 0:
-                    p_cur, p_max = b_cur, b_max
-                else:
-                    p_cur = state.party_hp[act_idx][0] if state.party_hp else 0
-                    p_max = state.party_hp[act_idx][1] if state.party_hp else 1
-                res = tactical_battle_step(state, macros, grind=needs_training(state))
-                reason = getattr(res, "message", getattr(res, "reason", "acted"))
-                if p_cur > 0 and (not getattr(res, "ok", True) or "refused" in reason):
-                    res = macros.choose_move()
-                    reason = getattr(res, "message", getattr(res, "reason", "attacked"))
-                elif p_cur == 0 and not getattr(res, "ok", True):
-                    failed = reason
-                    party_hp = tuple(getattr(state, "party_hp", ()) or ())
-                    has_alive = any(i != act_idx and hp[0] > 0 for i, hp in enumerate(party_hp))
-                    if has_alive:
-                        res = macros.switch_fainted_pokemon()
-                        reason = getattr(res, "message", getattr(res, "reason", "switched fainted Pokémon"))
+                if is_deep_policy and active_policy is not None:
+                    from tools.evaluate_policy import obs_vector
+                    obs = obs_vector(state, visited, int(getattr(active_policy, "obs_dim", 0)), seen_maps)
+                    screen = emu._pb.screen.ndarray[:, :, :3].copy()
+                    if getattr(active_policy, "use_gru", False):
+                        probs, recurrent_hx = active_policy.probs_recurrent(screen, obs, hx=recurrent_hx)
                     else:
-                        res = macros.handle_whiteout()
-                        reason = f"handling whiteout / fainted ({failed})"
-                mon_name = get_species_name(state.party_species[act_idx]) if state.party_species and act_idx < len(state.party_species) else "Mon"
+                        probs = active_policy.probs(screen, obs)
+                    probs = np.asarray(probs, dtype=np.float64)
+                    if args.greedy:
+                        b_idx = int(np.argmax(probs))
+                    else:
+                        lg = np.log(probs + 1e-10) / max(0.01, args.temperature)
+                        lg -= lg.max()
+                        pp = np.exp(lg)
+                        b_idx = int(np.random.choice(len(pp), p=pp / pp.sum()))
+                else:  # no deep policy loaded: random buttons, so the script never plays for it either
+                    b_idx = int(np.random.choice(len(ACTIONS)))
+                button = ACTIONS[b_idx]
+                emu.press(button, frames=8)
+                emu.tick(12 if not args.watch else 40, render=render_screen)
                 print(
-                    f"[Step {step_idx}] Battle (mode={state.battle_mode}, "
-                    f"active={mon_name} {p_cur}/{p_max}, "
-                    f"enemy_species={state.enemy_species}, hp={state.enemy_hp}/{state.enemy_max_hp}): {reason}",
+                    f"[Step {step_idx}] Battle (mode={state.battle_mode}, active HP {state.battle_mon_hp}/{state.battle_mon_max_hp}, "
+                    f"enemy species={state.enemy_mon_species} Lv{state.enemy_level} hp={state.enemy_hp}/{state.enemy_max_hp}): "
+                    f"policy pressed {button}",
                     flush=True,
                 )
-                # In --watch mode give each text box time to be read before the next B press skips it.
-                text_pause = 70 if args.watch else 20
-                if not reason.startswith("switched"):
-                    for _ in range(8):
-                        emu.tick(text_pause, render=render_screen)
-                        emu.press("b", frames=6)
-                else:
-                    for _ in range(4):
-                        emu.tick(text_pause, render=render_screen)
-                try:
-                    from PIL import Image
-                    scr = emu._pb.screen.ndarray[:, :, :3]
-                    img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
-                    img.save(f"logs/live_snapshot_{args.tag}.png")
-                    img.save("logs/live_snapshot.png")
-                except Exception:
-                    pass
                 step_idx += 1
                 continue
 
@@ -446,18 +408,12 @@ def main(argv=None) -> int:
                     continue
 
             # 4. Overworld Movement via Policy
-            if post_egg_policy is not None:
-                chosen = post_egg_policy if state.has_event("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON") else policy
-                if chosen is not active_policy:
-                    active_policy = chosen
-                    recurrent_hx = None  # hidden state from the other model is meaningless here
-                    print(f"[Step {step_idx}] Switched to {'post-egg' if chosen is post_egg_policy else 'base'} policy", flush=True)
             if is_deep_policy:
-                # Same layout the checkpoint was trained with (17 base, +4 goals, +route features), as the evaluator builds it.
+                # Same layout the checkpoint was trained with, as the evaluator builds it.
                 from tools.evaluate_policy import obs_vector
-                obs = obs_vector(state, visited, int(getattr(active_policy, "obs_dim", 17)))
+                obs = obs_vector(state, visited, int(getattr(active_policy, "obs_dim", 0)), seen_maps)
             else:
-                obs = observe(state, visited, nav)
+                obs = observe(state, visited, nav, seen_maps=seen_maps)
             probs = None
             if active_policy is not None:
                 if is_deep_policy:
@@ -498,107 +454,16 @@ def main(argv=None) -> int:
                         opp_idx = ACTIONS.index(opp_dir)
                         dir_probs[opp_idx] *= 0.4
 
-                # D. Goal-Directed Navigation Compass: prioritize forward progress towards Falkner/Gym
-                from src.rl_env import navigation_potential
-                cur_phi = navigation_potential(state)
-                for act_idx, dir_name in enumerate(ACTIONS[:4]):
-                    if dir_probs[act_idx] > 0:
-                        dx, dy = _DELTA[dir_name]
-                        try:
-                            target_state = type(state)(**{**state.__dict__, "x": state.x + dx, "y": state.y + dy})
-                            target_phi = navigation_potential(target_state)
-                            delta_phi = target_phi - cur_phi
-                            if delta_phi > 0:
-                                dir_probs[act_idx] *= (1.0 + 4.0 * delta_phi)
-                            elif delta_phi < 0:
-                                cur_visits = tile_visit_counts.get(cur_tile, 0)
-                                penalty_floor = 0.5 if cur_visits >= 3 else 0.05
-                                dir_probs[act_idx] *= max(penalty_floor, 1.0 + 2.0 * delta_phi)
-                        except Exception:
-                            pass
-
-                # E. Pokémon Center Nurse Joy Interaction when low HP
-                is_pc = state.map_id in ((26, 5), (10, 10), (10, 13))
-                party_hp = getattr(state, "party_hp", ()) or ()
-                cur_hp = sum(p[0] for p in party_hp) if party_hp else 0
-                max_hp = sum(p[1] for p in party_hp) if party_hp else 0
-                needs_heal = max_hp > 0 and cur_hp < max_hp
-
-                has_ev = getattr(state, "has_event", None)
-                has_egg = callable(has_ev) and has_ev("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
-                gave_egg = callable(has_ev) and has_ev("EVENT_GAVE_MYSTERY_EGG_TO_ELM")
-                beat_rival = getattr(state, "beat_rival", False) or (callable(has_ev) and has_ev("EVENT_RIVAL_CHERRYGROVE_CITY"))
-                beat_falkner = callable(has_ev) and has_ev("EVENT_BEAT_FALKNER")
-
-                total_p = dir_probs.sum()
-                if is_pc and needs_heal and state.x == 3 and state.y == 3:
-                    if state.facing == "up":
-                        # Standing at Nurse Joy counter facing up with damaged party -> interact to heal!
-                        action_idx = 4
-                    else:
-                        # Turn to face Nurse Joy directly across the counter
-                        action_idx = 0
-                elif state.map_id == (26, 10) and has_egg and not gave_egg and state.y == 7 and state.x in (2, 3):
-                    # Standing on exit carpet in Mr. Pokémon's House with Mystery Egg -> step out!
-                    action_idx = 1
-                elif has_egg and not gave_egg and egg_return_direction(state) is not None:
-                    # Egg errand: follow the shortest route back to Elm's Lab read from the ROM's maps
-                    action_idx = ACTIONS.index(egg_return_direction(state))
-                elif state.map_id == (26, 3) and has_egg and not beat_rival and state.x in (31, 32) and state.y in (6, 7):
-                    # Approaching Rival trigger at (33, 6..7) in Cherrygrove City -> step right!
-                    action_idx = 3
-                elif state.map_id == (26, 3) and has_egg and beat_rival and not gave_egg and state.x == 39 and state.y in (6, 7):
-                    # Defeated rival, standing at Cherrygrove east gate -> step right into Route 29!
-                    action_idx = 3
-                elif state.map_id == (24, 3) and has_egg and beat_rival and not gave_egg:
-                    # Route 29 Eastbound to Elm
-                    if state.x == 59 and state.y in (8, 9):
-                        action_idx = 3  # Step right through eastern gate into New Bark Town
-                    elif state.x == 7 and state.y in (7, 8, 9):
-                        action_idx = 1  # Step down at (7, 7) corridor to avoid wall and reach y=10
-                    elif state.x == 11 and state.y in (8, 9, 10):
-                        action_idx = 0  # Step up through chute to reach upper highway
-                elif state.map_id == (24, 4) and has_egg and beat_rival and not gave_egg and state.x == 6 and state.y == 4:
-                    # Outside Elm's Lab in New Bark Town with Mystery Egg -> enter lab!
-                    action_idx = 0
-                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y == 3:
-                    if state.facing == "up":
-                        # Elm stands at (5, 2): face him from (5, 3) and hand over the egg
-                        action_idx = 4
-                    else:
-                        action_idx = 0
-                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.y <= 3 and state.x < 5 and walkable(tiles.get("right", 0xFF), "right"):
-                    # Next to the desk but on the wrong column (a press of A at (4, 3) hits empty floor): shift to x=5
-                    action_idx = 3
-                elif state.map_id == (24, 5) and has_egg and not gave_egg and state.x == 5 and state.y > 3 and walkable(tiles.get("up", 0xFF), "up"):
-                    # Straight up column 5 to Elm
-                    action_idx = 0
-                elif state.map_id == (10, 7) and gave_egg and not beat_falkner and (state.x, state.y) in ((5, 2), (4, 1), (6, 1)):
-                    # Standing directly in front of or beside Gym Leader Falkner at (5, 1) -> face him and challenge!
-                    if (state.x, state.y) == (5, 2):
-                        action_idx = 4 if state.facing == "up" else 0
-                    elif (state.x, state.y) == (4, 1):
-                        action_idx = 4 if state.facing == "right" else 3
-                    elif (state.x, state.y) == (6, 1):
-                        action_idx = 4 if state.facing == "left" else 2
-                elif gave_egg and not beat_falkner and prep_direction(state) is not None:
-                    # Lead too weak for Falkner: farm wild battles on Route 30, heal at Cherrygrove when hurt
-                    action_idx = ACTIONS.index(prep_direction(state))
-                elif gave_egg and not beat_falkner and falkner_nav_direction(state) is not None:
-                    # Post-egg Falkner quest: follow deterministic shortest path from Elm's Lab to Falkner's defeat
-                    action_idx = ACTIONS.index(falkner_nav_direction(state))
-                elif state.map_id in ((26, 4), (26, 6), (26, 7), (26, 8), (26, 9), (24, 6), (24, 7), (24, 8), (24, 9), (10, 6), (10, 8), (10, 9), (10, 11)) and state.y == 7 and state.x in (2, 3, 4):
-                    # Incidental building exit mat -> step out!
-                    action_idx = 1
-                elif is_pc and not needs_heal and state.y == 7 and state.x in (3, 4):
-                    # Fully healed in Pokémon Center on exit mat -> step out!
-                    action_idx = 1
-                elif total_p > 1e-6:
-                    dir_probs /= total_p
+                # D. Pokecenter / dialogue are handled by the policy itself (A on Nurse Joy); no scripted overrides.
+                full = probs.astype(np.float64).copy()
+                full[:4] = dir_probs
+                total_p = full.sum()
+                if total_p > 1e-6:
+                    full /= total_p
                     if args.greedy:
-                        action_idx = int(np.argmax(dir_probs))
+                        action_idx = int(np.argmax(full))
                     else:
-                        logits = np.log(dir_probs + 1e-10) / max(0.01, args.temperature)
+                        logits = np.log(full + 1e-10) / max(0.01, args.temperature)
                         logits -= logits.max()
                         p_scaled = np.exp(logits)
                         p_scaled /= p_scaled.sum()
@@ -614,8 +479,8 @@ def main(argv=None) -> int:
 
             # Execute step
             before_pos = (state.x, state.y)
-            if direction == "a":
-                emu.press("a", frames=8)
+            if direction in BUTTON_ACTIONS:
+                emu.press(direction, frames=8)
                 emu.tick(12, render=render_screen)
                 moved = False
                 consecutive_a_count += 1
@@ -632,7 +497,7 @@ def main(argv=None) -> int:
             is_oscillating = (len(recent_positions) == 8 and len(set(recent_positions)) <= 2)
 
             # Check if player moved or if dialogue/battle engaged
-            if direction == "a":
+            if direction in BUTTON_ACTIONS:
                 if after_state.battle_mode != 0 or dialogue_open(after_state):
                     blocked_count = 0
                 else:
@@ -666,7 +531,6 @@ def main(argv=None) -> int:
                 info=info,
             )
             cumulative_reward += step_rew
-            phi_now = navigation_potential(after_state)
 
             notes = []
             if disc_map:
@@ -675,7 +539,7 @@ def main(argv=None) -> int:
                 notes.append("NEW TILE")
             if info.caught_pokemon:
                 notes.append("CAUGHT POKEMON!")
-            if not moved and after_pos == before_pos and direction != "a":
+            if not moved and after_pos == before_pos and direction not in BUTTON_ACTIONS:
                 notes.append(f"BUMP x{blocked_count}")
             notes_str = f" [{' '.join(notes)}]" if notes else ""
 
@@ -684,7 +548,7 @@ def main(argv=None) -> int:
             print(
                 f"[Step {step_idx:4d}] {map_name:18s} ({after_state.x:2d}, {after_state.y:2d}) | "
                 f"Act: {direction:5s} | Rew: {step_rew:+.2f} | "
-                f"Return: {cumulative_reward:+.2f} | Phi: {phi_now:5.1f} | "
+                f"Return: {cumulative_reward:+.2f} | "
                 f"Tiles: {len(seen_tiles):3d} | Party: {after_state.party_count}/6{notes_str}",
                 flush=True,
             )
@@ -717,7 +581,7 @@ def main(argv=None) -> int:
                 print(
                     f"\n{'='*75}\n"
                     f"🎮 [Move {step_idx:4d}] LOCATION : {map_name} (Map {after_state.map_group},{after_state.map_number}) at ({after_state.x:2d}, {after_state.y:2d}) | Facing: {after_state.facing}\n"
-                    f"🏆 [Move {step_idx:4d}] REWARD   : Step={step_rew:+.2f} | Cumulative Return={cumulative_reward:+.2f} | Potential Φ={phi_now:5.2f} | Explored Tiles={len(seen_tiles):3d}\n"
+                    f"🏆 [Move {step_idx:4d}] REWARD   : Step={step_rew:+.2f} | Cumulative Return={cumulative_reward:+.2f} | Explored Tiles={len(seen_tiles):3d}\n"
                     f"🐾 [Move {step_idx:4d}] LEAD MON : {lead_name} Lv.{lead_lvl} (HP: {lead_hp}) | Party: {after_state.party_count}/6\n"
                     f"⚔️  [Move {step_idx:4d}] MOVESET  : [{moves_str}]\n"
                     f"{'='*75}\n",
@@ -730,20 +594,6 @@ def main(argv=None) -> int:
                     img = Image.fromarray(scr).resize((320, 288), Image.Resampling.NEAREST)
                     img.save(f"logs/live_snapshot_{args.tag}.png")
                     img.save("logs/live_snapshot.png")
-                except Exception:
-                    pass
-
-            # Auto-save checkpoints on major story milestones
-            if has_egg and not os.path.exists("states/mystery_egg_received.state"):
-                try:
-                    emu.save_state("states/mystery_egg_received.state")
-                    print("[Checkpoint] Saved states/mystery_egg_received.state!", flush=True)
-                except Exception:
-                    pass
-            if gave_egg and not os.path.exists("states/mystery_egg_delivered.state"):
-                try:
-                    emu.save_state("states/mystery_egg_delivered.state")
-                    print("[Checkpoint] Saved states/mystery_egg_delivered.state!", flush=True)
                 except Exception:
                     pass
 

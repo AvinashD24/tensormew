@@ -21,25 +21,25 @@ class FakeState:
 
 
 class FakeEnv:
-    """Scripted story: flags flip at fixed steps so leg times are known."""
+    """Scripted story: the map (and finally the badge) changes at fixed steps so leg times are known."""
 
-    def __init__(self, schedule, maps=None):
-        self.schedule = schedule  # {step: flag}
-        self.maps = maps or {}
-        self.resets = []
+    def __init__(self, schedule):
+        self.schedule = schedule  # {step: (group, number) map to move to, or "badge"}
 
     def reset(self, seed):
-        self.resets.append(seed)
         self.t = 0
-        self.flags = set()
+        self.map_id, self.badges, self.flags = (24, 4), 0, set()
         return np.zeros((144, 160, 3), np.uint8), np.zeros(4), FakeState()
 
     def step(self, act):
         self.t += 1
-        if self.t in self.schedule:
-            self.flags.add(self.schedule[self.t])
-        st = FakeState(self.flags, self.maps.get(self.t, (24, 4)))
-        return np.zeros((144, 160, 3), np.uint8), np.zeros(4), st, 0.5, {"step": -0.01, "route": 0.51}, False
+        move = self.schedule.get(self.t)
+        if move == "badge":
+            self.badges, self.flags = 1, {"EVENT_BEAT_FALKNER"}
+        elif move is not None:
+            self.map_id = move
+        st = FakeState(self.flags, self.map_id, self.badges)
+        return np.zeros((144, 160, 3), np.uint8), np.zeros(4), st, 0.5, {"step": -0.01, "milestone": 0.51}, False
 
 
 class FakePolicy:
@@ -53,41 +53,38 @@ class FakePolicy:
         return 0
 
 
-SCHEDULE = {
-    10: "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON",
-    25: "EVENT_GAVE_MYSTERY_EGG_TO_ELM",
-    60: "EVENT_BEAT_FALKNER",
-}
+SCHEDULE = {10: (24, 3), 25: (26, 3), 60: "badge"}
 
 
 class EpisodeTests(unittest.TestCase):
     def test_leg_times_events_and_success(self):
-        env = FakeEnv(SCHEDULE, maps={5: (26, 1), 30: (10, 2)})
+        env = FakeEnv(SCHEDULE)
         pol = FakePolicy()
         ep = ev.run_episode(env, pol, seed=3, max_steps=100)
         self.assertTrue(ep["success"])
-        self.assertEqual(ep["final_stage"], 3)
-        self.assertEqual(ep["steps"], 60)  # stops once the last goal is reached
-        self.assertEqual(ep["leg_steps"], {"0": 10, "1": 25, "2": 60})
-        self.assertEqual(ep["events"]["EVENT_GAVE_MYSTERY_EGG_TO_ELM"], 25)
+        self.assertEqual(ep["final_stage"], ev.SUCCESS_STAGE)
+        self.assertEqual(ep["steps"], 60)  # stops once Falkner is beaten
+        self.assertEqual(ep["leg_steps"]["0"], 10)   # left New Bark: Route 29 reached
+        self.assertEqual(ep["leg_steps"]["1"], 25)   # Cherrygrove reached
+        self.assertEqual(ep["leg_steps"]["7"], 60)
+        self.assertEqual(ep["events"]["EVENT_BEAT_FALKNER"], 60)
         self.assertEqual(ep["maps_visited"], 3)
         self.assertAlmostEqual(ep["total_reward"], 30.0)
-        self.assertAlmostEqual(ep["components"]["route"], 0.51 * 60, places=2)
-        self.assertEqual(env.resets, [3])
+        self.assertAlmostEqual(ep["components"]["milestone"], 0.51 * 60, places=2)
         self.assertEqual(pol.resets, 1)
 
     def test_timeout_records_partial_progress(self):
         ep = ev.run_episode(FakeEnv(SCHEDULE), FakePolicy(), seed=0, max_steps=30)
         self.assertFalse(ep["success"])
         self.assertEqual(ep["final_stage"], 2)
-        self.assertEqual(ep["final_stage_name"], "TO_GYM")
+        self.assertEqual(ep["final_stage_name"], "cherrygrove")
         self.assertEqual(sorted(ep["leg_steps"]), ["0", "1"])
         self.assertEqual(ep["steps"], 30)
 
     def test_evaluate_aggregates_and_report(self):
         class Varying(FakeEnv):
             def reset(self, seed):
-                self.schedule = {10 + seed: SCHEDULE[10], 25 + seed: SCHEDULE[25], 60 + seed: SCHEDULE[60]}
+                self.schedule = {10 + seed: (24, 3), 25 + seed: (26, 3), 60 + seed: "badge"}
                 return super().reset(seed)
 
         seen = []
@@ -104,7 +101,7 @@ class EpisodeTests(unittest.TestCase):
         self.assertEqual(agg["success_rate"]["mean"], 1.0)
         text = ev.format_report(res)
         self.assertIn("success rate", text)
-        self.assertIn("RETURN_EGG", text)
+        self.assertIn("cherrygrove", text)
         json.dumps(res)  # serialisable
 
 
@@ -116,12 +113,14 @@ class StatsTests(unittest.TestCase):
         self.assertEqual(ev.bootstrap_ci([7.0]), (7.0, 7.0, 7.0))
         self.assertTrue(np.isnan(ev.bootstrap_ci([])[0]))
 
-    def test_stage_fallback_from_flags(self):
+    def test_stage_follows_map_and_badge(self):
         self.assertEqual(ev.stage_of(FakeState()), 0)
-        self.assertEqual(ev.stage_of(FakeState(["EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"])), 1)
-        self.assertEqual(
-            ev.stage_of(FakeState(["EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON", "EVENT_GAVE_MYSTERY_EGG_TO_ELM", "EVENT_BEAT_FALKNER"])), 3
-        )
+        self.assertEqual(ev.stage_of(FakeState(map_id=(26, 3))), 2)
+        self.assertEqual(ev.stage_of(FakeState(["EVENT_BEAT_FALKNER"], badges=1)), ev.SUCCESS_STAGE)
+
+    def test_obs_vector_rejects_old_layouts(self):
+        with self.assertRaises(ValueError):
+            ev.obs_vector(FakeState(), set(), 30)
 
 
 @unittest.skipUnless(ROM.is_file(), "ROM not available")
@@ -141,7 +140,7 @@ class RomTests(unittest.TestCase):
             def act(self, screen, obs):
                 self.i += 1
                 assert obs.shape == (DEEP_OBS_DIM,)
-                return self.i % 5
+                return self.i % 6
 
         env = ev.GameEnv("new_bark_outside", DEEP_OBS_DIM, max_steps=6, jitter=2)
         try:

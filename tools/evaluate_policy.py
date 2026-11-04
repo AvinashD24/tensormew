@@ -6,9 +6,9 @@ Usage:
         --episodes 16 --max-steps 1500 --jitter 6 --name run42
 
 Each episode starts from the saved state (plus 0..``--jitter`` random safe moves so the episodes differ) and the
-policy plays until it clears the last stage goal or runs out of steps. Reported per episode and as mean with a
-bootstrap 95% interval: steps to reach each stage goal (leg times), events reached, maps visited, final stage,
-total reward and its components, and success (reached stage 3, which means egg fetched, egg delivered, Falkner beaten).
+policy plays until it beats Falkner or runs out of steps. Reported per episode and as mean with a bootstrap 95%
+interval: steps to reach each story milestone (leg times), events reached, maps visited, final stage, total reward and
+its components, and success (reached the last stage: Falkner beaten, Zephyr Badge). The policy plays its own battles.
 
 The game-step logic (``execute_action``) mirrors the training worker (``tools.train_deep_ppo._worker_fn``) so it can
 be shared later; this module deliberately does not import the trainer.
@@ -26,25 +26,16 @@ from typing import Any, Callable
 
 import numpy as np
 
-STAGE_NAMES = ("GET_EGG", "RETURN_EGG", "TO_GYM", "POST_GYM")
-SUCCESS_STAGE = 3
-# Event-flag fallback for the story stage when src.route_graph is not importable.
-_STAGE_FLAGS = (
-    "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON",  # stage 0 -> 1
-    "EVENT_GAVE_MYSTERY_EGG_TO_ELM",  # stage 1 -> 2
-    "EVENT_BEAT_FALKNER",  # stage 2 -> 3
-)
+from src.story_path import MILESTONE_COUNT, MILESTONES, current_stage as _story_stage
+
+# Stage k = the k-th story milestone reached (0 = still in New Bark); the last stage means Falkner is beaten.
+STAGE_NAMES = ("new_bark",) + tuple(m.name for m in MILESTONES)
+SUCCESS_STAGE = MILESTONE_COUNT
 _REPORTED_EVENTS = (
     "EVENT_GOT_A_POKEMON_FROM_ELM",
     "EVENT_LEARNED_TO_CATCH_POKEMON",
-    "EVENT_RIVAL_CHERRYGROVE_CITY",
-    "EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON",
-    "EVENT_GAVE_MYSTERY_EGG_TO_ELM",
-    "EVENT_TALKED_TO_MOM_AFTER_MYSTERY_EGG_QUEST",
-    "EVENT_GOT_TM31_MUD_SLAP",
     "EVENT_BEAT_FALKNER",
-    "EVENT_GOT_TOGEPI_EGG_FROM_ELMS_AIDE",
-    "EVENT_GOT_HM01_CUT",
+    "EVENT_GOT_TM31_MUD_SLAP",
 )
 _DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 
@@ -59,19 +50,8 @@ def _has_event(state, name: str) -> bool:
 
 
 def stage_of(state) -> int:
-    """Story stage 0..3: ``route_graph.current_stage`` when available, else event flags."""
-    try:
-        from src import route_graph
-
-        return int(route_graph.current_stage(state))
-    except Exception:
-        pass
-    stage = 0
-    for name in _STAGE_FLAGS:
-        if not _has_event(state, name):
-            break
-        stage += 1
-    return stage
+    """Story stage 0..MILESTONE_COUNT from the current map / badge (see ``src.story_path.current_stage``)."""
+    return int(_story_stage(state))
 
 
 def _map_of(state) -> tuple[int, int]:
@@ -95,10 +75,10 @@ class StepContext:
 def execute_action(ctx: StepContext, act_idx: int, actions: tuple[str, ...]) -> tuple[Any, Any, bool]:
     """Turn an action index into one game step, as the training worker does.
 
-    Battle is handled by the tactical controller, open dialogue by text mashing, ``a`` is a button press and
-    directions go through ``TileStepper`` (with the worker's 4-bump escape). Returns ``(before, after, moved)``.
+    The policy presses the buttons in battle (A / B / directions go straight to the game). Overworld dialogue is
+    advanced by text mashing, ``a`` / ``b`` are button presses and directions go through ``TileStepper`` (with the
+    worker's 4-bump escape). Returns ``(before, after, moved)``.
     """
-    from src.battle import tactical_battle_step
     from src.mover import walkable
     from src.ram_parser import dialogue_open
 
@@ -106,14 +86,15 @@ def execute_action(ctx: StepContext, act_idx: int, actions: tuple[str, ...]) -> 
     before = reader.parse(emu.frame)
     name = actions[act_idx]
     moved = False
-    if before.battle_mode != 0:
-        tactical_battle_step(before, macros)
+    if before.battle_mode != 0:  # learned battle: the policy's button, no script
+        emu.press(name, frames=8)
+        emu.tick(12, render=False)
         ctx.blocked_count = 0
-    elif dialogue_open(before):
+    elif dialogue_open(before):  # overworld dialogue only is auto-advanced
         macros.mash_text(max_frames=80)
         ctx.blocked_count = 0
-    elif name == "a":
-        emu.press("a", frames=8)
+    elif name in ("a", "b"):
+        emu.press(name, frames=8)
         emu.tick(12, render=False)
     else:
         res = stepper.step(name)
@@ -137,24 +118,23 @@ def execute_action(ctx: StepContext, act_idx: int, actions: tuple[str, ...]) -> 
                 ctx.blocked_count = 0
         else:
             ctx.blocked_count = 0
-    if not moved and before.battle_mode == 0 and not dialogue_open(before):
+    if not moved and before.battle_mode == 0 and not dialogue_open(before) and name not in ("a", "b"):
         ctx.consecutive_bumps += 1
     else:
         ctx.consecutive_bumps = 0
     return before, reader.parse(emu.frame), moved
 
 
-def obs_vector(state, visited: set, obs_dim: int) -> np.ndarray:
-    """Observation in the layout the checkpoint was trained with (17 base, +4 goals, +route features)."""
+def obs_vector(state, visited: set, obs_dim: int, seen_maps=None) -> np.ndarray:
+    """Observation in the layout the checkpoint was trained with (``DEEP_OBS_DIM``; no route oracle)."""
     from src.rl_env import DEEP_OBS_DIM, observe
 
     if obs_dim == DEEP_OBS_DIM:
-        return observe(state, visited, include_goals=True, include_route=True)
-    if obs_dim == 21:
-        return observe(state, visited, include_goals=True)
-    if obs_dim == 17:
-        return observe(state, visited)
-    raise ValueError(f"unsupported checkpoint obs_dim {obs_dim} (expected 17, 21 or {DEEP_OBS_DIM})")
+        return observe(state, visited, deep=True, seen_maps=seen_maps)
+    raise ValueError(
+        f"unsupported checkpoint obs_dim {obs_dim} (expected {DEEP_OBS_DIM}); checkpoints from before the "
+        "no-oracle observation cannot be evaluated, retrain with --config long_v2"
+    )
 
 
 class GameEnv:
@@ -176,14 +156,9 @@ class GameEnv:
         self.ctx = StepContext(self.emu, self.reader, TileStepper(self.emu, self.reader), Macros(self.emu, self.reader))
 
     def _equip_balls(self) -> None:
-        try:
-            b1, a1 = self.emu.symbol("wNumBalls")
-            b2, a2 = self.emu.symbol("wBalls")
-            if self.emu.read(b1, a1, 1)[0] == 0:
-                self.emu.write(b1, a1, bytes([1]))
-                self.emu.write(b2, a2, bytes([5, 10, 255]))
-        except Exception:
-            pass
+        from src.battle_obs import equip_supplies
+
+        equip_supplies(self.emu)
 
     def _observe(self):
         st = self.reader.parse(self.emu.frame)
@@ -192,7 +167,7 @@ class GameEnv:
         self.seen_maps.add((st.map_group, st.map_number))
         self.ctx.tile_visit_counts[tile] = self.ctx.tile_visit_counts.get(tile, 0) + 1
         screen = self.emu.pyboy.screen.ndarray[:, :, :3].copy()
-        return screen, obs_vector(st, self.seen_tiles, self.obs_dim), st
+        return screen, obs_vector(st, self.seen_tiles, self.obs_dim, self.seen_maps), st
 
     def reset(self, seed: int):
         from src import rl_env
@@ -204,6 +179,7 @@ class GameEnv:
         self.seen_maps: set = set()
         self.caught_counts: dict = {}
         self.seen_waypoints: set = set()
+        self.budget: dict = {}
         self.ctx.tile_visit_counts.clear()
         self.ctx.blocked_count = self.ctx.consecutive_bumps = 0
         self.steps = 0
@@ -231,7 +207,7 @@ class GameEnv:
             before, after, moved, self.seen_tiles, self.seen_maps,
             unvisited_neighbor=unvisited, caught_counts=self.caught_counts, seen_events=self.seen_events,
             seen_waypoints=self.seen_waypoints, info=StepInfo(consecutive_bumps=self.ctx.consecutive_bumps),
-            components=comps,
+            components=comps, budget=self.budget,
         )
         self.steps += 1
         screen, obs, st = self._observe()
@@ -395,7 +371,7 @@ def evaluate(
     return {
         **(meta or {}),
         "max_steps": max_steps,
-        "success_definition": f"reached stage {SUCCESS_STAGE} (egg fetched, egg delivered, Falkner beaten)",
+        "success_definition": f"reached stage {SUCCESS_STAGE} (Falkner beaten, Zephyr Badge)",
         "episodes": results,
         "aggregate": aggregate(results),
     }
@@ -418,7 +394,7 @@ def main(argv=None) -> int:
 
     from src.deep_policy import SpatialVisionPolicy
 
-    net = SpatialVisionPolicy.load(args.checkpoint, device=args.device)
+    net = SpatialVisionPolicy.load(args.checkpoint, device=args.device, check_schema=True)
     net.to(args.device)
     policy = GreedyPolicy(net, args.device)
     env = GameEnv(args.start_state, policy.obs_dim, args.max_steps, args.jitter)

@@ -194,6 +194,12 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                     return self._send(200, (STATIC_DIR / "world_layout.json").read_bytes(), "application/json", cache="max-age=3600")
                 if route == "/api/runs":
                     return self._send(200, json.dumps(list_runs(runs_dir)).encode(), "application/json")
+                m = re.fullmatch(r"/sprites/(\d{1,3})\.png", route)
+                if m:  # Gen 2 front sprites (PokeAPI/sprites); id is digits only, so no path traversal
+                    sprite = STATIC_DIR / "sprites" / f"{int(m.group(1))}.png"
+                    if not sprite.is_file():
+                        return self._send(404, b"", "image/png")
+                    return self._send(200, sprite.read_bytes(), "image/png", cache="max-age=86400")
                 parts = route.strip("/").split("/")
                 if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "history" and RUN_ID_RE.match(parts[2]):
                     run_dir = runs_dir / parts[2]

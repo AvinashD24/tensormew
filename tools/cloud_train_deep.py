@@ -401,7 +401,7 @@ def main(argv=None) -> int:
     parser.add_argument("--save", default="logs/deep_policy.pt")
     parser.add_argument("--resume", action="store_true", default=False, help="warm-start from the remote checkpoint (off by default)")
     parser.add_argument("--run-id", default="", help="name for this run's saved history (default: timestamp)")
-    parser.add_argument("--config", default="", help="training config: preset name (blueprint_v1, legacy) or a JSON file; passed to the remote trainer")
+    parser.add_argument("--config", default="", help="training config: preset name (long_v2 = fresh from-scratch run; also blueprint_v1, long_v1, legacy) or a JSON file; passed to the remote trainer")
     parser.add_argument("--detach", action="store_true", help="run the job under tmux/setsid on the pod so it survives a dropped SSH session, then poll")
     parser.add_argument("--attach", action="store_true", help="reattach to a running detached job: resume telemetry sync, then pull results")
     parser.add_argument("--skip-preflight", action="store_true", help="skip the pod checks and dependency install")
