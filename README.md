@@ -41,7 +41,7 @@ python -m tools.dashboard --demo        # no training needed: a synthetic run to
 saves to `logs/<run-id>.pt`; watch it in the dashboard from step 1.
 
 ```powershell
-python -m tools.train_deep_ppo --config long_v2 --updates 3 --envs 4 --rollout 16 --max-steps 48 --no-curriculum --state new_bark_outside --run-id local-check
+python -m tools.train_deep_ppo --config long_v3 --updates 3 --envs 4 --rollout 16 --max-steps 48 --no-curriculum --state new_bark_outside --run-id local-check
 ```
 
 **3. Train on a GPU pod** (the real thing). First create a pod in the Runpod console, copy its SSH host and port from the
@@ -57,8 +57,11 @@ python3 -m tools.cloud_train_deep --host <POD_IP> --port <POD_PORT> --config lon
 This uploads the code, installs `pyboy` on the pod, trains there, and copies telemetry into `logs/` every 5 seconds so the
 dashboard from step 1 shows it live. The checkpoint comes back as `logs/my-run.pt` when the run ends.
 Use `--envs` up to the pod's core count (a 32 vCPU pod: 32). Each update takes roughly 25 s at 32 envs.
-`--config long_v2` is the fresh from-scratch preset (32 envs x 256 steps, 800 updates, New Bark start): no route
-oracle, and the agent plays its own battles. **Checkpoints from before this change cannot be loaded** (the observation
+`--config long_v3` is the recommended fresh from-scratch preset: `long_v2` (32 envs x 256 steps, 800 updates, New Bark
+start, no route oracle, the agent plays its own battles) plus staggered episodes (resets no longer happen in lockstep;
+`phase_spread` and `reward_8` are logged), a self-generated battle archive with an early A-bias inside battle menus, and
+furthest-map weighted archive resets. Each is a config flag (`stagger_episodes`, `battle_archive`, `battle_a_bias`,
+`swarm_furthest_weighting`), so any of them can be ablated. `long_v3` also has a **dwell penalty** (`dwell_penalty`, `src/dwell.py`): staying in at most 16 tiles for 192 non-battle steps with nothing new (tile, map, milestone, new species) costs 0.005 -> 0.03 per step (reported as the `dwell` reward component, at most 15 per episode, reset by leaving the area). It is zero while the party's highest level is below `dwell_level_targets[furthest story stage]` (default `[8, 8, 10, 10, 10, 11, 12, 12, 0]`, stages New Bark ... Violet Gym, Falkner beaten) and the agent fought or leveled within `dwell_grind_grace` (512) steps, so leveling for Falkner is not punished; the older per-tile `loop` term is switched off in that case too (`dwell_exempt_loop`). Pokecenter maps are exempt. Example ablation: `{"preset": "long_v3", "dwell_penalty": false}`. Other ablations, e.g. `--config path/to/json` with `{"preset": "long_v3", "battle_a_bias": 0}`. **Checkpoints from before this change cannot be loaded** (the observation
 lost the route direction/distance features, gained battle features, and the policy gained a B button); loading one
 raises `CheckpointIncompatibleError` telling you to retrain.
 
@@ -156,7 +159,7 @@ free disk and python deps. The stock PyTorch image lacks `pyboy` and Ubuntu 24.0
 `pip install --break-system-packages pyboy==2.8.1` automatically (`tools/pod_bootstrap.sh` does the same by hand).
 `--envs` above the core count is capped with a warning. Skip with `--skip-preflight`.
 
-**Config.** `--config long_v2|blueprint_v1|long_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
+**Config.** `--config long_v3|long_v2|blueprint_v1|long_v1|legacy|path/to/config.json` validates the config locally (`src/train_config.py`),
 uploads a JSON file to the pod, and passes `--config` to the remote trainer.
 
 **Detached runs.** For multi-hour runs use `--detach`: the job runs under tmux (or `setsid nohup`) on the pod, logging

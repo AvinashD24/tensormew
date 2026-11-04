@@ -30,6 +30,11 @@ except ImportError:
 # Layout of the RAM vector and the action set a checkpoint was trained with (src.rl_env.OBS_SCHEMA mirrors this).
 OBS_SCHEMA = "v2-no-oracle-learned-battles"
 
+# Index of the in-battle flag in the RAM vector (src.rl_env.observe: 4 neighbor tiles, x, y, badges, battle, ...) and
+# the index of the A button in the action set (src.rl_env.ACTIONS = 4 directions, a, b). Tests pin both to rl_env.
+BATTLE_FLAG_INDEX = 7
+ACTION_A_INDEX = 4
+
 
 class CheckpointIncompatibleError(RuntimeError):
     """The checkpoint was trained with a different observation / action layout than this code uses."""
@@ -121,6 +126,11 @@ if TORCH_AVAILABLE:
             self.num_actions = num_actions
             self.use_gru = use_gru
             self.gru_hidden_dim = gru_hidden_dim
+            # Early-training bias added to the A logit while the in-battle flag is set. A plain float (not a parameter
+            # or buffer: it is not part of the state dict) set by the trainer from its schedule; 0 = off, which is what
+            # evaluation uses. It is applied inside every logit computation below, so act() / forward() (rollout) and
+            # evaluate_actions*() (PPO update) always describe the SAME distribution and the log-probs stay valid.
+            self.battle_a_bias = 0.0
 
             # 1. Visual Backbone (~11.17M params)
             self.vision_trunk = ResNet18VisionTrunk(in_channels=3)
@@ -168,6 +178,19 @@ if TORCH_AVAILABLE:
             # Small initial gain for actor head to keep initial policy uniform
             nn.init.orthogonal_(self.actor.weight, gain=0.01)
 
+        def set_battle_a_bias(self, value: float) -> None:
+            self.battle_a_bias = float(value)
+
+        def _bias_logits(self, logits: torch.Tensor, ram_obs: torch.Tensor) -> torch.Tensor:
+            """Add ``battle_a_bias`` to the A logit of every sample whose in-battle flag is set (no-op at 0)."""
+            bias = self.battle_a_bias
+            if not bias:
+                return logits
+            in_battle = (ram_obs[..., BATTLE_FLAG_INDEX] > 0.5).to(logits.dtype)
+            onehot = torch.zeros(logits.shape[-1], dtype=logits.dtype, device=logits.device)
+            onehot[ACTION_A_INDEX] = 1.0
+            return logits + (bias * in_battle).unsqueeze(-1) * onehot
+
         @property
         def param_count(self) -> int:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
@@ -192,7 +215,7 @@ if TORCH_AVAILABLE:
             else:
                 out = fused
 
-            logits = self.actor(out)
+            logits = self._bias_logits(self.actor(out), ram_obs)
             value = self.critic(out).squeeze(-1)
             return logits, value
 
@@ -217,7 +240,7 @@ if TORCH_AVAILABLE:
                 out = fused
                 new_hx = None
 
-            logits = self.actor(out)
+            logits = self._bias_logits(self.actor(out), ram_obs)
             value = self.critic(out).squeeze(-1)
             return logits, value, new_hx
 
@@ -366,7 +389,7 @@ if TORCH_AVAILABLE:
             else:
                 out = fused.reshape(B * T, -1)
 
-            logits = self.actor(out)
+            logits = self._bias_logits(self.actor(out), ram_flat)
             values = self.critic(out).squeeze(-1).reshape(B, T)
             dist = Categorical(logits=logits.reshape(B, T, self.num_actions))
             log_probs = dist.log_prob(actions)
@@ -446,6 +469,7 @@ if TORCH_AVAILABLE:
             model.load_state_dict(state_dict, strict=strict)
             model.to(device)
             model.eval()
+            # battle_a_bias stays 0 here: it is a training-time aid the trainer sets per update (see the sidecar)
             return model
 
 else:

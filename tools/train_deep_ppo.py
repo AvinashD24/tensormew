@@ -18,7 +18,13 @@ Training-only environment features (all off in ``--config legacy``):
 - start jitter: 0..``jitter_max`` random safe moves after each reset (no reward, nothing added to the seen sets);
 - stage-balanced start states: each story stage is sampled evenly;
 - swarm archive (optional, file based): the first env to reach a new stage or key event saves its emulator state under
-  ``<logs>/swarm/<run-id>/``; on reset an env loads from that archive with probability ``SWARM_SAMPLE_PROB``.
+  ``<logs>/swarm/<run-id>/``; on reset an env loads from that archive with probability ``swarm_prob`` (default
+  ``SWARM_SAMPLE_PROB``), optionally weighted toward the furthest story stage reached so far (``long_v3``);
+- staggered episodes (``long_v3``): a random initial step offset per env plus episode-length jitter, so resets do not
+  happen in lockstep (``phase_spread`` metric);
+- battle archive (``long_v3``): states saved when a battle starts (bounded, keyed by kind / map / enemy species);
+  ``battle_archive_prob`` of resets load one, and the trainer schedules a decaying A-logit bias inside battle menus
+  (applied inside the policy, so PPO log-probs stay valid).
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ import torch.optim as optim
 
 from src.battle_obs import equip_supplies
 from src.deep_policy import CheckpointIncompatibleError, SpatialVisionPolicy
+from src.dwell import DwellTracker
 from src.emulator import Emulator
 from src.live_feed import LiveFeed
 from src.macros import Macros
@@ -68,7 +75,7 @@ from src.rl_env import (
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.story_flags import REVERSE_EVENT_FLAGS
-from src.story_path import KEY_EVENT_REWARDS, current_stage, progress_potential
+from src.story_path import KEY_EVENT_REWARDS, MILESTONE_COUNT, current_stage, progress_potential
 from src.terminal_monitor import TerminalMonitor
 from src.train_config import ConfigError, TrainConfig, apply_overrides, dump_effective_config, load_config
 
@@ -106,9 +113,13 @@ _DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 SWARM_SAMPLE_PROB = 0.3  # chance that a reset loads a state from the swarm archive instead of a start state
 SWARM_MAX_FILES = 64  # the archive never holds more states than this (they are ~100 KB each)
 SWARM_PREFIX = "swarm:"
+BATTLE_PREFIX = "battle:"
+BATTLE_SAVE_GAP = 64  # a worker saves at most one battle state per this many of its own steps
+BATTLE_SAVE_WAIT = 5  # steps to wait after a battle starts for the enemy species to be readable
 SWARM_STAGE_SLOTS = 4  # rotating snapshots kept per stage entry
 KEY_EVENT_IDS = frozenset(fid for fid, name in REVERSE_EVENT_FLAGS.items() if name in KEY_EVENT_REWARDS)
 ROUTE_PROGRESS_WINDOW = 64  # recent episodes averaged for the entropy schedule's progress signal
+REWARD_CYCLE_WINDOW = 8  # updates averaged into ``reward_8`` (the lockstep cycle was 8 updates long)
 SAVE_EVERY = 10  # updates between "latest" checkpoints (the final update is always saved)
 BEST_WINDOW = 5  # updates averaged into the score that decides the "best" checkpoint
 SCREEN_SHAPE = (3, 144, 160)
@@ -124,6 +135,66 @@ def pick_executed_action(act_idx: int, last_move: int | None, sticky_prob: float
     if not in_battle and sticky_prob > 0.0 and last_move is not None and rng.random() < sticky_prob:
         return int(last_move)
     return int(act_idx)
+
+
+def archive_key_stage(key: str) -> int:
+    """Story stage a swarm key stands for: ``stageN_k`` = N, ``event<id>`` (key events) = the last stage, else 0."""
+    head = key.split("_")[0]
+    if head.startswith("stage") and head[5:].isdigit():
+        return int(head[5:])
+    if head.startswith("event"):
+        return MILESTONE_COUNT
+    return 0
+
+
+def furthest_weights(stages: list[int], floor: float) -> list[float]:
+    """Sampling weights that grow with the stage: the furthest stage present gets 1.0, stage s gets
+    ``floor + (1 - floor) * s / furthest`` (never below ``floor``).  All equal when nothing is past stage 0."""
+    top = max(stages) if stages else 0
+    if top <= 0:
+        return [1.0] * len(stages)
+    floor = min(1.0, max(1e-6, float(floor)))
+    return [floor + (1.0 - floor) * max(0, s) / top for s in stages]
+
+
+def weighted_index(weights: list[float], rng) -> int:
+    """Index drawn with probability proportional to ``weights`` (one ``rng.random()`` draw)."""
+    total = float(sum(weights))
+    x = float(rng.random()) * total
+    acc = 0.0
+    for i, w in enumerate(weights):
+        acc += w
+        if x < acc:
+            return i
+    return len(weights) - 1
+
+
+def battle_archive_key(state) -> str:
+    """Diversity key of a battle: kind (1 wild / 2 trainer), map and enemy species."""
+    return (f"m{int(getattr(state, 'battle_mode', 0))}_{int(state.map_group)}-{int(state.map_number)}"
+            f"_s{int(getattr(state, 'enemy_mon_species', 0))}")
+
+
+def archive_files(directory) -> list[str]:  # state files currently in an archive dir
+    try:
+        return [p.name for p in Path(directory).glob("*.state")]
+    except OSError:
+        return []
+
+
+def phase_spread(ep_steps, ep_lens) -> float:
+    """Std over envs of the episode phase ``ep_steps / ep_len``.  0 when all envs reset in lockstep; about 0.29 when
+    the phases are spread uniformly."""
+    steps = np.asarray(ep_steps, dtype=np.float64)
+    lens = np.maximum(np.asarray(ep_lens, dtype=np.float64), 1.0)
+    return float(np.std(steps / lens)) if steps.size else 0.0
+
+
+def battle_a_bias_value(update: int, start: float, updates: int) -> float:
+    """Linear schedule ``start`` -> 0 over the first ``updates`` updates (absolute update index; 0 afterwards)."""
+    if start <= 0 or updates <= 0:
+        return 0.0
+    return float(start) * max(0.0, 1.0 - float(update) / float(updates))
 
 
 class SwarmArchive:
@@ -185,8 +256,41 @@ class SwarmArchive:
             return False
         return True
 
-    def sample(self, rng) -> str | None:
-        """Uniform over groups (``stage2_0..3`` is one group, ``event123`` another), then uniform inside the group."""
+    def has(self, key: str) -> bool:
+        return (self.dir / f"{key}.state").exists()
+
+    def save_fifo(self, key: str, data: bytes) -> bool:
+        """Bounded archive that keeps accepting NEW keys: an existing key is never overwritten (diversity), and when
+        more than ``max_files`` states exist the oldest ones are deleted.  Used by the battle archive."""
+        target = self.dir / f"{key}.state"
+        if target.exists():
+            return False
+        tmp = self.dir / f".{key}.{os.getpid()}.tmp"
+        try:
+            tmp.write_bytes(data)
+            os.replace(tmp, target)
+        except OSError:
+            return False
+        self.prune()
+        return True
+
+    def prune(self) -> None:
+        """Delete the oldest states until at most ``max_files`` remain (several workers may overshoot briefly)."""
+        try:
+            files = sorted(self.dir.glob("*.state"), key=lambda p: p.stat().st_mtime)
+        except OSError:
+            return
+        for p in files[: max(0, len(files) - self.max_files)]:
+            try:
+                p.unlink()
+            except OSError:
+                pass
+
+    def sample(self, rng, furthest_floor: float | None = None) -> str | None:
+        """Uniform over groups (``stage2_0..3`` is one group, ``event123`` another), then uniform inside the group.
+
+        With ``furthest_floor`` the groups are weighted by story stage instead (``furthest_weights``): the furthest
+        stage in the archive gets weight 1, earlier stages at least ``furthest_floor``."""
         keys = self.keys()
         if not keys:
             return None
@@ -194,7 +298,11 @@ class SwarmArchive:
         for k in keys:
             groups.setdefault(k.split("_")[0], []).append(k)
         names = sorted(groups)
-        group = groups[names[int(rng.integers(0, len(names)))]]
+        if furthest_floor is None:
+            group = groups[names[int(rng.integers(0, len(names)))]]
+        else:
+            weights = furthest_weights([archive_key_stage(groups[n][0]) for n in names], furthest_floor)
+            group = groups[names[weighted_index(weights, rng)]]
         return group[int(rng.integers(0, len(group)))]
 
 
@@ -208,8 +316,13 @@ class StartStateSelector:
     """
 
     def __init__(self, start_states, env_index: int = 0, stages: dict[str, int] | None = None,
-                 archive: SwarmArchive | None = None, swarm_prob: float = SWARM_SAMPLE_PROB, rng=None):
+                 archive: SwarmArchive | None = None, swarm_prob: float = SWARM_SAMPLE_PROB, rng=None,
+                 battle_archive: SwarmArchive | None = None, battle_prob: float = 0.0,
+                 furthest_floor: float | None = None):
         self.states = list(start_states)
+        self.battle_archive = battle_archive
+        self.battle_prob = float(battle_prob) if battle_archive is not None else 0.0
+        self.furthest_floor = furthest_floor  # None = uniform over archive stages, else furthest-weighted
         if not self.states:
             raise ValueError("start_states must not be empty")
         self.env_index = int(env_index)
@@ -226,10 +339,18 @@ class StartStateSelector:
     def pick(self) -> str:
         k = self.count
         self.count += 1
-        if k > 0 and self.archive is not None and self.swarm_prob > 0 and self.rng.random() < self.swarm_prob:
-            key = self.archive.sample(self.rng)
-            if key is not None:
-                return SWARM_PREFIX + key
+        swarm_on = self.archive is not None and self.swarm_prob > 0
+        if k > 0 and (swarm_on or self.battle_prob > 0):
+            # One draw: [0, battle_prob) = battle archive, next swarm_prob = swarm archive, the rest = start states.
+            u = float(self.rng.random())
+            if u < self.battle_prob:
+                key = self.battle_archive.sample(self.rng)
+                if key is not None:
+                    return BATTLE_PREFIX + key
+            elif swarm_on and u < self.battle_prob + self.swarm_prob:
+                key = self.archive.sample(self.rng, self.furthest_floor)
+                if key is not None:
+                    return SWARM_PREFIX + key
         n = self.env_index + k
         if self.by_stage:
             group = self.by_stage[self.stage_order[n % len(self.stage_order)]]
@@ -312,7 +433,9 @@ class EnvWorker:
     """One headless PyBoy instance with the training reward, sticky actions, start jitter and swarm sharing.
 
     ``cfg`` keys (all optional): ``sticky_prob``, ``jitter_max``, ``stage_balanced``, ``swarm_dir``, ``swarm_prob``,
-    ``seed``, ``goal_potential`` (optional tile potential toward Falkner, default off).  Call ``reset()`` before the first ``step()``.
+    ``seed``, ``goal_potential`` (optional tile potential toward Falkner, default off), ``stagger_episodes`` /
+    ``episode_len_jitter`` / ``num_envs`` (desynchronized episodes), ``swarm_furthest_floor``, ``battle_dir`` /
+    ``battle_prob`` / ``battle_max`` (battle archive).  Call ``reset()`` before the first ``step()``.
     """
 
     def __init__(self, index: int, start_states: list[str], max_steps: int, cfg: dict | None = None):
@@ -333,9 +456,23 @@ class EnvWorker:
         stages = self._stage_of_states(sorted(set(names))) if cfg.get("stage_balanced") else None
         swarm_dir = cfg.get("swarm_dir")
         self.archive = SwarmArchive(swarm_dir) if swarm_dir else None
+        battle_dir = cfg.get("battle_dir")
+        self.battle_archive = (SwarmArchive(battle_dir, int(cfg.get("battle_max", 32))) if battle_dir else None)
         self.selector = StartStateSelector(
-            names, self.index, stages, self.archive, float(cfg.get("swarm_prob", SWARM_SAMPLE_PROB)), self.rng
+            names, self.index, stages, self.archive, float(cfg.get("swarm_prob", SWARM_SAMPLE_PROB)), self.rng,
+            battle_archive=self.battle_archive, battle_prob=float(cfg.get("battle_prob", 0.0)),
+            furthest_floor=cfg.get("swarm_furthest_floor"),
         )
+        # Staggered episodes: the first episode starts at a random step offset, every episode length is jittered.
+        self.stagger = bool(cfg.get("stagger_episodes", False))
+        self.len_jitter = float(cfg.get("episode_len_jitter", 0.0))
+        self.num_envs = int(cfg.get("num_envs", 0))
+        self.ep_len = self.max_steps  # step limit of the current episode
+        self._first_episode = True
+        self._partial = False  # the running episode is a first episode that started with a step offset
+        self._battle_wait: int | None = None  # steps left to wait for the enemy species after a battle started
+        self._total_steps = 0
+        self._last_battle_save = -BATTLE_SAVE_GAP
 
         self.visited: set = set()
         self.seen_tiles: set = set()
@@ -357,6 +494,9 @@ class EnvWorker:
         self.seen_warps: set = set()
         self.budget: dict = {}  # per-episode payment budget handed to progress_reward (cleared on reset)
         self._budget_ok = _progress_reward_takes_budget()
+        # Dwell penalty (long_v4, OFF when cfg has no "dwell" params): see src.dwell.
+        self.dwell = DwellTracker.from_params(cfg.get("dwell"))
+        self.dwell_exempt_loop = bool(cfg.get("dwell_exempt_loop", True))
         self._last_stage = 0  # stage already archived / seen at the start of the episode
         self._pending_stage: int | None = None  # stage entered while mid-cutscene: snapshot once the screen is calm
         self._pending_events: set = set()
@@ -379,12 +519,14 @@ class EnvWorker:
         equip_supplies(self.emu)
 
     def _load(self, name: str) -> bytes:
-        """Load a start state (or an archived ``swarm:<key>`` state) into the emulator; returns its bytes."""
+        """Load a start state (or an archived ``swarm:<key>`` / ``battle:<key>`` state) into the emulator; returns its bytes."""
         data = None
         if name.startswith(SWARM_PREFIX) and self.archive is not None:
             data = self.archive.load(name[len(SWARM_PREFIX):])
+        elif name.startswith(BATTLE_PREFIX) and self.battle_archive is not None:
+            data = self.battle_archive.load(name[len(BATTLE_PREFIX):])
         if data is None:
-            name = name if not name.startswith(SWARM_PREFIX) else self.selector.states[0]
+            name = name if not name.startswith((SWARM_PREFIX, BATTLE_PREFIX)) else self.selector.states[0]
             data = self._state_bytes(name)
         self.state_name = name
         self.emu.load_state(data)
@@ -428,6 +570,21 @@ class EnvWorker:
                 self._equip_balls()
                 break
 
+    def _draw_ep_len(self) -> int:
+        """Step limit of the next episode: ``max_steps`` +- ``episode_len_jitter`` (uniform), at least 1."""
+        if self.len_jitter <= 0:
+            return self.max_steps
+        return max(1, int(round(self.max_steps * (1.0 + self.rng.uniform(-self.len_jitter, self.len_jitter)))))
+
+    def _initial_offset(self) -> int:
+        """Step offset of the very first episode, in [0, ep_len).  With ``num_envs`` the offsets are spread evenly:
+        env i draws uniformly from the i-th of num_envs equal slots (so 24 envs cover all 24 phases of the cycle)."""
+        if self.num_envs > 0:
+            frac = ((self.index % self.num_envs) + float(self.rng.random())) / self.num_envs
+        else:
+            frac = float(self.rng.random())
+        return min(self.ep_len - 1, int(frac * self.ep_len))
+
     def reset(self):
         """Start a new episode and return its first ``(screen, ram_vec)``."""
         data = self._load(self.selector.pick())
@@ -441,6 +598,15 @@ class EnvWorker:
         self._pending_stage, self._pending_events = None, set()
         self.blocked_count = self.consecutive_bumps = self.steps = 0
         self.last_dir = self.last_move = None
+        self._battle_wait = None
+        self.ep_len = self._draw_ep_len()
+        self._partial = False
+        if self._first_episode and self.stagger:
+            # Only the step counter starts mid-episode: budgets, seen sets and the start state are the normal fresh
+            # ones, so this first episode is simply cut short (truncated + bootstrapped like any time limit).
+            self.steps = self._initial_offset()
+            self._partial = self.steps > 0
+        self._first_episode = False
         self._jitter(data)
         st = self.reader.parse(self.emu.frame)
         # Seed the caught species from the party so the starter does not pay a catch bonus later.
@@ -448,6 +614,8 @@ class EnvWorker:
             if species_id and species_id != 255:
                 self.caught_counts[species_id] = self.caught_counts.get(species_id, 0) + 1
         self._last_stage = int(current_stage(st))
+        if self.dwell is not None:
+            self.dwell.reset(st)
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
@@ -477,6 +645,33 @@ class EnvWorker:
         for fid in sorted(self._pending_events):
             self.archive.save(f"event{fid}", data)
         self._pending_events = set()
+
+    def _maybe_archive_battle(self, before, after) -> None:
+        """Save the emulator state shortly after a battle starts (battle flag 0 -> non-zero).
+
+        Rate limited (one save per ``BATTLE_SAVE_GAP`` of this worker's steps), keyed by kind / map / enemy species
+        so only new combinations are stored, bounded by the archive's ``max_files`` (oldest deleted).  The save waits
+        up to ``BATTLE_SAVE_WAIT`` steps for the enemy species to be readable and is dropped if the battle ends."""
+        if self.battle_archive is None:
+            return
+        if before.battle_mode == 0 and after.battle_mode != 0:
+            self._battle_wait = BATTLE_SAVE_WAIT
+        if self._battle_wait is None:
+            return
+        if after.battle_mode == 0:
+            self._battle_wait = None
+            return
+        if int(getattr(after, "enemy_mon_species", 0)) == 0 and self._battle_wait > 0:
+            self._battle_wait -= 1
+            return
+        self._battle_wait = None
+        if self._total_steps - self._last_battle_save < BATTLE_SAVE_GAP:
+            return
+        key = battle_archive_key(after)
+        if self.battle_archive.has(key):
+            return
+        if self.battle_archive.save_fifo(key, self.emu.save_state()):
+            self._last_battle_save = self._total_steps
 
     # -- stepping
     def step(self, act_idx: int):
@@ -522,6 +717,8 @@ class EnvWorker:
             self.consecutive_bumps = 0
 
         after = reader.parse(emu.frame)
+        self._total_steps += 1
+        self._maybe_archive_battle(before, after)
         unvisited_neighbor = False
         if 0 <= exec_idx < 4:
             dx, dy = _DELTA[action_name]
@@ -530,10 +727,12 @@ class EnvWorker:
 
         comps: dict[str, float] = {}
         pr_kwargs = {"budget": self.budget} if self._budget_ok else {}
-        step_rew, _, _ = progress_reward(
+        pr_info = StepInfo(consecutive_bumps=self.consecutive_bumps)
+        species_before = len(self.caught_counts)
+        step_rew, new_tile, new_map = progress_reward(
             before, after, moved, self.seen_tiles, self.seen_maps,
             unvisited_neighbor=unvisited_neighbor, caught_counts=self.caught_counts, seen_events=self.seen_events,
-            seen_waypoints=self.seen_waypoints, info=StepInfo(consecutive_bumps=self.consecutive_bumps),
+            seen_waypoints=self.seen_waypoints, info=pr_info,
             components=comps, goal_potential=self.goal_potential, **pr_kwargs,
         )
         step_rew += worker_interaction_reward(before, after, exec_idx, self.seen_interactions, self.seen_warps, comps,
@@ -544,22 +743,32 @@ class EnvWorker:
         curiosity = budget_pay(self.budget, "explore", curiosity) if self._budget_ok else curiosity
         in_play = not busy and after.battle_mode == 0 and not dialogue_open(after)  # no loop penalty in fights/text
         loop = -0.02 * min(4.0, (v_count - 10) / 5.0) if (v_count > 12 and in_play) else 0.0  # anti-looping pacing
+        dwell_pen = 0.0
+        if self.dwell is not None:
+            # progress = story milestone / event, or a species caught for the first time this episode
+            progress = bool(pr_info.story_progress or len(self.caught_counts) > species_before)
+            dwell_pen, level_exempt = self.dwell.update(before, after, new_tile=new_tile, new_map=new_map, progress=progress)
+            if level_exempt and self.dwell_exempt_loop:
+                loop = 0.0  # needed leveling is not "looping": the per-tile revisit cost is off while grinding below target
         momentum = 0.02 if (action_name == self.last_dir and moved) else 0.0
         momentum = budget_pay(self.budget, "explore", momentum) if self._budget_ok else momentum
         self.last_dir = action_name if moved else None
 
         comps["curiosity"], comps["loop"], comps["momentum"] = curiosity, loop, momentum
-        step_rew += curiosity + loop + momentum
+        if self.dwell is not None:
+            comps["dwell"] = dwell_pen
+        step_rew += curiosity + loop + momentum + dwell_pen
 
         # No termination on milestones or on the badge; the episode ends only on the step limit (a time limit, not a goal).
         self.steps += 1
-        truncated = self.steps >= self.max_steps  # time limit, not a real end
+        truncated = self.steps >= self.ep_len  # time limit, not a real end
         done = truncated
         ended_maps = len(self.seen_maps)
         ended_state = self.state_name
         phi_end = _story_phi(after, self.seen_maps)
         phi_start = self.start_phi
         stage_end = int(current_stage(after))
+        ended_partial = self._partial
         self._maybe_archive(after)
         final_obs = self._peek_obs(after) if truncated else None
         if done:
@@ -580,6 +789,9 @@ class EnvWorker:
             "ep_start_phi": phi_start,  # the same quantity at the start of the episode this step belongs to
             "stage": stage_end,
             "truncated": bool(truncated),
+            "partial_episode": bool(ended_partial and done),  # a staggered first episode that was cut short
+            "ep_steps": int(self.steps),  # steps taken in the running episode (0 right after a reset)
+            "ep_len": int(self.ep_len),
             "executed_action": exec_idx,
             # Dashboard fun-facts source: already-parsed RAM only (no extra reads); aggregated in LiveFeed.
             "fun": {
@@ -968,15 +1180,24 @@ def load_optimizer_state(optimizer, save_path: str | Path, device) -> bool:
         return False
 
 
-def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None) -> dict:
+def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: str | Path | None = None) -> dict:
     return {
+        "stagger_episodes": cfg.stagger_episodes,
+        "episode_len_jitter": cfg.episode_len_jitter,
+        "num_envs": cfg.envs,
+        "swarm_furthest_floor": cfg.swarm_weight_floor if cfg.swarm_furthest_weighting else None,
+        "battle_dir": str(battle_dir) if (cfg.battle_archive and battle_dir) else None,
+        "battle_prob": cfg.battle_archive_prob if cfg.battle_archive else 0.0,
+        "battle_max": cfg.battle_archive_max,
         "sticky_prob": cfg.sticky_prob,
         "jitter_max": cfg.jitter_max,
         "stage_balanced": cfg.stage_balanced,
         "swarm_dir": str(swarm_dir) if (cfg.swarm and swarm_dir) else None,
-        "swarm_prob": SWARM_SAMPLE_PROB,
+        "swarm_prob": cfg.swarm_prob,
         "seed": cfg.seed,
         "goal_potential": cfg.goal_potential,
+        "dwell": cfg.dwell_params(),
+        "dwell_exempt_loop": cfg.dwell_exempt_loop,
     }
 
 
@@ -1065,14 +1286,32 @@ def train(
     if history_dir is not None:
         cfg_path = dump_effective_config(cfg, history_dir)
         print(f"Effective config -> {cfg_path}", flush=True)
-    swarm_dir = (Path(runs_dir).parent if runs_dir else Path("logs")) / "swarm" / run_name if cfg.swarm else None
+    archive_root = (Path(runs_dir).parent if runs_dir else Path("logs")) / "swarm" / run_name
+    swarm_dir = archive_root if cfg.swarm else None
+    battle_dir = archive_root / "battle" if cfg.battle_archive else None
 
     print(
         f"Spawning {num_envs} vectorized PyBoy workers across states: {states} "
         f"(max_steps={cfg.max_steps}, sticky={cfg.sticky_prob}, jitter<={cfg.jitter_max}, "
         f"stage_balanced={cfg.stage_balanced}, swarm={'on -> ' + str(swarm_dir) if swarm_dir else 'off'})..."
     )
-    vec_env = VectorEnv(num_envs=num_envs, start_states=states, max_steps=cfg.max_steps, env_cfg=worker_env_cfg(cfg, swarm_dir))
+    print(
+        f"[long_v3 features] stagger={cfg.stagger_episodes} (len jitter +-{cfg.episode_len_jitter:.0%}), "
+        f"swarm_prob={cfg.swarm_prob} furthest_weighting={cfg.swarm_furthest_weighting}, "
+        f"battle_archive={'on -> ' + str(battle_dir) + f' (prob {cfg.battle_archive_prob}, max {cfg.battle_archive_max})' if battle_dir else 'off'}, "
+        f"battle_a_bias={cfg.battle_a_bias}->0 over {cfg.battle_a_bias_updates} updates",
+        flush=True,
+    )
+    if cfg.dwell_penalty:
+        print(
+            f"[dwell penalty] window={cfg.dwell_window} steps, <= {cfg.dwell_max_tiles} tiles, "
+            f"penalty {cfg.dwell_min_penalty}->{cfg.dwell_max_penalty}/step over {cfg.dwell_ramp_steps} steps, "
+            f"budget {cfg.dwell_budget}/episode, level targets by stage {list(cfg.dwell_level_targets)}, "
+            f"grind grace {cfg.dwell_grind_grace}, exempt loop={cfg.dwell_exempt_loop}",
+            flush=True,
+        )
+    vec_env = VectorEnv(num_envs=num_envs, start_states=states, max_steps=cfg.max_steps,
+                        env_cfg=worker_env_cfg(cfg, swarm_dir, battle_dir))
     screens_cur, rams_cur = vec_env.reset()
 
     hidden = policy.gru_hidden_dim if use_gru else 512
@@ -1118,12 +1357,14 @@ def train(
     buf_raw = torch.zeros((T, B), dtype=torch.float32)  # unscaled rewards, for logging
 
     recent_scores: deque[float] = deque(maxlen=BEST_WINDOW)
+    reward_window_8: deque[float] = deque(maxlen=REWARD_CYCLE_WINDOW)  # mean over 8 updates: hides the lockstep cycle
     last_done: int | None = None  # last completed update index
     last_saved: int | None = None
 
     def save_latest(update_idx: int) -> None:
         nonlocal last_saved
-        extra = {"progress": progress.state_dict(), "best_score": best_reward if math.isfinite(best_reward) else None}
+        extra = {"progress": progress.state_dict(), "best_score": best_reward if math.isfinite(best_reward) else None,
+                 "battle_a_bias": float(policy.battle_a_bias)}  # the schedule itself is in config.json
         if scaler is not None:
             extra["reward_scaler"] = scaler.state_dict()
         save_checkpoint(policy, optimizer, save_path, update_idx, progress.value, extra=extra)
@@ -1136,6 +1377,10 @@ def train(
             buf_raw.zero_()
             initial_hx = hx.detach().clone() if (policy.use_gru and hx is not None) else None
             entropy_coef = entropy_schedule.value(progress.value)
+            # Early A-bias in battle menus: set before the rollout, constant until the PPO update below has used it, so
+            # the rollout's log-probs (old_logps) and the update's evaluate_actions describe the same distribution.
+            a_bias = battle_a_bias_value(update, cfg.battle_a_bias, cfg.battle_a_bias_updates)
+            policy.set_battle_a_bias(a_bias)
             if cfg.lr_end_frac < 1.0:  # linear lr decay over this invocation's updates
                 lr_now = cfg.lr * (1.0 - (1.0 - cfg.lr_end_frac) * min(1.0, (update - start_update) / max(1, updates)))
                 for g in optimizer.param_groups:
@@ -1178,6 +1423,8 @@ def train(
                 # Route progress per finished episode drives the entropy schedule.
                 for i in np.nonzero(dones)[0]:
                     inf = infos[i] or {}
+                    if inf.get("partial_episode"):
+                        continue  # a staggered first episode cut short: not a full-length progress sample
                     progress.add(inf.get("ep_start_phi"), inf.get("route_phi"))
 
                 # Time-limit truncation: bootstrap with V(final observation), one batched pass for those envs.
@@ -1218,6 +1465,9 @@ def train(
                 truncated=buf_trunc, bootstrap_values=buf_boot,
             )
             mean_rew = float(buf_raw.sum(dim=0).mean().item())  # raw (unscaled) reward per env per rollout
+            reward_window_8.append(mean_rew)
+            live_infos = [i for i in vec_env.last_infos if i]
+            spread = phase_spread([i.get("ep_steps", 0) for i in live_infos], [i.get("ep_len", cfg.max_steps) for i in live_infos])
             total_samples = T * B
 
             # 3. PPO update (env-wise minibatches)
@@ -1264,6 +1514,11 @@ def train(
                 "entropy_coef": round(entropy_coef, 5),
                 "route_progress": round(progress.value, 4),
                 "reward_scale_std": round(scaler.std, 4) if scaler is not None else 1.0,
+                "phase_spread": round(spread, 4),
+                "reward_8": round(float(np.mean(reward_window_8)), 3),
+                "battle_a_bias": round(a_bias, 4),
+                "battle_archive_size": len(archive_files(battle_dir)) if battle_dir else 0,
+                "swarm_archive_size": len(archive_files(swarm_dir)) if swarm_dir else 0,
             }
 
             monitor.log_update(
@@ -1337,7 +1592,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v2 = fresh from-scratch run; blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)

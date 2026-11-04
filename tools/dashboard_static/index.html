@@ -218,6 +218,33 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 @media (max-width: 1000px) { .grid2, .cov, .grid2 .stack { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
 @media (max-width: 520px) { .kpi .value { font-size: 24px; } .envs { grid-template-columns: repeat(2, 1fr); } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* learning checks, smoothing, PPO health */
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.chk { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+.chk b { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.chk span.t { color: var(--muted); display: block; margin-top: 3px; font-size: 12px; line-height: 1.35; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
+.lv-good .dot { background: var(--good); } .lv-warn .dot { background: var(--warn); } .lv-bad .dot { background: var(--bad); }
+.lv-good.chk { border-color: var(--good); } .lv-warn.chk { border-color: var(--warn); } .lv-bad.chk { border-color: var(--bad); }
+.smoothbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.seg { display: inline-flex; gap: 4px; }
+.seg button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); cursor: pointer; }
+.seg button[aria-pressed=true] { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 700; }
+.cyc { color: var(--warn); border-bottom: 1px dotted var(--warn); cursor: help; }
+.verdict { margin-top: 8px; font-size: 14px; font-weight: 600; }
+.verdict.lv-good { color: var(--good); } .verdict.lv-warn { color: var(--warn); } .verdict.lv-bad { color: var(--bad); }
+.ppogrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.ptile { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+.ptile .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.ptile .hd abbr { text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: help; }
+.ptile .val { font: 650 20px/1.2 var(--mono); }
+.ptile canvas { width: 100%; height: 42px; display: block; margin: 4px 0; }
+.ptile .bd { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 10px; color: #0b1020; background: var(--muted); }
+.lv-good .bd { background: var(--good); } .lv-warn .bd { background: var(--warn); } .lv-bad .bd { background: var(--bad); }
+.ptile .ms { font-size: 12px; line-height: 1.35; margin-top: 4px; }
+.ptile .tg { font-size: 11px; color: var(--muted); margin-top: 2px; }
+@media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
 </style>
 </head>
 <body>
@@ -240,6 +267,10 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
   </div>
 
   <main id="main">
+    <section class="card" id="learnCard" style="margin-bottom:14px" aria-labelledby="learnH">
+      <h2 id="learnH">Is it learning? <span class="sub" id="learnSub">quick checks from the training history</span></h2>
+      <div class="checks" id="learnChecks" aria-live="polite"></div>
+    </section>
     <section class="kpis" aria-label="Key metrics">
       <div class="card kpi"><div class="label">Progress</div><div class="value" id="kUpdate">–</div><div class="note" id="kEta"></div><div class="bar"><i id="kBar" style="width:0"></i></div></div>
       <div class="card kpi"><div class="label">Reward (mean / rolling)</div><div class="value" id="kReward">–</div><div class="note" id="kRewardNote"></div><canvas id="spReward" aria-hidden="true"></canvas></div>
@@ -268,10 +299,20 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
     </section>
 
     <section class="charts">
-      <div class="card"><h2>Reward <span class="sub">per update</span></h2><div class="chartbox"><canvas id="chReward" role="img" aria-label="Reward over updates"></canvas></div><div class="legend"><span style="--c:var(--accent2)">mean reward</span><span style="--c:var(--accent)">rolling avg</span><span style="--c:var(--gold)">best so far</span></div></div>
+      <div class="card" id="rewardCard" style="grid-column:1/-1"><h2>Reward <span class="sub">y: mean reward per update · x: update number</span></h2>
+        <div class="smoothbar"><span id="smoothLbl">Smoothing window (updates):</span><div class="seg" id="smoothSeg" role="group" aria-labelledby="smoothLbl"></div>
+          <span class="cyc" id="cycleNote" hidden tabindex="0" title="The trainer's episodes are 2048 steps and each update collects 256, so every 8th update is the same point in the episode. When all environments reset together the reward rises and falls in an 8-update cycle that hides the real trend. A window of 8 averages it out.">8-update cycle detected: episodes reset together</span></div>
+        <div class="chartbox"><canvas id="chReward" role="img" aria-label="Reward over updates: faint raw line, bold smoothed trend, dashed long-term baseline"></canvas></div>
+        <div class="legend" id="rewardLegend"></div>
+        <div class="verdict" id="rewardVerdict" aria-live="polite">collecting data…</div></div>
       <div class="card"><h2>Policy entropy <span class="sub">exploration vs collapse</span></h2><div class="chartbox"><canvas id="chEntropy" role="img" aria-label="Entropy over updates"></canvas></div><div class="legend"><span style="--c:var(--accent2)">entropy</span><span style="--c:var(--bad)">collapse &lt; 0.35</span><span style="--c:var(--good)">healthy &gt; 0.7</span></div></div>
       <div class="card"><h2>PPO stability <span class="sub">KL &amp; clip fraction</span></h2><div class="chartbox"><canvas id="chKl" role="img" aria-label="KL and clip fraction"></canvas></div><div class="legend"><span style="--c:var(--accent)">approx KL</span><span style="--c:var(--accent2)">clip fraction</span><span style="--c:var(--warn)">KL limit 0.08</span></div></div>
       <div class="card"><h2>Critic loss <span class="sub">hover to see policy loss too</span></h2><div class="chartbox"><canvas id="chLoss" role="img" aria-label="Value loss over updates"></canvas></div><div class="legend"><span style="--c:var(--accent)">value loss</span></div></div>
+    </section>
+
+    <section class="card" id="ppoCard" style="margin-bottom:14px" aria-labelledby="ppoH">
+      <h2 id="ppoH">PPO health <span class="sub">faint = each update, bold = smoothed (5 updates); badge = is the value in a healthy range?</span></h2>
+      <div class="ppogrid" id="ppoGrid"></div>
     </section>
 
     <section class="card" id="compCard" style="margin-bottom:14px">
@@ -469,6 +510,7 @@ const COMP = {
   tile: ["new tiles", "#38bdf8"], neighbor: ["unvisited neighbor", "#0ea5e9"], map: ["new maps", "#6366f1"], warp: ["new warps", "#a78bfa"],
   interaction: ["talking", "#ec4899"], event: ["story events", "#eab308"], badge: ["badges", "#f59e0b"], catch: ["catches", "#14b8a6"],
   level: ["level-ups", "#84cc16"], battle: ["battles won", "#ef4444"], damage: ["damage taken", "#be123c"], heal: ["healing", "#10b981"],
+  dwell: ["dwell (same-spot) penalty", "#d97706"], loop: ["tile-revisit (loop) penalty", "#b45309"],
   whiteout: ["white-outs", "#c026d3"], behind_map: ["finished-map penalty", "#78716c"], other: ["other", "#64748b"],
 };
 const EXPLORE = ["tile", "neighbor", "map", "warp"];
@@ -539,6 +581,143 @@ function rewardDiagnostics() {
   return out.map(([cls, ic, text]) => `<div class="${cls}"><span class="ic">${ic}</span><span>${text}</span></div>`).join("");
 }
 
+/* ---------- smoothing, reward verdict, PPO health, "is it learning?" ---------- */
+let smoothW = null;                       // null = automatic default
+const SMOOTH_CHOICES = [1, 4, 8, 16, 32];
+const okv = (v) => v != null && isFinite(v);
+const nz = (ys) => ys.filter(okv);
+const mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+function movAvg(ys, W) {                  // trailing mean over the last W updates (missing values skipped)
+  return ys.map((_, i) => { const w = nz(ys.slice(Math.max(0, i - W + 1), i + 1)); return w.length ? mean(w) : null; });
+}
+const lastOf = (ys) => { for (let i = ys.length - 1; i >= 0; i--) if (okv(ys[i])) return ys[i]; return null; };
+function autocorr(ys, lag) {              // lag autocorrelation after removing a straight-line trend
+  const v = nz(ys); const n = v.length; if (n < lag * 4) return 0;
+  const mx = (n - 1) / 2, my = mean(v); let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (i - mx) * (v[i] - my); den += (i - mx) ** 2; }
+  const b = den ? num / den : 0, r = v.map((y, i) => y - my - b * (i - mx));
+  let c = 0, e = 0; for (let i = 0; i < n; i++) { e += r[i] * r[i]; if (i + lag < n) c += r[i] * r[i + lag]; }
+  return e ? c / e * (n / (n - lag)) : 0;
+}
+function cycleDetected(ys) {
+  const v = ys.slice(-160); if (nz(v).length < 40) return false;
+  const a8 = autocorr(v, 8); return a8 > 0.35 && a8 > autocorr(v, 7) && a8 > autocorr(v, 9);
+}
+function rewardVerdict(ys) {              // [level, text]
+  const v = nz(ys), n = v.length;
+  if (n < 16) return ["na", "Too early to call a trend: need at least 16 updates."];
+  let K = Math.min(32, Math.floor(n / 2)); if (K >= 8) K = Math.floor(K / 8) * 8;   // whole 8-update cycles cancel out
+  const cur = v.slice(-K), prev = v.slice(-2 * K, -K), d = mean(cur) - mean(prev);
+  const m = mean(prev), sd = Math.sqrt(mean(prev.map(x => (x - m) ** 2))), thr = Math.max(2 * sd * Math.sqrt(2 / K), 0.03 * Math.max(1, Math.abs(m)));
+  const txt = `Trend (last ${K} vs previous ${K} updates): ${sgn(d, 1)}`;
+  if (d > thr) return ["good", `${txt} — improving`];
+  if (d < -thr) return ["bad", `${txt} — declining`];
+  return ["warn", `${txt} — flat (change is within normal noise of ±${fmt(thr, 1)})`];
+}
+function renderSmoothButtons(W) {
+  const seg = $("smoothSeg");
+  seg.innerHTML = SMOOTH_CHOICES.map(w => `<button type="button" data-w="${w}" aria-pressed="${w === W}">${w === 1 ? "1 (raw)" : w}</button>`).join("");
+  seg.onclick = (e) => { const b = e.target.closest("button[data-w]"); if (!b) return; smoothW = Number(b.dataset.w); renderCharts(); renderLearning(); };
+}
+function renderRewardChart(xs, resumes) {
+  const raw = col("mean_reward"), n = raw.length;
+  const staggered = (lastOf(col("phase_spread")) ?? 0) > 0.15;
+  const W = smoothW ?? (staggered ? 4 : 8), L = Math.max(64, W * 4);
+  renderSmoothButtons(W);
+  const sm = movAvg(raw, W), base = movAvg(raw, L), cyc = cycleDetected(raw);
+  const series = [
+    { ys: raw, color: css("--accent2"), label: "raw per update", w: 1.1, alpha: .35, fmt: (v) => sgn(v, 2) },
+    { ys: sm, color: css("--accent"), label: `smoothed (${W}-update avg)`, w: 3, fmt: (v) => sgn(v, 2), hidden: W === 1 },
+    { ys: base, color: css("--gold"), label: `baseline (${L}-update avg)`, w: 1.6, dash: [6, 4], fmt: (v) => sgn(v, 2), hidden: n < L / 2 }];
+  if (cyc && n > 8) series.push({ ys: raw.map((v, i) => (i % 8 === (n - 1) % 8) ? v : null), color: css("--good"), label: "same phase (every 8th)", w: 1.8, dash: [2, 3], fmt: (v) => sgn(v, 2) });
+  charts.reward.set({ xs, resumes, series });
+  $("cycleNote").hidden = !cyc;
+  $("rewardLegend").innerHTML = series.filter(s => !s.hidden).map(s => `<span style="--c:${s.color}">${s.label}</span>`).join("");
+  const [lv, txt] = rewardVerdict(raw), el = $("rewardVerdict");
+  el.className = "verdict" + (lv === "na" ? "" : " lv-" + lv); el.textContent = txt;
+  return lv;
+}
+
+const PPO_TILES = [
+  { key: "entropy", name: "Entropy", tip: "How random the policy still is. High = still exploring; near 0 = it always picks the same button.", target: "falls slowly; below 0.3 = collapsed",
+    eval(sm, raw) { const c = lastOf(sm), s0 = nz(raw)[0];
+      if (c < 0.3) return ["bad", "Collapsed", "Policy has become almost deterministic. It stopped exploring."];
+      if (nz(raw).length >= 30 && s0 && Math.abs(c - s0) < 0.03 * s0) return ["warn", "Not moving", "Still at its start value, so the policy has not changed yet."];
+      const p = lastOf(sm.slice(0, -30)); if (p && c < 0.5 * p) return ["warn", "Falling fast", "Entropy halved in 30 updates; it may collapse soon."];
+      return ["good", "Healthy", "Exploration is shrinking slowly as the agent learns."]; }, f: 3 },
+  { key: "explained_variance", name: "Explained variance", tip: "How well the value network (critic) predicts future reward. 1 = perfectly, 0 = no better than guessing the average, negative = worse.", target: "above 0.5 good; about 0 = critic learned nothing",
+    eval(sm) { const c = lastOf(sm);
+      if (c > 0.5) return ["good", "Good", "The critic predicts returns well, so learning signals are clean."];
+      if (c > 0.2) return ["warn", "Fair", "The critic is partly predicting returns; still improving or noisy."];
+      return ["bad", "Poor", "The critic predicts almost nothing, so policy updates are mostly noise."]; }, f: 2 },
+  { key: "approx_kl", name: "Approx KL", tip: "How far each update moves the policy (KL divergence between old and new). Small steady steps are good.", target: "0.005 to 0.02 healthy; above 0.05 steps too big",
+    eval(sm) { const c = lastOf(sm);
+      if (c > 0.05) return ["bad", "Too big", "Updates overwrite the policy; lower the learning rate."];
+      if (c > 0.03) return ["warn", "High", "Steps are getting large."];
+      if (c < 0.003) return ["warn", "Tiny", "Updates barely change the policy; learning is slow."];
+      return ["good", "Healthy", "Policy changes by a safe amount each update."]; }, f: 4 },
+  { key: "clip_frac", name: "Clip fraction", tip: "Share of samples where PPO limited the update because it moved too far.", target: "0.05 to 0.3 healthy; about 0 too small, above 0.4 too big",
+    eval(sm) { const c = lastOf(sm);
+      if (c > 0.4) return ["bad", "Too big", "Most samples hit the clip limit, so updates are too aggressive."];
+      if (c < 0.01) return ["bad", "Near zero", "Nothing is being clipped: updates are too small to matter."];
+      if (c > 0.3 || c < 0.05) return ["warn", "Edge", "Slightly outside the usual range."];
+      return ["good", "Healthy", "A normal share of samples is being clipped."]; }, f: 3 },
+  { key: "value_loss", name: "Value loss", tip: "Error of the critic's reward predictions. It naturally rises when rewards change; spikes mean something shifted.", target: "stable or falling; spikes over 3x typical are bad",
+    eval(sm, raw) { const c = lastOf(sm), med = median(nz(raw).slice(-50));
+      if (!med) return ["na", "n/a", "Not enough data."];
+      if (c > 3 * med) return ["bad", "Spiking", "Critic error jumped well above its usual level."];
+      if (c > 1.5 * med) return ["warn", "Rising", "Critic error is above its usual level."];
+      return ["good", "Stable", "Critic error is steady or falling."]; }, f: 3 },
+  { key: "grad_norm", name: "Gradient norm", tip: "Size of the weight update before clipping. Sudden spikes mean unstable training.", target: "steady; spikes over 3x typical are bad",
+    eval(sm, raw) { const c = lastOf(sm), med = median(nz(raw).slice(-50));
+      if (!med) return ["na", "n/a", "Not enough data."];
+      if (c > 5 * med) return ["bad", "Spiking", "Gradients are far larger than usual, a sign of instability."];
+      if (c > 2.5 * med) return ["warn", "Elevated", "Gradients are larger than usual."];
+      return ["good", "Steady", "Gradient size is in its usual range."]; }, f: 2 },
+  { key: "lr", name: "Learning rate", tip: "How big a step the optimizer takes. Often decays on a schedule.", target: "follows the schedule",
+    eval(sm, raw) { const a = nz(raw), c = a[a.length - 1], s0 = a[0];
+      return ["good", s0 && c < 0.98 * s0 ? "Decaying" : "Constant", s0 && c < 0.98 * s0 ? "Following its decay schedule." : "Using a fixed learning rate."]; }, f: 6, exp: true },
+];
+function sparkPair(canvas, raw, sm, color) {
+  const dpr = devicePixelRatio || 1, r = canvas.getBoundingClientRect(); if (r.width < 5) return;
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  const all = nz(raw).concat(nz(sm)); if (all.length < 2) return;
+  const lo = Math.min(...all), hi = Math.max(...all), span = hi - lo || 1, n = raw.length;
+  const draw = (ys, w, a) => { ctx.beginPath(); let st = false; ys.forEach((y, i) => { if (!okv(y)) return; const px = i / (n - 1) * (r.width - 2) + 1, py = r.height - 3 - (y - lo) / span * (r.height - 6); st ? ctx.lineTo(px, py) : ctx.moveTo(px, py); st = true; }); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.globalAlpha = a; ctx.lineJoin = "round"; ctx.stroke(); ctx.globalAlpha = 1; };
+  draw(raw, 1, .3); draw(sm, 2.4, 1);
+}
+let ppoEval = {};
+function renderPpo() {
+  const grid = $("ppoGrid"); ppoEval = {};
+  grid.innerHTML = PPO_TILES.map((t, i) => {
+    const raw = col(t.key), has = nz(raw).length > 0;
+    if (!has) return `<div class="ptile"><div class="hd"><abbr title="${t.tip}">${t.name}</abbr></div><div class="val">–</div><div class="ms">Not recorded in this run.</div></div>`;
+    const sm = movAvg(raw, 5), [lv, badge, msg] = nz(raw).length < 3 ? ["na", "Too early", "Waiting for more updates."] : t.eval(sm, raw);
+    ppoEval[t.key] = [lv, badge, msg, lastOf(sm)];
+    const v = lastOf(raw), vs = t.exp ? Number(v).toExponential(1) : fmt(v, t.f);
+    return `<div class="ptile${lv === "na" ? "" : " lv-" + lv}" data-i="${i}"><div class="hd"><abbr title="${t.tip}" tabindex="0">${t.name}</abbr><span class="bd">${badge}</span></div><div class="val">${vs}</div><canvas role="img" aria-label="${t.name} history, latest ${vs}, ${badge}"></canvas><div class="ms">${msg}</div><div class="tg">Target: ${t.target}</div></div>`;
+  }).join("");
+  grid.querySelectorAll(".ptile[data-i]").forEach(el => { const t = PPO_TILES[el.dataset.i], raw = col(t.key); sparkPair(el.querySelector("canvas"), raw, movAvg(raw, 5), css(el.classList.contains("lv-bad") ? "--bad" : el.classList.contains("lv-warn") ? "--warn" : "--good")); });
+}
+function renderLearning() {
+  const box = $("learnChecks"), n = metrics.length, checks = [];
+  const add = (lv, name, text, tip) => checks.push(`<div class="chk${lv === "na" ? "" : " lv-" + lv}" title="${tip}"><b><i class="dot"></i>${name}: ${({ good: "OK", warn: "Check", bad: "Problem", na: "Too early" })[lv]}</b><span class="t">${text}</span></div>`);
+  if (n < 2) { box.innerHTML = `<div class="chk"><b><i class="dot"></i>Waiting for data</b><span class="t">Checks appear after the first few updates.</span></div>`; return; }
+  const [rl, rt] = rewardVerdict(col("mean_reward"));
+  add(rl, "Reward trend", rt.replace(/^Trend /, "Smoothed trend "), "Reward is the score the agent is trained to maximise. Comparing recent averages with earlier ones ignores update-to-update noise.");
+  const e = ppoEval.entropy; if (e) add(e[0], "Policy changing", e[2], "Entropy measures how random the agent's choices are. It should shrink slowly as the agent learns what works.");
+  const x = ppoEval.explained_variance; if (x) add(x[0], "Critic learning", x[2], "The critic (value network) predicts future reward. Explained variance near 0 means it has learned nothing yet.");
+  const rp = nz(col("route_progress")), useRoute = rp.some(v => v > 0), pg = useRoute ? col("route_progress") : col("maps_discovered"), pv = nz(pg);
+  if (pv.length >= 8) { const K = Math.min(32, Math.floor(pv.length / 2)), a = mean(pv.slice(-4)), b = mean(pv.slice(-K - 4, -K));
+    const up = a > b * 1.02 + 1e-9, nm = useRoute ? "Route progress" : "Maps discovered";
+    add(up ? "good" : "warn", "Progress", up ? `${nm} is higher than ${K} updates ago (${fmt(b, useRoute ? 2 : 1)} to ${fmt(a, useRoute ? 2 : 1)}).` : `${nm} has not grown in ${K} updates (${fmt(a, useRoute ? 2 : 1)}).`, "Route progress and maps discovered show whether the agent is getting further through the game, not just collecting reward."); }
+  const wo = metrics.map(m => m._wo ?? null);
+  if (nz(wo).length >= 16) { const a = mean(nz(wo).slice(-16).map(Math.abs)), b = mean(nz(wo).slice(-32, -16).map(Math.abs));
+    add(a <= b || a < 1 ? "good" : "warn", "White-outs", `White-out penalty per update: ${fmt(a, 1)} (previous 16: ${fmt(b, 1)}).`, "A white-out is when all of the party faints and the agent is sent back to a Pokemon Center. Fewer is better."); }
+  box.innerHTML = checks.join("");
+}
+
 /* ---------- renderers ---------- */
 function renderKpis() {
   const n = metrics.length, last = metrics[n - 1];
@@ -569,11 +748,7 @@ function renderKpis() {
 function renderCharts() {
   const xs = metrics.map(m => m.update);
   const resumes = metrics.map((m, i) => m.resumed ? i : -1).filter(i => i > 0);
-  let best = -Infinity; const bestSeries = col("mean_reward").map(v => (v != null && v > best) ? (best = v) : (isFinite(best) ? best : null));
-  charts.reward.set({ xs, resumes, series: [
-    { ys: col("mean_reward"), color: css("--accent2"), label: "mean", w: 1.6, alpha: .85, fmt: (v) => sgn(v, 2) },
-    { ys: col("rolling_reward"), color: css("--accent"), label: "rolling", w: 2.6, fmt: (v) => sgn(v, 2) },
-    { ys: bestSeries, color: css("--gold"), label: "best", w: 1.2, dash: [4, 4], fmt: (v) => sgn(v, 2) }] });
+  renderRewardChart(xs, resumes);
   const maxEnt = live?.actions ? Math.log(live.actions.names.length) : Math.log(5);
   charts.entropy.set({ xs, resumes, floor: 0, yMax: maxEnt, series: [{ ys: col("entropy"), color: css("--accent2"), label: "entropy", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) }],
     bands: [{ y0: 0, y1: .35, color: css("--bad") }, { y0: .7, y1: maxEnt, color: css("--good") }] });
@@ -732,7 +907,7 @@ function renderAll() {
   const has = metrics.length || live;
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
-  renderKpis(); renderCharts(); $("diag").innerHTML = diagnostics();
+  renderKpis(); renderCharts(); renderPpo(); renderLearning(); $("diag").innerHTML = diagnostics();
   renderEvents(); renderActions(); renderWorld(); renderComponents(); renderFun();
 }
 /* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
@@ -900,7 +1075,7 @@ function renderWorld() {
   renderStory(got, furthest);
   $("covSub").textContent = live ? `${tiles.toLocaleString()} tiles visited · peak ${mx.toLocaleString()} visits` : "";
 }
-function redrawAll() { renderCharts(); renderKpis(); renderWorld(); renderComponents(); }
+function redrawAll() { renderCharts(); renderPpo(); renderLearning(); renderKpis(); renderWorld(); renderComponents(); }
 
 /* ---------- replay of a saved run ---------- */
 let mode = "live";
@@ -964,7 +1139,7 @@ async function enterReplay(id) {
   const r = await fetch(`/api/run/${encodeURIComponent(id)}/history`, { cache: "no-store" }); if (!r.ok) { $("subtitle").textContent = "could not load that run"; $("runSel").value = ""; return; }
   const h = await r.json(); if (!h.records.length) { $("subtitle").textContent = "that run has no saved updates yet"; $("runSel").value = ""; return; }
   replayStop(); mode = "replay"; selectedMap = null; $("runSel").value = id;
-  rep = { id, meta: h.meta, records: h.records, frames: h.frames, prior: h.prior || [], metricsAll: h.records.map(x => x.metrics || {}).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
+  rep = { id, meta: h.meta, records: h.records, frames: h.frames, prior: h.prior || [], metricsAll: h.records.map(x => ({ ...(x.metrics || {}), _wo: (x.components && x.components.neg) ? (x.components.neg.whiteout ?? 0) : null })).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
   if (rep.prior.length && rep.metricsAll.length) rep.metricsAll[0] = { ...rep.metricsAll[0], resumed: true };
   $("replayCard").style.display = "block";
   $("repSlider").max = rep.records.length - 1;
