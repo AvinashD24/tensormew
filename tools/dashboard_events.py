@@ -27,7 +27,10 @@ TYPES = ("ms", "rec", "path", "map", "wo", "abias", "boost", "intr", "ecoef", "b
 # Cause priority when a spike coincides with an event (first = most likely to explain a jump).
 CAUSE_ORDER = ("wo", "ms", "rec", "path", "map", "badge", "lvl", "dex", "abias", "boost", "intr", "ecoef", "rck")
 SPIKE_METRICS = (("mean_reward", "reward"), ("entropy", "entropy"), ("value_loss", "value loss"))
+EGG_MILESTONE_NAMES = ["Route 29", "Cherrygrove", "Route 30", "Mr. Pokemon's house", "Egg received", "Egg delivered", "Route 31",
+                       "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"]   # egg_errand_route runs (long_v8)
 PATH_TOTAL = 309         # steps of the minimal story path (= src.story_path.STORY_PATH_STEPS, asserted in tests; 319 before the ledge fix)
+EGG_PATH_TOTAL = 695     # the three-phase egg-errand route (= src.story_path.EGG_PATH_STEPS, asserted in tests)
 PATH_STEP = 3            # emit a "best path progress" event only for gains of at least this many tiles
 INTR_STEPS = (0.75, 0.5, 0.25, 0.1)
 SPIKE_SIGMA = 3.0
@@ -61,7 +64,10 @@ def _spikes(vals: list[float | None]) -> list[tuple[int, float, float, float]]:
     return out
 
 
-def derive(records: list[dict]) -> dict:
+def derive(records: list[dict], names: list[str] | None = None, path_total: float | None = None) -> dict:
+    """``names`` / ``path_total``: the run's milestone labels and path length (egg-errand runs differ; default: the base route)."""
+    names_ms = list(names) if names else MILESTONE_NAMES
+    total = PATH_TOTAL if path_total is None else path_total
     recs = [r for r in records if isinstance(r, dict) and r.get("update") is not None]
     ev: list[dict] = []
 
@@ -76,7 +82,7 @@ def derive(records: list[dict]) -> dict:
     for r in recs:
         for e in r.get("records") or []:
             try:
-                name = e.get("name") or MILESTONE_NAMES[int(e["m"])]
+                name = e.get("name") or names_ms[int(e["m"])]
                 scope = "from start" if e.get("scope") == "start" else "any start"
                 text = (f"First time reaching {name}: {e['steps']} steps ({scope})" if e.get("first") or e.get("prev") is None
                         else f"New record: {name} in {e['steps']} steps (was {e['prev']}, {e['steps'] - e['prev']:+d}; {scope})")
@@ -106,7 +112,7 @@ def derive(records: list[dict]) -> dict:
                 for k, val in enumerate(reach):
                     was = prev_reach[k] if k < len(prev_reach) else None
                     if (val or 0) > 0 and not (was or 0) > 0:
-                        add(u, "ms", f"First episode to reach {MILESTONE_NAMES[k] if k < len(MILESTONE_NAMES) else 'milestone ' + str(k)}",
+                        add(u, "ms", f"First episode to reach {names_ms[k] if k < len(names_ms) else 'milestone ' + str(k)}",
                             share=_num(val))
             prev_reach = reach
         # (2) best path progress
@@ -115,7 +121,7 @@ def derive(records: list[dict]) -> dict:
             if path_emit is None:
                 path_emit = pb
             elif pb >= path_emit + PATH_STEP:
-                add(u, "path", f"New best path progress: {pb:g}/{PATH_TOTAL} tiles", tiles=pb, prev=path_emit)
+                add(u, "path", f"New best path progress: {pb:g}/{total:g} tiles", tiles=pb, prev=path_emit)
                 path_emit = pb
         # (3) new maps
         mp = _num(m.get("maps_discovered"))
@@ -265,6 +271,17 @@ def run_events(run_dir: Path) -> dict:
             r.pop("envs", None)
             r.pop("episodes", None)
             recs.append(r)
-    out = derive(recs)
+    names, total = None, None
+    try:   # an egg-errand run (long_v8) has its own milestone labels and path length in meta.json (run_info)
+        run = json.loads((Path(run_dir) / "meta.json").read_text(encoding="utf-8")).get("run") or {}
+        if isinstance(run.get("milestone_labels"), list):
+            names = [str(x) for x in run["milestone_labels"]]
+        if isinstance(run.get("path_total"), (int, float)):
+            total = float(run["path_total"])
+        elif run.get("egg_errand_route"):
+            names, total = names or EGG_MILESTONE_NAMES, float(EGG_PATH_TOTAL)
+    except (OSError, ValueError, AttributeError):
+        pass
+    out = derive(recs, names, total)
     _cache[str(hist)] = (sig, out)
     return out

@@ -20,6 +20,7 @@ from src.local_nav import NAV_DIM, LocalNav
 from src.ram_parser import dialogue_open
 from src.step import DIRS
 from src.story_flags import REVERSE_EVENT_FLAGS
+from src import story_path as _story
 from src.story_path import (
     BADGE_REWARD,
     KEY_EVENT_REWARDS,
@@ -56,7 +57,15 @@ OBS_EVENT_FLAGS = (
 )
 OBS_DIM = BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS) + STORY_FEATURE_DIM + BATTLE_FEATURE_DIM
 # Observation of the deep (screen + RAM vector) trainer: 17 base + story milestones + battle features.
+# ``DEEP_OBS_DIM`` is the base story profile (77); ``deep_obs_dim()`` follows the active profile (80 with ``egg_errand_route``).
 DEEP_OBS_DIM = BASE_OBS_DIM + STORY_FEATURE_DIM + BATTLE_FEATURE_DIM
+
+
+def deep_obs_dim(egg: bool | None = None) -> int:
+    """Width of the deep observation for the story profile of this process (or of the egg / base profile when given)."""
+    p = _story.profile() if egg is None else _story.profile_for(egg)
+    return BASE_OBS_DIM + p.feature_dim + BATTLE_FEATURE_DIM
+
 # Bumped whenever the observation or action layout changes; stored in checkpoints (see SpatialVisionPolicy.load).
 OBS_SCHEMA = "v2-no-oracle-learned-battles"
 _NEIGHBOR_DELTAS = ((0, -1), (0, 1), (-1, 0), (1, 0))
@@ -307,7 +316,7 @@ def progress_reward(
     map_id = (after.map_group, after.map_number)
     if map_id not in seen_maps:
         seen_maps.add(map_id)
-        milestone = MAP_MILESTONES.get(map_id)
+        milestone = _story.profile().map_milestones.get(map_id)
         if milestone is not None:
             add("milestone", milestone.reward)  # on the story path: not part of any shaping budget
             if info is not None:
@@ -350,7 +359,9 @@ def progress_reward(
         else:
             add("catch", catch_reward_for_species(1), "catch")
 
-    # Event flags: only EVENT_BEAT_FALKNER is a story milestone; any other flip pays a token amount or nothing.
+    # Event flags: only the profile's key events pay (EVENT_BEAT_FALKNER; with the egg errand also the egg received / given
+    # to Elm); any other flip pays a token amount or nothing.
+    key_events = _story.profile().key_event_rewards
     if seen_events is not None and getattr(after, "event_flags", None):
         for i, b in enumerate(after.event_flags):
             if b == 0:
@@ -361,8 +372,8 @@ def progress_reward(
                     if flag_id not in seen_events:
                         seen_events.add(flag_id)
                         flag_name = REVERSE_EVENT_FLAGS.get(flag_id)
-                        if flag_name in KEY_EVENT_REWARDS:
-                            add("event", KEY_EVENT_REWARDS[flag_name])
+                        if flag_name in key_events:
+                            add("event", key_events[flag_name])
                             if info is not None:
                                 info.story_progress = True
                         elif flag_name:

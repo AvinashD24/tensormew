@@ -30,6 +30,52 @@ class WorldLayoutTests(unittest.TestCase):
         for word in ("elm", "egg", " rival"):
             self.assertNotIn(word, blob)
 
+    def test_layout_has_the_three_phase_egg_route_for_egg_errand_runs(self):
+        from src.story_path import EGG_PATH_STEPS, EGG_PHASE_STEPS
+        data = json.loads((STATIC_DIR / "world_layout.json").read_text(encoding="utf-8"))
+        egg = data["egg"]
+        self.assertEqual([s["id"] for s in egg["stars"]], ["route29", "cherrygrove", "route30", "mr_pokemon_house", "egg_received",
+                                                           "egg_delivered", "route31", "violet_gate", "violet_city", "violet_gym", "beat_falkner"])
+        self.assertEqual([s["n"] for s in egg["stars"]], list(range(1, 12)))
+        self.assertEqual(sum(s["reward"] for s in egg["stars"]), 195)    # 125 + 70 for the badge and the Falkner event
+        self.assertEqual([s["event"] for s in egg["stars"] if s.get("event")], [True, True])
+        self.assertEqual([(l["phase"], l["steps"]) for l in egg["legs"]], list(enumerate(EGG_PHASE_STEPS)))
+        self.assertEqual(egg["total"], EGG_PATH_STEPS)
+        self.assertEqual(sum(l["steps"] for l in egg["legs"]), 695)
+        for leg in egg["legs"]:
+            self.assertTrue(leg["segments"] and leg["label"])
+        maps = {m["id"]: m for m in data["maps"]}
+        for star in egg["stars"]:                       # every star sits on a map that is drawn
+            self.assertIn(star["wmap"].replace("_", ","), maps)
+        self.assertIn("24,5", maps)                     # Elm's lab and Mr. Pokemon's house interiors are in the layout
+        self.assertIn("26,10", maps)
+        # old runs: the base keys are untouched and still describe the 309-step route
+        self.assertEqual(len(data["stars"]), 8)
+        self.assertEqual(data["legs"][0]["steps"], 309)
+
+    def test_page_picks_the_route_from_the_run_meta(self):
+        page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        for needle in ("egg_errand_route", "world.egg", "function syncProfile(", "const wStars", "const wLegs", "milestone_labels", "LEG_STYLE"):
+            self.assertIn(needle, page, needle)
+        self.assertNotIn("/319 tiles", page)              # the path length comes from the run now
+
+    def test_event_markers_use_the_runs_milestone_names_and_path_length(self):
+        from tools import dashboard_events as de
+        recs = [{"update": u, "metrics": {"update": u, "ms_reach_cum": [1.0] * min(u, 6) + [0.0] * (11 - min(u, 6)),
+                                          "path_best_max_cum": float(u * 100)}} for u in range(1, 8)]
+        base = de.derive(recs)
+        self.assertTrue(all("/309 tiles" in e["x"] for e in base["events"] if e["t"] == "path"))
+        egg = de.derive(recs, de.EGG_MILESTONE_NAMES, 695)
+        self.assertTrue(any("Egg delivered" in e["x"] for e in egg["events"] if e["t"] == "ms"))
+        self.assertTrue(all("/695 tiles" in e["x"] for e in egg["events"] if e["t"] == "path"))
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "history.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+            (run / "meta.json").write_text(json.dumps({"run": {"egg_errand_route": True, "path_total": 695,
+                                                                "milestone_labels": de.EGG_MILESTONE_NAMES}}), encoding="utf-8")
+            out = de.run_events(run)
+            self.assertTrue(any("/695 tiles" in e["x"] for e in out["events"] if e["t"] == "path"))
+
     def test_world_route_and_page_wiring(self):
         with tempfile.TemporaryDirectory() as tmp:
             server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Path(tmp) / "live", Path(tmp) / "m.jsonl", Path(tmp) / "runs"))

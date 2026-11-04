@@ -16,6 +16,22 @@ Before the ledge fix the graph had no jump edges, no sideways walking along ledg
 
 Buildings next to the route (houses, marts, Pokecenters) are included as dead-end spurs so entering one lowers Phi
 by the walk back out. The graph is built lazily, once per process.
+
+EGG ERRAND (``egg_errand_route``, ``long_v8``). The 309-step route above is the no-egg route and is UNREACHABLE at game
+start: Route 30 is cut in half by the one-tile choke (5, 25), occupied by the Joey event (5, 26), two Rattata sprites
+(5, 25) / (5, 24) and trainer Mikey (5, 23) until Elm has the Mystery Egg (hide flag 1812 is set together with
+EVENT_GAVE_MYSTERY_EGG_TO_ELM by the script at ElmsLab.asm:345).  The real order is therefore three PHASES chosen from
+event flags in RAM, each with its own BFS distance field and a goal tile:
+
+  phase 0 (egg not yet received):   New Bark -> Cherrygrove -> Route 30 right-hand corridor -> Mr. Pokemon's house
+                                    (the choke tiles are BLOCKED), goal = ``EGG_RECEIVE_GOAL``;
+  phase 1 (egg received, not given): back through Route 30 / Cherrygrove / Route 29 to Elm's lab, goal =
+                                    ``EGG_DELIVER_GOAL`` (choke still blocked, it is not on the way);
+  phase 2 (egg given to Elm):       the opened graph, goal = the tile in front of Falkner (the 309-step route plus the walk
+                                    from Elm's lab back to the New Bark start tile).
+
+``path_progress(state, egg=True)`` = ``phase_offset + max(0, phase_len - BFS distance to the phase goal)``: continuous at the
+phase borders (the goal tile of one phase is the start tile of the next), so the best-ever reward never jumps.
 """
 
 from __future__ import annotations
@@ -54,6 +70,19 @@ GOALS = (
 
 # Where the path starts as (map, x, y): states/new_bark_outside.state (outside New Bark Town).
 PATH_START = ((24, 4), 3, 9)
+
+# --- the egg errand (phased route) ---------------------------------------------------------------------------------
+# Event flag ids (src.story_flags; 1812 = EVENT_ROUTE_30_BATTLE, the Route 30 blockers' hide flag, set together with 31).
+FLAG_EGG_RECEIVED = 30      # EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON
+FLAG_EGG_DELIVERED = 31     # EVENT_GAVE_MYSTERY_EGG_TO_ELM
+FLAG_ROUTE30_OPEN = 1812    # EVENT_ROUTE_30_BATTLE (hide flag of Joey / the Rattatas on the choke)
+# NPC sprites standing on the one-tile choke of Route 30 while flag 1812 is clear (Joey's event, two Rattatas, Mikey).
+NPC_BLOCKERS = tuple(((26, 1), 5, y) for y in (23, 24, 25, 26))
+# Mr. Pokemon's house (26, 10): the tile in front of Mr. Pokemon (3, 5) where the egg is handed over.
+EGG_RECEIVE_GOAL = ((26, 10), 3, 6)
+# Elm's lab (24, 5): the tile in front of Elm (5, 2) where the egg is delivered.
+EGG_DELIVER_GOAL = ((24, 5), 5, 3)
+EGG_PHASE_COUNT = 3
 
 DIR_NAMES = tuple(_DIRS)           # ("up", "down", "left", "right"), the feature order
 _CARPET_DIR = {
@@ -157,6 +186,32 @@ class _Graph:
             if leg is None:
                 raise RuntimeError(f"no route from goal {s} to goal {s + 1}")
             self.tail[s] = self.tail[s + 1] + leg
+        self._build_egg_phases()
+
+    def _build_egg_phases(self) -> None:
+        """BFS tables of the three egg-errand phases (see the module docstring); ``phase_dist`` stays None if a goal is missing."""
+        self.phase_dist = self.phase_len = self.phase_off = None
+        self.phase_total = None
+        if any(n not in self.fwd for n in (EGG_RECEIVE_GOAL, EGG_DELIVER_GOAL)):
+            return
+        blocked = frozenset(NPC_BLOCKERS)
+        rev: dict[Node, list] = {}
+        for src, outs in self.fwd.items():
+            if src in blocked:
+                continue
+            for dst in outs:
+                if dst is not None and dst not in blocked:
+                    rev.setdefault(dst, []).append(src)
+        d0 = self._bfs(EGG_RECEIVE_GOAL, rev)
+        d1 = self._bfs(EGG_DELIVER_GOAL, rev)
+        d2 = self.dist[0]
+        lens = (d0.get(PATH_START), d1.get(EGG_RECEIVE_GOAL), d2.get(EGG_DELIVER_GOAL))
+        if any(n is None for n in lens):
+            return
+        self.phase_dist = (d0, d1, d2)
+        self.phase_len = tuple(int(n) for n in lens)
+        self.phase_off = (0, self.phase_len[0], self.phase_len[0] + self.phase_len[1])
+        self.phase_total = sum(self.phase_len)
 
     # --- loading ------------------------------------------------------------------------------
     def _load(self, mid):
@@ -326,13 +381,51 @@ def route_potential(state) -> float:
     return float(g.potential(0, node))
 
 
-def path_total() -> float | None:
-    """Length of the minimal story path (BFS steps from the New Bark start tile to the tile in front of Falkner)."""
+def egg_phase(state) -> int:
+    """Phase of the egg errand from the event flags of ``state``: 0 before the egg, 1 egg in hand, 2 egg given to Elm
+    (hide flag 1812 or EVENT_GAVE_MYSTERY_EGG_TO_ELM set).  A state without ``has_event`` is phase 0."""
+    fn = getattr(state, "has_event", None)
+    if not callable(fn):
+        return 0
+    try:
+        if fn(FLAG_ROUTE30_OPEN) or fn(FLAG_EGG_DELIVERED):
+            return 2
+        return 1 if fn(FLAG_EGG_RECEIVED) else 0
+    except Exception:
+        return 0
+
+
+def egg_phase_info() -> dict | None:
+    """``{"len": (l0, l1, l2), "off": (0, l0, l0 + l1), "total": l0 + l1 + l2}`` of the phased route, or None without the ROM."""
     g = _graph()
-    return None if g is None else g.goal_distance(0, PATH_START)
+    if g is None or g.phase_dist is None:
+        return None
+    return {"len": g.phase_len, "off": g.phase_off, "total": g.phase_total}
 
 
-def path_progress(state) -> float | None:
+def path_total(egg: bool = False) -> float | None:
+    """Length of the minimal story path (BFS steps from the New Bark start tile to the tile in front of Falkner).
+
+    With ``egg=True`` the phased egg-errand route: the sum of the three phase lengths (``egg_phase_info``)."""
+    g = _graph()
+    if g is None:
+        return None
+    if egg:
+        return None if g.phase_total is None else float(g.phase_total)
+    return g.goal_distance(0, PATH_START)
+
+
+def _egg_progress(g, state) -> float | None:
+    if g.phase_dist is None:
+        return None
+    phase = egg_phase(state)
+    d = g.phase_dist[phase].get(_node(state))
+    if d is None:
+        return None
+    return float(g.phase_off[phase] + max(0, g.phase_len[phase] - d))
+
+
+def path_progress(state, egg: bool = False) -> float | None:
     """How far along the minimal story path the position is: ``path_total - steps_to_Falkner``, clamped to >= 0.
 
     Uses the EXACT BFS distance over the ROM graph (warps included), so every tile that is not on the shortest path
@@ -343,6 +436,8 @@ def path_progress(state) -> float | None:
     g = _graph()
     if g is None:
         return None
+    if egg:
+        return _egg_progress(g, state)   # phase-aware: offset + (phase length - distance to the phase goal)
     total = g.goal_distance(0, PATH_START)
     d = g.goal_distance(0, _node(state))
     if total is None or d is None:

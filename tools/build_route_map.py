@@ -44,8 +44,10 @@ DIRS = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
 GRASS = {0x10, 0x14, 0x18, 0x1C}
 WATER = {0x21, 0x29}
 LEDGE = set(_HOP_DIRS)   # the hop tiles 0xa0-0xa7 (jumpable ledges); the old 0x41-0x53 set were conveyor-style walk tiles
-# Trainer and NPC tiles are not modelled: battles are sparse rewards, not walls. (falkner_nav
-# walls off (5, 23) on Route 30, but that tile is the only way past the y=24 ledge row.)
+# Trainer and NPC tiles are not modelled here: this builder draws the dashboard's 309-step (no-egg) route. The NPC sprites
+# that cut Route 30 at the (5, 23..26) choke until Elm has the Mystery Egg ARE modelled in ``src.route_graph``
+# (``NPC_BLOCKERS``, phases 0 and 1 of the egg-errand route); the dashboard's three-phase legs come from there
+# (make_world_layout3.py -> ``world_layout.json["egg"]``).
 NPC_BLOCKS: dict[tuple[int, int], set] = {}
 
 

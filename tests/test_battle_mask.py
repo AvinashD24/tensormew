@@ -169,7 +169,7 @@ class FlagTests(unittest.TestCase):
         self.assertEqual((v8.eval_every, v8.eval_episodes, v8.eval_max_steps), (50, 4, 1024))
         a, b = dataclasses.asdict(v8), dataclasses.asdict(v7)
         diff = {k for k in a if a[k] != b[k]}
-        self.assertEqual(diff, {"name", "battle_action_mask", "periodic_eval"})
+        self.assertEqual(diff, {"name", "battle_action_mask", "periodic_eval", "egg_errand_route", "dwell_level_targets"})   # + the egg errand (tests/test_egg_errand.py)
 
     def test_config_round_trip_and_validation(self):
         cfg = train_config.preset("long_v8")

@@ -36,6 +36,9 @@ Training-only environment features (all off in ``--config legacy``):
   one), a dialogue-loop penalty (``src.dialogue_loop``) and a warm-up rollout before update 0 that only initialises the
   running reward scaler.  Reset order: battle archive, swarm archive, route checkpoints, start state.  Also long_v6: a retreat cost
   and a stagnation penalty (reward only, ``src.path_progress`` / ``src.stagnation``) and white-out as a true episode end.
+- ``long_v8`` additions: battle-menu action mask, periodic from-start evaluation and ``egg_errand_route`` (``src.story_path`` EGG
+  profile: 11 milestones incl. the egg received / delivered events, 80 observation inputs; ``src.route_graph`` three-phase path
+  measure, 695 steps).  The workers and the trainer switch the process-global story profile from the config at startup.
 """
 
 from __future__ import annotations
@@ -71,10 +74,11 @@ from src.route_ckpt import (
 from src.entropy_guard import EntropyGuard, anneal_fraction
 from src.idle_press import IdlePressTracker
 from src.path_progress import PathProgress
+from src.route_graph import egg_phase as route_graph_phase
 from src.emulator import Emulator
 from src.heal_care import HealCareTracker, is_heal_trip
 from src.heal_reward import heal_payment
-from src.milestone_stats import MilestoneRecords, MilestoneStats, SourceSplitStats, is_base_start, source_of
+from src.milestone_stats import MilestoneRecords, MilestoneStats, SourceSplitStats, is_base_start, milestone_labels, source_of
 from src.live_feed import LiveFeed
 from src.macros import Macros
 from src.mover import walkable
@@ -85,11 +89,12 @@ from src.ram_parser import RamParser, dialogue_open
 from src.rl_env import (
     ACTIONS,
     BUTTON_ACTIONS,
-    DEEP_OBS_DIM,
+    DEEP_OBS_DIM,  # noqa: F401  (base-profile width; the trainer uses deep_obs_dim() of its story profile)
     N_ACTIONS,
     NEW_INTERACTION_REWARD,
     POKECENTER_MAPS,
     budget_pay,
+    deep_obs_dim,
     NEW_WARP_REWARD,
     StepInfo,
     initial_seen_events,
@@ -100,7 +105,8 @@ from src.rl_env import (
 from src.states import StateRegistry
 from src.step import TileStepper
 from src.story_flags import REVERSE_EVENT_FLAGS
-from src.story_path import KEY_EVENT_REWARDS, MILESTONE_COUNT, current_stage, progress_potential
+from src import story_path as _story
+from src.story_path import KEY_EVENT_REWARDS, MILESTONE_COUNT, current_stage, implied_maps, progress_potential  # noqa: F401
 from src.terminal_monitor import TerminalMonitor
 from src.train_config import ConfigError, TrainConfig, apply_overrides, dump_effective_config, load_config
 
@@ -142,7 +148,14 @@ BATTLE_PREFIX = "battle:"
 BATTLE_SAVE_GAP = 64  # a worker saves at most one battle state per this many of its own steps
 BATTLE_SAVE_WAIT = 5  # steps to wait after a battle starts for the enemy species to be readable
 SWARM_STAGE_SLOTS = 4  # rotating snapshots kept per stage entry
-KEY_EVENT_IDS = frozenset(fid for fid, name in REVERSE_EVENT_FLAGS.items() if name in KEY_EVENT_REWARDS)
+
+
+def key_event_ids() -> frozenset:
+    """Flag ids of the key events of this process's story profile (Falkner; with the egg errand also the egg flags)."""
+    return frozenset(fid for fid, name in REVERSE_EVENT_FLAGS.items() if name in _story.profile().key_event_rewards)
+
+
+KEY_EVENT_IDS = key_event_ids()   # base profile (kept for importers); the worker re-evaluates it for its own profile
 ROUTE_PROGRESS_WINDOW = 64  # recent episodes averaged for the entropy schedule's progress signal
 REWARD_CYCLE_WINDOW = 8  # updates averaged into ``reward_8`` (the lockstep cycle was 8 updates long)
 SAVE_EVERY = 10  # updates between "latest" checkpoints (the final update is always saved)
@@ -168,7 +181,7 @@ def archive_key_stage(key: str) -> int:
     if head.startswith("stage") and head[5:].isdigit():
         return int(head[5:])
     if head.startswith("event"):
-        return MILESTONE_COUNT
+        return _story.profile().count
     return 0
 
 
@@ -515,6 +528,9 @@ class EnvWorker:
 
     def __init__(self, index: int, start_states: list[str], max_steps: int, cfg: dict | None = None):
         cfg = dict(cfg or {})
+        # The story profile (milestone list, observation width) of this run; a spawned worker process starts on the base one.
+        self.egg_route = bool(cfg.get("egg_errand_route", False))
+        _story.set_profile(self.egg_route)
         self.index = int(index)
         self.max_steps = int(max_steps)
         self.sticky_prob = float(cfg.get("sticky_prob", 0.0))
@@ -598,7 +614,8 @@ class EnvWorker:
         self.dwell = DwellTracker.from_params(cfg.get("dwell"))
         self.dwell_exempt_loop = bool(cfg.get("dwell_exempt_loop", True))
         # Dense best-ever path-progress reward (long_v4, OFF when cfg has no "path_progress" scale): src.path_progress.
-        self.path_progress = PathProgress.from_scale(cfg.get("path_progress"), cfg.get("retreat"))
+        self.path_progress = (PathProgress.from_scale(cfg.get("path_progress"), cfg.get("retreat"), egg=True) if self.egg_route
+                              else PathProgress.from_scale(cfg.get("path_progress"), cfg.get("retreat")))
         # long_v6: stagnation penalty (src.stagnation, OFF without params), white-out as a true episode end.
         self.stagnation = StagnationTracker.from_params(cfg.get("stagnation"))
         self.terminate_on_whiteout = bool(cfg.get("terminate_on_whiteout", False))
@@ -725,6 +742,10 @@ class EnvWorker:
             # Route checkpoint: the milestones its saver had passed are done (maps seen), so walking back over them and
             # forward again never pays their bonuses a second time; the observation's milestone bits stay consistent.
             self.seen_maps.update(stage_maps(self._route_seed_stage))
+        if self.egg_route:
+            # Egg errand: the event flags of the start state / checkpoint say which story maps are already behind it (the
+            # egg in hand means Route 29 ... Mr. Pokemon's house), so their arrival bonuses are never paid again.
+            self.seen_maps.update(implied_maps(self.reader.parse(self.emu.frame)))
         self.budget.clear()
         self.budget.update(self._budget_init)
         if self._intrinsic_scale != 1.0:
@@ -787,7 +808,7 @@ class EnvWorker:
             return
         new = self.seen_events - self._event_snapshot
         self._event_snapshot = set(self.seen_events)
-        self._pending_events |= {fid for fid in new if fid in KEY_EVENT_IDS}
+        self._pending_events |= {fid for fid in new if fid in key_event_ids()}
         stage = int(current_stage(after))
         if stage > self._last_stage:
             self._pending_stage = stage if self._pending_stage is None else max(self._pending_stage, stage)
@@ -848,7 +869,8 @@ class EnvWorker:
             return
         self._route_saved_bucket = bucket
         self._last_route_save = self._total_steps
-        self.route_archive.save(bucket, milestone_stage(self.seen_maps), self.emu.save_state())
+        self.route_archive.save(bucket, milestone_stage(self.seen_maps), self.emu.save_state(),
+                                phase=route_graph_phase(after) if self.egg_route else None)
 
     # -- stepping
     def step(self, act_idx: int):
@@ -1438,7 +1460,7 @@ class PeriodicEvaluator:
         finally:
             policy.set_battle_a_bias(saved_bias)
             policy.train(was_training)
-        return aggregate(episodes, MILESTONE_COUNT, update, time.time() - t0)
+        return aggregate(episodes, _story.profile().count, update, time.time() - t0)
 
     def close(self) -> None:
         if self.worker is not None:
@@ -1616,6 +1638,7 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "heal_trip_exempt": cfg.heal_trip_exempt,
         "heal_trip_threshold": cfg.lowhp_exposure_threshold,
         "action_mask": cfg.battle_action_mask,
+        "egg_errand_route": cfg.egg_errand_route,
     }
 
 
@@ -1636,6 +1659,8 @@ def train(
 ):
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_gru = cfg.recurrent
+    _story.set_profile(cfg.egg_errand_route)   # milestone list, story block and observation width of this run
+    obs_dim = deep_obs_dim()
     num_envs, rollout_steps, updates = cfg.envs, cfg.rollout_steps, cfg.updates
     save_path = cfg.save_path
     if resume:
@@ -1645,14 +1670,14 @@ def train(
     print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru}, config={cfg.name})...")
 
     use_aux = bool(cfg.aux_loss and use_gru)
-    policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=N_ACTIONS, use_gru=use_gru, gru_hidden_dim=512,
+    policy = SpatialVisionPolicy(obs_dim=obs_dim, num_actions=N_ACTIONS, use_gru=use_gru, gru_hidden_dim=512,
                                  aux_heads=use_aux)
     resumed = False
     sidecar = None
     if resume:
         try:
             policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru,
-                                              override_obs_dim=DEEP_OBS_DIM, check_schema=True,
+                                              override_obs_dim=obs_dim, check_schema=True,
                                               override_aux_heads=use_aux)
         except CheckpointIncompatibleError as e:
             raise RuntimeError(f"--resume: {e}") from e
@@ -1779,9 +1804,15 @@ def train(
             flush=True,
         )
     if cfg.path_progress:
+        _steps = _story.profile().path_steps
         print(f"[path progress] +{cfg.path_progress_scale} per tile of new best progress along the story path "
-              f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * 309:.1f} for the whole path)",
+              f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * _steps:.1f} for the whole {_steps}-step path)",
               flush=True)
+    if cfg.egg_errand_route:
+        _p = _story.profile()
+        print(f"[egg errand] {_p.count} milestones {list(_p.names)} | story block {_p.feature_dim} floats, observation {obs_dim} | "
+              f"path phases {list(_p.phase_steps)} = {_p.path_steps} steps (egg tile -> Elm's lab -> Falkner) | "
+              f"story reward {_p.total_reward:g} | level targets {list(cfg.dwell_level_targets)}", flush=True)
     vec_env = VectorEnv(num_envs=num_envs, start_states=states, max_steps=cfg.max_steps,
                         env_cfg=worker_env_cfg(cfg, swarm_dir, battle_dir, route_dir))
     screens_cur, rams_cur = vec_env.reset()
@@ -1818,6 +1849,9 @@ def train(
                 "recurrent": policy.use_gru,
                 "resume": resume,
                 "ms_records": True,   # this run logs the fastest-to-milestone records (dashboard shows the table)
+                "egg_errand_route": bool(cfg.egg_errand_route),   # the dashboard draws the three route phases for such runs
+                "milestone_labels": list(milestone_labels()),   # human names, in milestone order (dashboard chips / tables)
+                "path_total": int(_story.profile().path_steps),
                 "curriculum_states": sorted(set(states)),
                 "device": str(device),
                 "config_name": cfg.name,
@@ -1831,7 +1865,7 @@ def train(
     B, T = num_envs, rollout_steps
     # Rollout buffers live on the CPU; screens stay uint8 (4x smaller than float32) and ppo_update moves minibatches.
     buf_screens = torch.empty((B, T, *SCREEN_SHAPE), dtype=torch.uint8)
-    buf_rams = torch.empty((B, T, DEEP_OBS_DIM), dtype=torch.float32)
+    buf_rams = torch.empty((B, T, obs_dim), dtype=torch.float32)
     buf_actions = torch.empty((B, T), dtype=torch.long)
     buf_logps = torch.empty((B, T), dtype=torch.float32)
     buf_values = torch.zeros((T, B), dtype=torch.float32)
@@ -2174,7 +2208,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v7 = long_v6 + learned-vs-head-start metrics split by reset source and healing care: low-HP exposure cost, battle-survive and potion-use bonuses, heal-trip exemption from retreat/stagnation/dwell, stronger capped heal reward; long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v8 = long_v7 + battle-menu action mask, periodic from-start evaluation and the egg-errand route: Mr. Pokemon egg -> Elm -> Falkner, 11 milestones, 695-step phased path, 80 observation inputs; long_v7 = long_v6 + learned-vs-head-start metrics split by reset source and healing care: low-HP exposure cost, battle-survive and potion-use bonuses, heal-trip exemption from retreat/stagnation/dwell, stronger capped heal reward; long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)

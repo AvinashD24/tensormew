@@ -1,7 +1,7 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v8`` (``long_v7`` plus valid-action masking of provably-no-op buttons in battle menus and a periodic from-start
-evaluation), ``long_v7`` (``long_v6`` plus learned-vs-head-start metrics split by reset source and healing-care reward terms),
+Presets: ``long_v8`` (``long_v7`` plus valid-action masking of provably-no-op buttons in battle menus, a periodic from-start
+evaluation and the egg-errand route: Mr. Pokemon's egg back to Elm before Route 30 opens, 11 milestones, 695-step path), ``long_v7`` (``long_v6`` plus learned-vs-head-start metrics split by reset source and healing-care reward terms),
 ``long_v6`` (``long_v5`` plus a route-checkpoint archive that restarts episodes along the agents' own best
 route progress, a dialogue-loop penalty and a reward-scaler warm-up rollout, after v5-1 got stuck at the end of Route 29),
 ``long_v5`` (``long_v4`` plus anti-collapse changes after the v4-1 run collapsed to pressing A: wall-bump and
@@ -32,6 +32,7 @@ from src import entropy_guard as _entropy_guard
 from src import heal_care as _heal_care
 from src import idle_press as _idle_press
 from src import path_progress as _path_progress
+from src import story_path as _story_path
 from src import route_ckpt as _route_ckpt
 from src import stagnation as _stagnation
 
@@ -250,6 +251,12 @@ class TrainConfig:
     eval_every: int = 50
     eval_episodes: int = 4
     eval_max_steps: int = 1024
+    # Egg errand (src.story_path EGG profile, src.route_graph phases; reward / milestones / observation width). Route 30 is
+    # blocked by NPC sprites until the Mystery Egg is given to Elm, so the real order is Mr. Pokemon's house (egg) -> back to
+    # Elm's lab (egg given, Route 30 opens) -> Route 31 -> Violet -> Falkner.  With the flag: 11 milestones (3 more: Mr. Pokemon's
+    # house, egg received, egg delivered), 3 more story bits in the observation (80 inputs instead of 77), the phase-aware
+    # path-progress measure (695 steps instead of 309) and a 12-entry dwell_level_targets table.  Old checkpoints no longer fit.
+    egg_errand_route: bool = False
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -372,12 +379,17 @@ class TrainConfig:
             self.entropy_boost_threshold, self.entropy_boost_until, self.entropy_boost_coef, self.entropy_boost_margin))
         errs.extend(_dwell.validate_params(
             self.dwell_window, self.dwell_max_tiles, self.dwell_min_penalty, self.dwell_max_penalty,
-            self.dwell_ramp_steps, self.dwell_budget, self.dwell_grind_grace, self.dwell_level_targets))
+            self.dwell_ramp_steps, self.dwell_budget, self.dwell_grind_grace, self.dwell_level_targets,
+            self.story_profile().count))
         if not self.save_path:
             errs.append("save_path must not be empty")
         if errs:
             raise ConfigError("invalid training config:\n  - " + "\n  - ".join(errs))
         return self
+
+    def story_profile(self):
+        """The ``src.story_path`` profile this config trains with (``egg`` with ``egg_errand_route``, else ``base``)."""
+        return _story_path.profile_for(bool(self.egg_errand_route))
 
     def dwell_params(self) -> dict | None:
         """Keyword arguments for ``src.dwell.DwellTracker``, or None when the penalty is off."""
@@ -721,7 +733,7 @@ def long_v7() -> TrainConfig:
 
 
 def long_v8() -> TrainConfig:
-    """``long_v7`` plus two changes (each behind its own flag, so they can be ablated):
+    """``long_v7`` plus three changes (each behind its own flag, so they can be ablated):
 
     1. ``battle_action_mask`` (``src.battle_mask``): in a battle, the buttons that provably do nothing in the visible
        screen (grid-edge directions and B in the FIGHT/PKMN/PACK/RUN menu, left/right in the move list and the party list,
@@ -730,6 +742,14 @@ def long_v8() -> TrainConfig:
     2. ``periodic_eval`` (every 50 updates, 4 episodes of 1024 steps from ``new_bark_outside`` on a dedicated env,
        stochastic like training): the honest learned-from-scratch curve, logged as ``eval_*`` metrics and shown in the
        dashboard. No training state, archive or running statistic is touched by it.
+
+    3. ``egg_errand_route`` (``src.story_path`` EGG profile, ``src.route_graph`` phases): the route from game start is NOT the
+       309-step shortcut. Route 30 is cut by NPC sprites until Elm has the Mystery Egg, so the real order is Cherrygrove ->
+       Route 30 -> Mr. Pokemon's house (egg) -> Elm's lab (give it: Route 30 opens) -> Route 31 -> Violet -> Falkner. The
+       milestone list grows from 8 to 11 (Mr. Pokemon's house +10, egg received +15, egg delivered +30), the path reward is
+       measured over the three phases (185 + 183 + 327 = 695 steps, best-ever, same scale), the story block of the observation
+       gets 3 more bits (77 -> 80 inputs: checkpoints from earlier presets no longer load) and ``dwell_level_targets`` has 12
+       entries. Nothing is added to the observation about where to go.
 
     Everything else is ``long_v7``.
     """
@@ -740,6 +760,8 @@ def long_v8() -> TrainConfig:
     cfg.eval_every = 50
     cfg.eval_episodes = 4
     cfg.eval_max_steps = 1024
+    cfg.egg_errand_route = True
+    cfg.dwell_level_targets = list(_dwell.DWELL_LEVEL_TARGETS_EGG)
     return cfg
 
 

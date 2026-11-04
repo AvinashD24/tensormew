@@ -29,6 +29,7 @@ import torch.nn.functional as F
 
 from src.battle_obs import BATTLE_FEATURE_NAMES
 from src.rl_env import BASE_OBS_DIM
+from src import story_path as _story
 from src.story_path import MILESTONE_COUNT, STORY_FEATURE_DIM
 
 AUX_MAP_GROUPS = 32     # map group classes (Crystal groups are 1..26)
@@ -36,7 +37,7 @@ AUX_MAP_NUMBERS = 64    # map number classes (clipped)
 AUX_OUT_DIM = AUX_MAP_GROUPS + AUX_MAP_NUMBERS + 2   # + lead-HP-change regression + battle-start logit
 HP_TARGET_SCALE = 5.0
 
-IDX_MAP_GROUP = BASE_OBS_DIM + MILESTONE_COUNT       # g / 32 in the story block
+IDX_MAP_GROUP = BASE_OBS_DIM + MILESTONE_COUNT       # g / 32 in the story block (base story profile; see ``_indices``)
 IDX_MAP_NUMBER = IDX_MAP_GROUP + 1                   # n / 32
 IDX_LEAD_HP = BASE_OBS_DIM + STORY_FEATURE_DIM + BATTLE_FEATURE_NAMES.index("party0_hp")
 IDX_BATTLE = 7                                       # base block: tiles(4), x, y, badges, battle (pinned in tests)
@@ -66,6 +67,13 @@ def valid_mask(dones: torch.Tensor | None, T: int, horizon: int, batch: int, dev
     return mask
 
 
+def _indices() -> tuple[int, int, int]:
+    """(map group, map number, lead HP) column of the observation for the ACTIVE story profile (the base values above for ``base``)."""
+    p = _story.profile()
+    g = BASE_OBS_DIM + p.count
+    return g, g + 1, BASE_OBS_DIM + p.feature_dim + BATTLE_FEATURE_NAMES.index("party0_hp")
+
+
 def make_targets(rams: torch.Tensor, dones: torch.Tensor | None, horizon: int) -> dict[str, torch.Tensor]:
     """Targets and masks for a ``(B, T, D)`` RAM observation sequence."""
     B, T = rams.shape[:2]
@@ -74,9 +82,10 @@ def make_targets(rams: torch.Tensor, dones: torch.Tensor | None, horizon: int) -
     ahead = torch.zeros_like(rams)
     if h < T:
         ahead[:, : T - h] = rams[:, h:]
-    group = torch.round(ahead[..., IDX_MAP_GROUP] * 32.0).long().clamp_(0, AUX_MAP_GROUPS - 1)
-    number = torch.round(ahead[..., IDX_MAP_NUMBER] * 32.0).long().clamp_(0, AUX_MAP_NUMBERS - 1)
-    hp_delta = (ahead[..., IDX_LEAD_HP] - rams[..., IDX_LEAD_HP]) * HP_TARGET_SCALE
+    i_group, i_number, i_hp = _indices()
+    group = torch.round(ahead[..., i_group] * 32.0).long().clamp_(0, AUX_MAP_GROUPS - 1)
+    number = torch.round(ahead[..., i_number] * 32.0).long().clamp_(0, AUX_MAP_NUMBERS - 1)
+    hp_delta = (ahead[..., i_hp] - rams[..., i_hp]) * HP_TARGET_SCALE
     in_battle_now = rams[..., IDX_BATTLE] > 0.5
     battle_soon = torch.zeros(B, T, dtype=torch.bool, device=rams.device)
     if h < T:

@@ -26,11 +26,21 @@ from typing import Any, Callable
 
 import numpy as np
 
+from src import story_path as _story
 from src.story_path import MILESTONE_COUNT, MILESTONES, current_stage as _story_stage
 
 # Stage k = the k-th story milestone reached (0 = still in New Bark); the last stage means Falkner is beaten.
+# Base-profile module constants; the functions below follow the active story profile (an egg-errand checkpoint switches it).
 STAGE_NAMES = ("new_bark",) + tuple(m.name for m in MILESTONES)
 SUCCESS_STAGE = MILESTONE_COUNT
+
+
+def stage_names() -> tuple[str, ...]:
+    return ("new_bark",) + _story.profile().names
+
+
+def success_stage() -> int:
+    return _story.profile().count
 _REPORTED_EVENTS = (
     "EVENT_GOT_A_POKEMON_FROM_ELM",
     "EVENT_LEARNED_TO_CATCH_POKEMON",
@@ -127,12 +137,17 @@ def execute_action(ctx: StepContext, act_idx: int, actions: tuple[str, ...]) -> 
 
 def obs_vector(state, visited: set, obs_dim: int, seen_maps=None) -> np.ndarray:
     """Observation in the layout the checkpoint was trained with (``DEEP_OBS_DIM``; no route oracle)."""
-    from src.rl_env import DEEP_OBS_DIM, observe
+    from src.rl_env import DEEP_OBS_DIM, deep_obs_dim, observe
 
     if obs_dim == DEEP_OBS_DIM:
+        if _story.profile().egg:
+            _story.set_profile(False)
+        return observe(state, visited, deep=True, seen_maps=seen_maps)
+    if obs_dim == deep_obs_dim(True):   # an egg-errand (long_v8) checkpoint: its 3 extra story bits need the egg profile
+        _story.set_profile(True)
         return observe(state, visited, deep=True, seen_maps=seen_maps)
     raise ValueError(
-        f"unsupported checkpoint obs_dim {obs_dim} (expected {DEEP_OBS_DIM}); checkpoints from before the "
+        f"unsupported checkpoint obs_dim {obs_dim} (expected {DEEP_OBS_DIM} or {deep_obs_dim(True)}); checkpoints from before the "
         "no-oracle observation cannot be evaluated, retrain with --config long_v2"
     )
 
@@ -264,14 +279,14 @@ def run_episode(env, policy, seed: int, max_steps: int) -> dict:
         for name in _REPORTED_EVENTS:
             if name not in events_at and _has_event(st, name):
                 events_at[name] = steps
-        if stage >= SUCCESS_STAGE or done:
+        if stage >= success_stage() or done:
             break
     return {
         "seed": seed,
         "steps": steps,
         "final_stage": stage,
-        "final_stage_name": STAGE_NAMES[min(stage, len(STAGE_NAMES) - 1)],
-        "success": stage >= SUCCESS_STAGE,
+        "final_stage_name": stage_names()[min(stage, len(stage_names()) - 1)],
+        "success": stage >= success_stage(),
         "leg_steps": {str(k): v for k, v in sorted(leg_steps.items())},
         "events": events_at,
         "maps_visited": len(maps),
@@ -302,9 +317,9 @@ def _stat(values: list[float]) -> dict:
 def aggregate(episodes: list[dict]) -> dict:
     """Mean and bootstrap interval across episodes. Leg times only average the episodes that reached the leg."""
     legs = {}
-    for k in range(SUCCESS_STAGE):
+    for k in range(success_stage()):
         reached = [e["leg_steps"][str(k)] for e in episodes if str(k) in e["leg_steps"]]
-        legs[str(k)] = {"name": STAGE_NAMES[k], "reached": len(reached), "of": len(episodes), **_stat(reached)}
+        legs[str(k)] = {"name": stage_names()[k], "reached": len(reached), "of": len(episodes), **_stat(reached)}
     comp_keys = sorted({k for e in episodes for k in e["components"]})
     event_names = sorted({n for e in episodes for n in e["events"]})
     return {
@@ -330,7 +345,7 @@ def format_report(result: dict) -> str:
         f"{'ep':>3} {'seed':>5} {'steps':>6} {'stage':<11} {'ok':>3} {'maps':>4} {'reward':>9}  legs (steps to finish each stage goal)",
     ]
     for i, e in enumerate(result["episodes"]):
-        legs = " ".join(f"{STAGE_NAMES[int(k)][:6]}={v}" for k, v in e["leg_steps"].items()) or "-"
+        legs = " ".join(f"{stage_names()[int(k)][:6]}={v}" for k, v in e["leg_steps"].items()) or "-"
         lines.append(
             f"{i:>3} {e['seed']:>5} {e['steps']:>6} {e['final_stage_name']:<11} {'yes' if e['success'] else 'no':>3} "
             f"{e['maps_visited']:>4} {e['total_reward']:>9.1f}  {legs}"
@@ -371,7 +386,7 @@ def evaluate(
     return {
         **(meta or {}),
         "max_steps": max_steps,
-        "success_definition": f"reached stage {SUCCESS_STAGE} (Falkner beaten, Zephyr Badge)",
+        "success_definition": f"reached stage {success_stage()} (Falkner beaten, Zephyr Badge)",
         "episodes": results,
         "aggregate": aggregate(results),
     }
@@ -380,7 +395,7 @@ def evaluate(
 # ----------------------------------------------------------------------------- learned vs head start (sampled, training env)
 def summarize_sampled(episodes: list[dict]) -> dict:
     """Mean / median best path progress and per-milestone reach rate and first-reach step over sampled episodes."""
-    from src.milestone_stats import MILESTONE_LABELS
+    from src.milestone_stats import milestone_labels
 
     n = len(episodes)
     best = sorted(float(e["best_path"]) for e in episodes if e.get("best_path") is not None)
@@ -392,7 +407,7 @@ def summarize_sampled(episodes: list[dict]) -> dict:
     out = {"episodes": n, "best_path_mean": float(np.mean(best)) if best else None, "best_path_median": med(best),
            "gain_mean": float(np.mean(gain)) if gain else None, "whiteouts": sum(1 for e in episodes if e.get("whiteout")),
            "milestones": {}}
-    for m, label in enumerate(MILESTONE_LABELS):
+    for m, label in enumerate(milestone_labels()):
         steps = [e["ms_steps"][str(m)] for e in episodes if str(m) in e.get("ms_steps", {})]
         out["milestones"][label] = {"reached": len(steps), "rate": (len(steps) / n) if n else None,
                                     "steps_mean": float(np.mean(steps)) if steps else None, "steps_median": med(steps)}
@@ -471,16 +486,17 @@ def sampled_eval_main(args) -> int:
 
     torch.set_num_threads(6)
     from src.deep_policy import SpatialVisionPolicy
-    from src.rl_env import ACTIONS, DEEP_OBS_DIM
+    from src.rl_env import ACTIONS, deep_obs_dim
     from src.train_config import load_config
     from tools.train_deep_ppo import EnvWorker, worker_env_cfg
 
     cfg = load_config(args.config)
+    _story.set_profile(cfg.egg_errand_route)
     if getattr(args, "uniform_random", False):
         net, label = None, "uniform-random"   # equivalent to an untrained net whose logits are ~flat; ~3x faster on CPU
     elif args.random_init:
         torch.manual_seed(args.seed)
-        net = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=len(ACTIONS), use_gru=cfg.recurrent,
+        net = SpatialVisionPolicy(obs_dim=deep_obs_dim(), num_actions=len(ACTIONS), use_gru=cfg.recurrent,
                                   gru_hidden_dim=512, aux_heads=bool(cfg.aux_loss and cfg.recurrent))
         label = "random-init"
     else:

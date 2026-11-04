@@ -65,7 +65,8 @@ class BookkeepingTests(unittest.TestCase):
 try:
     import torch
     from src.deep_policy import SpatialVisionPolicy
-    from src.rl_env import DEEP_OBS_DIM
+    from src.rl_env import DEEP_OBS_DIM, deep_obs_dim  # noqa: F401
+    from src import story_path
     from tools.train_deep_ppo import EVAL_WORKER_INDEX, PeriodicEvaluator, eval_env_cfg
     HAVE = (ROOT / "rom" / "pokemon_crystal.gbc").is_file()
 except Exception:   # pragma: no cover
@@ -76,6 +77,7 @@ except Exception:   # pragma: no cover
 class IsolationTests(unittest.TestCase):
     def _cfg(self, **kw):
         cfg = train_config.preset("long_v8")
+        self.addCleanup(story_path.set_profile, False)   # long_v8 uses the egg profile; the workers switch the process-global profile
         cfg.eval_episodes, cfg.eval_max_steps = 2, 10
         for k, v in kw.items():
             setattr(cfg, k, v)
@@ -96,7 +98,7 @@ class IsolationTests(unittest.TestCase):
         cfg = self._cfg()
         torch.manual_seed(5)
         np.random.seed(5)
-        policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=6, use_gru=True, gru_hidden_dim=32)
+        policy = SpatialVisionPolicy(obs_dim=deep_obs_dim(cfg.egg_errand_route), num_actions=6, use_gru=True, gru_hidden_dim=32)
         policy.train()
         policy.set_battle_a_bias(1.5)
         hx = torch.randn(1, 3, 32)
@@ -140,7 +142,7 @@ class IsolationTests(unittest.TestCase):
     def test_same_policy_same_update_is_reproducible(self):
         cfg = self._cfg(eval_episodes=1, eval_max_steps=12)
         torch.manual_seed(2)
-        policy = SpatialVisionPolicy(obs_dim=DEEP_OBS_DIM, num_actions=6, use_gru=True, gru_hidden_dim=32)
+        policy = SpatialVisionPolicy(obs_dim=deep_obs_dim(cfg.egg_errand_route), num_actions=6, use_gru=True, gru_hidden_dim=32)
         outs = []
         for _ in range(2):
             ev = PeriodicEvaluator(cfg, torch.device("cpu"))

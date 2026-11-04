@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections import deque
 
 from src.ram_parser import dialogue_open
+from src import story_path as _story
 from src.story_path import MILESTONE_COUNT, current_stage
 
 # Same maps as ``src.rl_env.POKECENTER_MAPS`` (not imported: rl_env pulls in numpy-heavy observation code).
@@ -43,9 +44,17 @@ DWELL_GRIND_GRACE = 512
 # Falkner's team is Pidgey L7 + Pidgeotto L9 (Flying: Cyndaquil's Ember is neutral, Quilava at 14 is comfortable);
 # 8 before Cherrygrove, 10 on Routes 30 / 31, 11 at the Violet gate, 12 for Violet City and the Gym.
 DWELL_LEVEL_TARGETS = (8, 8, 10, 10, 10, 11, 12, 12, 0)
+# The egg-errand profile (``egg_errand_route``, long_v8) has 11 milestones, so 12 stages: 0 New Bark, 1 Route 29, 2 Cherrygrove,
+# 3 Route 30, 4 Mr. Pokemon's house, 5 egg received, 6 egg given to Elm, 7 Route 31, 8 Violet gatehouse, 9 Violet City,
+# 10 Violet Gym, 11 Falkner beaten.  The errand stages keep the Route 30 target (10: Mikey, Don and the Cherrygrove rival are
+# level 2-5 trainers, so the level-up they give is what the exemption is for); the rest are the base values.
+DWELL_LEVEL_TARGETS_EGG = (8, 8, 10, 10, 10, 10, 10, 10, 11, 12, 12, 0)
 
 
-def validate_params(window, max_tiles, min_penalty, max_penalty, ramp_steps, budget, grind_grace, level_targets) -> list[str]:
+def validate_params(window, max_tiles, min_penalty, max_penalty, ramp_steps, budget, grind_grace, level_targets,
+                    milestone_count: int | None = None) -> list[str]:
+    """``milestone_count``: the story profile's milestone count (default: the base list's 8)."""
+    count = MILESTONE_COUNT if milestone_count is None else int(milestone_count)
     errs: list[str] = []
     if window < 8:
         errs.append(f"dwell_window must be >= 8 (got {window})")
@@ -64,8 +73,8 @@ def validate_params(window, max_tiles, min_penalty, max_penalty, ramp_steps, bud
     if grind_grace < 0:
         errs.append(f"dwell_grind_grace must be >= 0 (got {grind_grace})")
     targets = list(level_targets)
-    if len(targets) != MILESTONE_COUNT + 1:
-        errs.append(f"dwell_level_targets needs {MILESTONE_COUNT + 1} entries (one per story stage 0..{MILESTONE_COUNT}), got {len(targets)}")
+    if len(targets) != count + 1:
+        errs.append(f"dwell_level_targets needs {count + 1} entries (one per story stage 0..{count}), got {len(targets)}")
     elif any((not isinstance(v, int)) or isinstance(v, bool) or v < 0 or v > 100 for v in targets):
         errs.append("dwell_level_targets entries must be integers in [0, 100]")
     return errs
@@ -77,8 +86,11 @@ class DwellTracker:
     def __init__(self, window: int = DWELL_WINDOW, max_tiles: int = DWELL_MAX_TILES,
                  min_penalty: float = DWELL_MIN_PENALTY, max_penalty: float = DWELL_MAX_PENALTY,
                  ramp_steps: int = DWELL_RAMP_STEPS, budget: float = DWELL_BUDGET,
-                 grind_grace: int = DWELL_GRIND_GRACE, level_targets=DWELL_LEVEL_TARGETS):
-        errs = validate_params(window, max_tiles, min_penalty, max_penalty, ramp_steps, budget, grind_grace, level_targets)
+                 grind_grace: int = DWELL_GRIND_GRACE, level_targets=None):
+        if level_targets is None:   # the default table of the active story profile
+            level_targets = DWELL_LEVEL_TARGETS_EGG if _story.profile().egg else DWELL_LEVEL_TARGETS
+        errs = validate_params(window, max_tiles, min_penalty, max_penalty, ramp_steps, budget, grind_grace, level_targets,
+                               _story.profile().count)
         if errs:
             raise ValueError("; ".join(errs))
         self.window, self.max_tiles = int(window), int(max_tiles)

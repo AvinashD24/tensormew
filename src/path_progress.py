@@ -30,19 +30,23 @@ from src.ram_parser import dialogue_open
 DEFAULT_SCALE = 0.08   # reward per path tile gained; the whole path pays about 24.7 vs ~140 of milestone bonuses
 
 
-def progress(state) -> float | None:
-    """Path progress of ``state`` in tiles (0 at the start, 309 in front of Falkner), or None when unknown."""
+def progress(state, egg: bool = False) -> float | None:
+    """Path progress of ``state`` in tiles (0 at the start, 309 in front of Falkner), or None when unknown.
+
+    ``egg=True`` (``egg_errand_route``, long_v8): the phase-aware measure over the egg errand, 0 at the start, the sum of the
+    three phase lengths (``total(egg=True)``, 695) in front of Falkner: ``phase_offset + phase_length - BFS distance to the
+    phase goal`` with the phase read from the event flags (see ``src.route_graph``)."""
     try:
         from src import route_graph
-        return route_graph.path_progress(state)
+        return route_graph.path_progress(state, egg=True) if egg else route_graph.path_progress(state)
     except Exception:  # no ROM / unreadable state: the term is simply absent
         return None
 
 
-def total() -> float | None:
+def total(egg: bool = False) -> float | None:
     try:
         from src import route_graph
-        return route_graph.path_total()
+        return route_graph.path_total(egg=True) if egg else route_graph.path_total()
     except Exception:
         return None
 
@@ -79,13 +83,15 @@ class PathProgress:
     routes that never retreat.
     """
 
-    def __init__(self, scale: float = DEFAULT_SCALE, retreat_frac: float = 0.0, retreat_budget: float = RETREAT_BUDGET):
+    def __init__(self, scale: float = DEFAULT_SCALE, retreat_frac: float = 0.0, retreat_budget: float = RETREAT_BUDGET,
+                 egg: bool = False):
         if scale < 0:
             raise ValueError(f"path_progress scale must be >= 0 (got {scale})")
         errs = validate_retreat(retreat_frac, retreat_budget)
         if errs:
             raise ValueError("; ".join(errs))
         self.scale = float(scale)
+        self.egg = bool(egg)   # phase-aware egg-errand measure (long_v8); the retreat cost is then measured in combined tiles
         self.retreat_frac, self.retreat_budget = float(retreat_frac), float(retreat_budget)
         self.best: float | None = 0.0   # None = the start was off the route graph; the first known tile sets it, unpaid
         self.gained = 0.0   # tiles of progress paid this episode (for tests / logging)
@@ -94,14 +100,14 @@ class PathProgress:
         self.retreat_spent = 0.0   # retreat cost charged this episode (positive)
 
     @classmethod
-    def from_scale(cls, scale: float | None, retreat: dict | None = None) -> "PathProgress | None":
+    def from_scale(cls, scale: float | None, retreat: dict | None = None, egg: bool = False) -> "PathProgress | None":
         if scale is None:
             return None
         r = retreat or {}
-        return cls(scale, retreat_frac=r.get("frac", 0.0), retreat_budget=r.get("budget", RETREAT_BUDGET))
+        return cls(scale, retreat_frac=r.get("frac", 0.0), retreat_budget=r.get("budget", RETREAT_BUDGET), egg=egg)
 
     def reset(self, state) -> None:
-        p = progress(state)
+        p = progress(state, True) if self.egg else progress(state)
         self.best = p
         self.gained = 0.0
         self.current = p
@@ -131,7 +137,7 @@ class PathProgress:
             self.current = None
             return 0.0   # the white-out teleport is not progress
         prev = self.current
-        p = progress(after)
+        p = progress(after, True) if self.egg else progress(after)
         self.current = p
         if p is None:
             return 0.0

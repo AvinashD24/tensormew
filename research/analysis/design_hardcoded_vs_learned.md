@@ -18,9 +18,12 @@ curves said little about learning. This note records the state after the "no ora
 
 ## The story path (what is truly required)
 
-Only taking a starter from Elm is a hard gate, and the start state already has Cyndaquil. From the New Bark start tile
-the shortest walk to the tile in front of Falkner is 319 steps (`route_graph`, BFS over ROM collision data) with no egg,
-Elm or rival detour. Milestones (`src/story_path.py`), each paid once per episode on first arrival:
+Only taking a starter from Elm is a hard gate, and the start state already has Cyndaquil. **Correction (long_v8):** the
+egg errand is NOT skippable. The 309-step walk from the New Bark start tile to Falkner (`route_graph`, BFS over ROM
+collision data, 319 before the ledge fix) is the no-egg route and is unreachable at game start: NPC sprites (the Joey event,
+two Rattatas, trainer Mikey) sit on the one-tile choke (5, 25) of Route 30 until Elm has the Mystery Egg (hide flag 1812,
+set with `EVENT_GAVE_MYSTERY_EGG_TO_ELM`). The presets up to `long_v7` use that list anyway; `long_v8` uses the egg profile
+(`egg_errand_route`, below). Base milestones (`src/story_path.py`), each paid once per episode on first arrival:
 
 | Milestone | Reward |
 | --- | --- |
@@ -34,6 +37,16 @@ Elm or rival detour. Milestones (`src/story_path.py`), each paid once per episod
 | Zephyr Badge | 60, plus 10 for `EVENT_BEAT_FALKNER` |
 
 Total 140. Extending is one `Milestone(...)` line (next gate: Route 32 -> Azalea); Sprout Tower is optional and unrewarded.
+
+Egg-errand profile (`long_v8`, `egg_errand_route`; same values for the common milestones): Route 29 5, Cherrygrove 10, Route 30 10,
+Mr. Pokemon's house 10, egg received (`EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON`) 15, egg delivered (`EVENT_GAVE_MYSTERY_EGG_TO_ELM`)
+30, Route 31 10, Violet gatehouse 5, Violet City 15, Violet Gym 15, Zephyr Badge 60 + `EVENT_BEAT_FALKNER` 10: total 195. Done
+bits are 11 (a done event milestone implies every earlier one), so the story block is 13 floats and `DEEP_OBS_DIM` is 80;
+there is still no direction or distance in the observation. The path measure has three phases chosen from the event flags
+(185 steps to the egg tile (3, 6) in Mr. Pokemon's house, 183 back to the tile (5, 3) in front of Elm, 327 on to Falkner; 695
+in all), continuous at the borders. Verified in the real emulator: walking the phase-0 BFS path from Route 30 enters the house
+and the script walks the player to (3, 6) with `EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON` set; the phase-1 path crosses the
+Cherrygrove rival fight (Totodile L5) to Elm's lab, and talking to Elm from (5, 3) sets flags 31 and 1812 and clears 1813.
 
 ## Observation (`DEEP_OBS_DIM` = 77)
 
@@ -96,4 +109,4 @@ literature does not settle the value for this game; the flag exists so it can be
 - Menu navigation in battle has to be discovered from 6 buttons. A random policy does reach FIGHT -> first move by pressing A, but switching, PACK and items are rarer. `long_v3` adds self-generated battle practice (battle archive states plus a decaying A-bias in battle); `long_v2` has neither.
 - Battle steps cost frames: a random policy spends about 40% of its steps in battle on Route 30.
 - A level-5 Cyndaquil against Falkner needs grinding or healing; damage-dealt and level-up rewards are what has to teach that.
-- The dashboard story panel (`tools/dashboard_static`, `tools/build_route_map.py`) still draws the old five egg-errand goals.
+- The dashboard story panel (`tools/dashboard_static`, `world_layout.json`) draws the 8-star / 309-step route for older runs and the 11-star three-phase route (`world_layout.json["egg"]`) for runs with `egg_errand_route` in their meta.

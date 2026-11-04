@@ -773,7 +773,17 @@ function rewardDiagnostics() {
 }
 
 /* ---------- milestone reach rate (trainer fields ms_reach / ms_elig / ms_reach_cum / ms_envs_at; old runs have none) ---------- */
-const MS_NAMES = ["Route 29", "Cherrygrove", "Route 30", "Route 31", "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"];
+const MS_BASE = ["Route 29", "Cherrygrove", "Route 30", "Route 31", "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"];
+const MS_EGG = ["Route 29", "Cherrygrove", "Route 30", "Mr. Pokemon's house", "Egg received", "Egg delivered", "Route 31", "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"];
+const MS_NAMES = MS_BASE.slice();         // follows the selected run (syncProfile): 8 milestones, or 11 with the egg errand; edited in place
+/* Egg-errand runs (long_v8, run meta `egg_errand_route`): 11 milestones, a 695-step three-phase route. Older runs and the other presets keep the 8 / 309 layout. */
+const runIsEgg = (run) => !!(run && (run.egg_errand_route || (run.config && run.config.egg_errand_route)));
+const isEgg = () => runIsEgg(live && live.run);
+function syncProfile(run) {
+  const names = run && Array.isArray(run.milestone_labels) && run.milestone_labels.length ? run.milestone_labels : (runIsEgg(run) ? MS_EGG : MS_BASE);
+  if (names.length !== MS_NAMES.length || names.some((n, i) => n !== MS_NAMES[i])) { MS_NAMES.splice(0, MS_NAMES.length, ...names); storyKey = ""; }
+}
+const pathTotal = () => (live && live.run && live.run.path_total) || (isEgg() && world && world.egg ? world.egg.total : 309);
 function msAgg(from, to) {                // exact window aggregate: sum(rate * eligible) / sum(eligible) per milestone
   const r = MS_NAMES.map(() => 0), e = MS_NAMES.map(() => 0);
   for (let i = Math.max(0, from); i < Math.min(metrics.length, to); i++) {
@@ -789,11 +799,11 @@ function renderMilestones() {
   if (!last) { $("msSub").textContent = ""; body.innerHTML = `<div class="none">Not recorded in this run. Runs from <code>long_v4</code> on log the share of episodes that reach each story milestone.</div>`; return; }
   const rec = msAgg(n - 32, n), cum = last.ms_reach_cum, at = last.ms_envs_at || [];
   const pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
-  $("msSub").textContent = `bar = all episodes so far, thin line = last 32 updates, ${last.ms_eps_cum ?? 0} finished episodes` + (last.path_best_max_cum != null ? ` · best path progress ${last.path_best_max_cum}/319 tiles` : "");
+  $("msSub").textContent = `bar = all episodes so far, thin line = last 32 updates, ${last.ms_eps_cum ?? 0} finished episodes` + (last.path_best_max_cum != null ? ` · best path progress ${last.path_best_max_cum}/${pathTotal()} tiles` : "");
   body.innerHTML = MS_NAMES.map((nm, k) => {
     const c = cum[k], r = rec.rate[k];
     return `<div class="msrow" title="Share of finished episodes (that started before this milestone) that reached it"><span>${nm}</span><div class="msbar" role="img" aria-label="${nm}: ${pct(c)} of all episodes, ${pct(r)} recently"><i class="cum" style="width:${(c || 0) * 100}%"></i><i class="rec" style="width:${(r || 0) * 100}%"></i></div><span class="msv">${pct(c)} all · ${pct(r)} recent · ${pct(at[k])} of envs now</span></div>`;
-  }).join("") + (last.path_best_mean != null ? `<div class="note" style="color:var(--muted);margin-top:4px">Best path progress per finished episode, last update: mean ${last.path_best_mean}, max ${last.path_best_max} of 319 tiles.</div>` : "");
+  }).join("") + (last.path_best_mean != null ? `<div class="note" style="color:var(--muted);margin-top:4px">Best path progress per finished episode, last update: mean ${last.path_best_mean}, max ${last.path_best_max} of ${pathTotal()} tiles.</div>` : "");
 }
 
 /* ---------- learned progress vs head start (trainer fields src_split / src_split_cum, long_v7; older runs have none) ---------- */
@@ -1227,6 +1237,7 @@ function toastNew(s) {
   fresh.slice(-3).forEach(e => showToast(e.text));
 }
 function renderAll() {
+  syncProfile(live && live.run);
   const has = metrics.length || live;
   $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
   renderHeader(); if (!has) return;
@@ -1237,7 +1248,7 @@ function renderAll() {
 let world = null;
 fetch("/api/world").then((r) => r.json()).then((w) => { world = w; renderWorld(); }).catch(() => {});
 const TERRAIN = { a: "rgba(70,130,220,.30)", g: "rgba(70,170,90,.22)", l: "rgba(205,170,90,.22)", t: "rgba(120,210,130,.30)", d: "rgba(255,255,255,.38)", f: "rgba(255,255,255,.08)", p: "rgba(0,0,0,.35)" };
-const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,2", "Route 31"], ["26,11", "Violet gate"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
+const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,10", "Mr. Pokemon's house"], ["26,2", "Route 31"], ["26,11", "Violet gate"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
 const ZMAX = 14, GRID_AT = 12;
 const view = { k: 1, tx: 0, ty: 0 };      // zoom and pan on top of the fit-to-view layout (CSS pixels)
 let WL = null;                            // last drawn layout, used by the hover readout
@@ -1247,19 +1258,24 @@ const scheduleWorld = () => { if (!worldRaf) worldRaf = requestAnimationFrame(()
 /* Story milestones (src/story_path.py). Arrival milestones are reached once any agent has visited that map; the last one
    (beat Falkner) once an agent stood within 1 tile of the tile in front of him. Judged from the visit heat of the run
    (live: the current run; replay: the selected run up to the slider). */
+/* The story route of the run: the base 8-star / 309-step layout, or world.egg (11 stars, three phase legs) for egg-errand runs. */
+const wStars = () => world ? ((isEgg() && world.egg ? world.egg.stars : world.stars) || []) : [];
+const wLegs = () => world ? ((isEgg() && world.egg ? world.egg.legs : world.legs) || []) : [];
+function msReachedCum() { for (let i = metrics.length - 1; i >= 0; i--) if (Array.isArray(metrics[i].ms_reach_cum)) return metrics[i].ms_reach_cum; return null; }
 function goalState() {
   const heat = {}; for (const h of (live ? live.heat : [])) heat[h.map] = h.cells;
-  const got = {};
-  for (const s of (world ? world.stars || [] : [])) {
+  const got = {}, cum = msReachedCum();
+  for (const s of wStars()) {
     const cells = heat[String(s.map).replace("_", ",")] || [];
-    got[s.n] = s.arrival ? cells.length > 0 : cells.some(([x, y]) => Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1);
+    const byHeat = s.event ? false : s.arrival ? cells.length > 0 : cells.some(([x, y]) => Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1);
+    got[s.n] = byHeat || !!(cum && (cum[s.n - 1] || 0) > 0);   // event milestones (egg received / delivered) only show in the reach rates
   }
   return got;
 }
 let storyKey = "";
 function renderStory(got, furthest) {
-  const stars = world ? world.stars || [] : [], done = stars.filter((s) => got[s.n]).length;
-  const key = JSON.stringify([stars.map((s) => got[s.n]), furthest]);
+  const stars = wStars(), done = stars.filter((s) => got[s.n]).length;
+  const key = JSON.stringify([isEgg(), stars.map((s) => got[s.n]), furthest]);
   if (key === storyKey) return; storyKey = key;
   const chips = stars.map((s) => {
     const ok = !!got[s.n], nm = `${s.label || s.name} <span class="rw">+${s.reward}</span>`;
@@ -1359,13 +1375,28 @@ function renderWorld() {
   }
   for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue; ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.strokeRect(bx + .5, by + .5, m.w * s, m.h * s); }
   /* the ideal story route: a faint dashed line over the overworld legs */
-  ctx.save(); ctx.strokeStyle = css("--gold"); ctx.globalAlpha = .55; ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]); ctx.lineJoin = "round";
+  /* egg-errand runs draw three phase legs (distinct colour, dash and a small offset, because phases 2 and 3 retrace phase 1) */
+  const LEG_STYLE = [{ c: "--gold", d: [6, 4], o: -2.5 }, { c: "#38bdf8", d: [2, 4], o: 0 }, { c: "#c084fc", d: [10, 3], o: 2.5 }];
+  const legs = wLegs();
+  ctx.save(); ctx.globalAlpha = .6; ctx.lineWidth = 1.6; ctx.lineJoin = "round";
   const drawn = new Set();
-  for (const leg of (world.legs || [])) for (const sg of leg.segments) {
-    const key = sg.map + JSON.stringify(sg.pts), m = byId[sg.map.replace("_", ",")]; if (!m || drawn.has(key)) continue; drawn.add(key);
-    ctx.beginPath(); sg.pts.forEach((p, i) => { const [px, py] = P(m, p[0] + .5, p[1] + .5); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke();
+  for (const leg of legs) {
+    const st = leg.phase != null ? LEG_STYLE[leg.phase % 3] : { c: "--gold", d: [6, 4], o: 0 };
+    ctx.strokeStyle = st.c.startsWith("--") ? css(st.c) : st.c; ctx.setLineDash(st.d);
+    for (const sg of leg.segments) {
+      const key = leg.phase + sg.map + JSON.stringify(sg.pts), m = byId[sg.map.replace("_", ",")]; if (!m || drawn.has(key)) continue; drawn.add(key);
+      ctx.beginPath(); sg.pts.forEach((p, i) => { const [px, py] = P(m, p[0] + .5, p[1] + .5); i ? ctx.lineTo(px + st.o, py + st.o) : ctx.moveTo(px + st.o, py + st.o); }); ctx.stroke();
+    }
   }
   ctx.restore();
+  if (legs.length > 1 || (legs[0] && legs[0].phase != null)) {   // phase legend, bottom left
+    ctx.save(); ctx.font = "600 11px system-ui"; ctx.textAlign = "left";
+    legs.forEach((leg, i) => { const st = LEG_STYLE[(leg.phase || 0) % 3], y = r.height - 10 - (legs.length - 1 - i) * 16, t = `${leg.label} (${leg.steps} steps)`, w = ctx.measureText(t).width + 38;
+      ctx.fillStyle = "rgba(11,16,32,.78)"; ctx.fillRect(6, y - 11, w, 15);
+      ctx.strokeStyle = st.c.startsWith("--") ? css(st.c) : st.c; ctx.lineWidth = 2; ctx.setLineDash(st.d); ctx.beginPath(); ctx.moveTo(10, y - 3); ctx.lineTo(32, y - 3); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = "#e6ebff"; ctx.fillText(t, 38, y); });
+    ctx.restore();
+  }
   ctx.font = "600 11px system-ui"; ctx.textAlign = "left";   // map names: constant size, kept inside their map while it is partly off-screen
   for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue; const w = ctx.measureText(m.name).width + 8, mw = m.w * s;
     const lx = clamp(bx + 2, 2, Math.max(2, bx + mw - w - 2)), ly = by - 15 < 0 ? Math.max(by + 2, 2) : by - 15;
@@ -1378,7 +1409,7 @@ function renderWorld() {
     if (k >= 3) { ctx.font = "600 10px system-ui"; ctx.textAlign = "left"; ctx.fillStyle = "rgba(11,16,32,.8)"; const t = h.name.replace(/Pok.center/, "Pokécenter"), w = ctx.measureText(t).width + 6; ctx.fillRect(px + 8, py - 7, w, 13); ctx.fillStyle = "#fff"; ctx.fillText(t, px + 11, py + 3); }
   }
   const got = goalState(), slot = {};                       // numbered story goals: gold until reached, then green with a check
-  for (const g of (world.stars || [])) {
+  for (const g of wStars()) {
     const m = byId[String(g.wmap).replace("_", ",")]; if (!m) continue;
     const key = g.wmap + g.wx + "," + g.wy, i = (slot[key] = (slot[key] ?? -1) + 1);   // goals sharing a door stack downwards
     const [px0, py0] = P(m, g.wx + .5, g.wy + .5), px = px0, py = py0 + i * 20, ok = !!got[g.n];
@@ -1428,6 +1459,7 @@ function componentsAt(idx) {    // per-update components from history; older run
 }
 function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from history so every panel renders unchanged
   const recs = rep.records, r = recs[idx], meta = rep.meta, names = meta.action_names || ["up", "down", "left", "right", "a"];
+  syncProfile(meta.run);
   const heat = heatAt(idx), total = names.map(() => 0);
   const episodes = [], events = []; let maps = new Set();
   for (let i = 0; i <= idx; i++) { recs[i].actions.forEach((c, k) => total[k] += c); if (episodes.length < 400) episodes.push(...recs[i].episodes); events.push(...recs[i].events); }

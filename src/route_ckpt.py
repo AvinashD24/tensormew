@@ -35,7 +35,7 @@ ROUTE_MAX_FILES = 60        # hard bound over all buckets (about 100 KB each)
 ROUTE_WEIGHT_FLOOR = 0.2    # sampling weight of the nearest bucket relative to the furthest (1.0)
 ROUTE_SAVE_GAP = 64         # a worker saves at most one checkpoint per this many of its own steps
 
-_NAME = re.compile(r"^rc_b(\d+)_(\d+)_s(\d+)$")
+_NAME = re.compile(r"^rc_b(\d+)_(\d+)_s(\d+)(?:_p(\d+))?$")   # optional _p<phase>: the egg-errand phase (long_v8)
 
 
 def validate_params(every, prob, per_bucket, max_files, floor) -> list[str]:
@@ -73,11 +73,17 @@ def key_info(key: str) -> tuple[int, int, int] | None:
     return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else None
 
 
+def key_phase(key: str) -> int | None:
+    """The egg-errand phase (0 / 1 / 2) a checkpoint key was saved in (``..._p<phase>``), or None for a key without one."""
+    m = _NAME.match(key)
+    return int(m.group(4)) if m and m.group(4) is not None else None
+
+
 def milestone_stage(seen_maps) -> int:
     """How many story milestones the episode has passed: 1 + the index of the furthest milestone map in ``seen_maps``."""
-    from src.story_path import MILESTONES
+    from src.story_path import profile
     stage = 0
-    for i, m in enumerate(MILESTONES):
+    for i, m in enumerate(profile().milestones):
         if m.map_id is not None and tuple(m.map_id) in seen_maps:
             stage = i + 1
     return stage
@@ -85,8 +91,8 @@ def milestone_stage(seen_maps) -> int:
 
 def stage_maps(stage: int) -> set:
     """The milestone maps ``(group, number)`` of the first ``stage`` milestones (what a stage-``stage`` saver had seen)."""
-    from src.story_path import MILESTONES
-    return {tuple(m.map_id) for m in MILESTONES[: max(0, int(stage))] if m.map_id is not None}
+    from src.story_path import profile
+    return {tuple(m.map_id) for m in profile().milestones[: max(0, int(stage))] if m.map_id is not None}
 
 
 class RouteCheckpointArchive:
@@ -134,9 +140,10 @@ class RouteCheckpointArchive:
         return max(c) if c else 0
 
     # -- writing
-    def save(self, bucket: int, stage: int, data: bytes) -> bool:
+    def save(self, bucket: int, stage: int, data: bytes, phase: int | None = None) -> bool:
         """Store a snapshot for ``bucket``: fill a free slot (``per_bucket`` of them) else replace the OLDEST one in the
-        bucket, then enforce the global bound.  Returns False only when the write failed."""
+        bucket, then enforce the global bound.  Returns False only when the write failed.  ``phase`` (egg errand, long_v8)
+        is recorded in the file name (``_p<phase>``) for diagnostics; the loader reads the real phase from the state's flags."""
         bucket = max(0, int(bucket))
         mine = {slot: (mtime, p) for b, slot, _s, mtime, p in self.entries() if b == bucket}
         free = [n for n in range(self.per_bucket) if n not in mine]
@@ -146,7 +153,8 @@ class RouteCheckpointArchive:
         else:
             slot = min(mine, key=lambda n: (mine[n][0], n))
             old = mine[slot][1]
-        target = self.dir / f"rc_b{bucket:03d}_{slot}_s{int(stage)}.state"
+        suffix = "" if phase is None else f"_p{int(phase)}"
+        target = self.dir / f"rc_b{bucket:03d}_{slot}_s{int(stage)}{suffix}.state"
         tmp = self.dir / f".rc_b{bucket:03d}_{slot}.{os.getpid()}.tmp"
         try:
             tmp.write_bytes(data)

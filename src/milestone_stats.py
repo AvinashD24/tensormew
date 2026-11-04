@@ -17,12 +17,20 @@ Staggered first episodes that were cut short (``partial``) are skipped, like the
 
 from __future__ import annotations
 
+from src import story_path as _story
 from src.story_path import MILESTONES, MILESTONE_COUNT
 
 MILESTONE_NAMES = tuple(m.name for m in MILESTONES)
 _PRETTY = {"route29": "Route 29", "cherrygrove": "Cherrygrove", "route30": "Route 30", "route31": "Route 31",
-           "violet_gate": "Violet gate", "violet_city": "Violet City", "violet_gym": "Violet Gym", "beat_falkner": "Falkner beaten"}
-MILESTONE_LABELS = tuple(_PRETTY.get(n, n.replace("_", " ").capitalize()) for n in MILESTONE_NAMES)   # for humans / the dashboard
+           "violet_gate": "Violet gate", "violet_city": "Violet City", "violet_gym": "Violet Gym", "beat_falkner": "Falkner beaten",
+           "mr_pokemon_house": "Mr. Pokemon's house", "egg_received": "Egg received", "egg_delivered": "Egg delivered"}
+MILESTONE_LABELS = tuple(_PRETTY.get(n, n.replace("_", " ").capitalize()) for n in MILESTONE_NAMES)   # base profile (for humans / the dashboard)
+
+
+def milestone_labels(profile=None) -> tuple[str, ...]:
+    """Human labels of the milestones of ``profile`` (default: the active story profile of this process)."""
+    p = profile or _story.profile()
+    return tuple(_PRETTY.get(n, n.replace("_", " ").capitalize()) for n in p.names)
 
 
 def _rates(reached: list[int], eligible: list[int]) -> list[float | None]:
@@ -30,8 +38,8 @@ def _rates(reached: list[int], eligible: list[int]) -> list[float | None]:
 
 
 class MilestoneStats:
-    def __init__(self, n: int = MILESTONE_COUNT):
-        self.n = int(n)
+    def __init__(self, n: int | None = None):
+        self.n = int(_story.profile().count if n is None else n)
         self._reset_window()
         self.cum_reached = [0] * self.n
         self.cum_eligible = [0] * self.n
@@ -105,8 +113,9 @@ class MilestoneRecords:
     ``RECORD_LOG_MAX`` events ``{u, m, name, steps, prev, env, scope, first}`` of both scopes.
     """
 
-    def __init__(self, n: int = MILESTONE_COUNT, log_max: int = RECORD_LOG_MAX):
-        self.n = int(n)
+    def __init__(self, n: int | None = None, log_max: int = RECORD_LOG_MAX):
+        self.n = int(_story.profile().count if n is None else n)
+        self.labels = milestone_labels()
         self.start: list[dict | None] = [None] * self.n
         self.any: list[dict | None] = [None] * self.n
         self.log: list[dict] = []
@@ -120,7 +129,7 @@ class MilestoneRecords:
         prev = None if cur is None else cur["steps"]
         table[m] = {"steps": steps, "update": int(update), "env": int(env), "prev": prev,
                     "delta": None if prev is None else steps - prev}
-        ev = {"u": int(update), "m": m, "name": MILESTONE_LABELS[m], "steps": steps, "prev": prev, "env": int(env),
+        ev = {"u": int(update), "m": m, "name": self.labels[m] if m < len(self.labels) else f"milestone {m}", "steps": steps, "prev": prev, "env": int(env),
               "scope": scope, "first": prev is None}
         self.log.append(ev)
         del self.log[:-self.log_max]
@@ -150,7 +159,7 @@ class MilestoneRecords:
     def snapshot(self) -> dict:
         """Compact payload for state.json."""
         return {"start": [dict(r) if r else None for r in self.start], "any": [dict(r) if r else None for r in self.any],
-                "log": list(self.log), "names": list(MILESTONE_LABELS), "base_state": BASE_START_STATE}
+                "log": list(self.log), "names": list(self.labels), "base_state": BASE_START_STATE}
 
     def load_events(self, events) -> None:
         """Rebuild the records from logged events (history.jsonl ``records`` lists) when a run resumes."""
@@ -165,7 +174,7 @@ class MilestoneRecords:
         self._new = []
 
     @classmethod
-    def from_history(cls, history_jsonl, n: int = MILESTONE_COUNT) -> "MilestoneRecords":
+    def from_history(cls, history_jsonl, n: int | None = None) -> "MilestoneRecords":
         """Reconstruct from an existing ``history.jsonl`` (line scan for ``records``; unreadable file = empty records)."""
         import json
         rec = cls(n)
@@ -215,8 +224,8 @@ class SourceSplitStats:
     ``src_split_cum`` (the whole run).  Staggered partial first episodes are skipped.  No numpy.
     """
 
-    def __init__(self, n: int = MILESTONE_COUNT):
-        self.n = int(n)
+    def __init__(self, n: int | None = None):
+        self.n = int(_story.profile().count if n is None else n)
         self.cum: dict[str, dict] = {}
         self._reset_window()
 
