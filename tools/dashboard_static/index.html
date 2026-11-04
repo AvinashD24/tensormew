@@ -156,6 +156,8 @@ header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; pa
 .goal.reached { border-color: var(--good); color: var(--text); background: color-mix(in srgb, var(--good) 14%, var(--panel2)); }
 .goal.reached .gl { color: var(--good); }
 .goal.reached .gn { background: var(--good); }
+.goal .rw { font: 700 10px var(--mono); color: var(--gold); }
+.goal.reached .rw { color: var(--good); }
 .goals .arrow { color: var(--muted); font-size: 14px; }
 .furthest { margin-top: 8px; font-size: 12px; color: var(--muted); }
 .furthest b { color: var(--text); }
@@ -753,26 +755,22 @@ function renderAll() {
 let world = null;
 fetch("/api/world").then((r) => r.json()).then((w) => { world = w; renderWorld(); }).catch(() => {});
 const TERRAIN = { a: "rgba(70,130,220,.30)", g: "rgba(70,170,90,.22)", l: "rgba(205,170,90,.22)", t: "rgba(120,210,130,.30)", d: "rgba(255,255,255,.38)", f: "rgba(255,255,255,.08)", p: "rgba(0,0,0,.35)" };
-const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,10", "Mr. Pokémon's house"], ["26,2", "Route 31"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
-const GOAL_SHORT = ["Elm's Lab", "Mr. Pokémon", "Rival", "Deliver egg", "Falkner"];
-const GOAL_CHIP = ["Elm's Lab", "Mr. Pokémon / the egg", "Rival in Cherrygrove", "Deliver the egg", "Falkner / Violet Gym"];
+const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,2", "Route 31"], ["26,11", "Violet gate"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
 const ZMAX = 14, GRID_AT = 12;
 const view = { k: 1, tx: 0, ty: 0 };      // zoom and pan on top of the fit-to-view layout (CSS pixels)
 let WL = null;                            // last drawn layout, used by the hover readout
 let worldRaf = 0;
 const scheduleWorld = () => { if (!worldRaf) worldRaf = requestAnimationFrame(() => { worldRaf = 0; renderWorld(); }); };
 
-/* A goal counts as reached once any agent has stood within 1 tile (8-neighbourhood) of its goal tile on that map,
-   judged from the visit heat of the run (live: the current run; replay: the selected run up to the slider).
-   Goal 4 is the SECOND visit to Elm's lab, which the same tile as goal 1 cannot tell apart, so it also needs goals 2 and 3. */
+/* Story milestones (src/story_path.py). Arrival milestones are reached once any agent has visited that map; the last one
+   (beat Falkner) once an agent stood within 1 tile of the tile in front of him. Judged from the visit heat of the run
+   (live: the current run; replay: the selected run up to the slider). */
 function goalState() {
   const heat = {}; for (const h of (live ? live.heat : [])) heat[h.map] = h.cells;
   const got = {};
   for (const s of (world ? world.stars || [] : [])) {
     const cells = heat[String(s.map).replace("_", ",")] || [];
-    let ok = cells.some(([x, y]) => Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1);
-    if (s.n === 4) ok = ok && !!got[2] && !!got[3];
-    got[s.n] = ok;
+    got[s.n] = s.arrival ? cells.length > 0 : cells.some(([x, y]) => Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1);
   }
   return got;
 }
@@ -782,11 +780,11 @@ function renderStory(got, furthest) {
   const key = JSON.stringify([stars.map((s) => got[s.n]), furthest]);
   if (key === storyKey) return; storyKey = key;
   const chips = stars.map((s) => {
-    const ok = !!got[s.n], nm = GOAL_CHIP[s.n - 1] || s.name;
+    const ok = !!got[s.n], nm = `${s.label || s.name} <span class="rw">+${s.reward}</span>`;
     return `<li class="goal ${ok ? "reached" : ""}" title="${String(s.desc || "").replace(/"/g, "&quot;")}"><span class="gl" aria-hidden="true">${ok ? "✓" : "○"}</span><span class="gn">${s.n}</span> ${nm}<span class="sr"> – ${ok ? "reached" : "not reached"}</span></li>`;
   });
-  $("story").innerHTML = `<ol class="goals" aria-label="Story goals in order">${chips.join(`<li class="arrow" aria-hidden="true">→</li>`)}</ol>` +
-    `<div class="furthest">Furthest place reached: <b>${furthest}</b> · ${done} of ${stars.length} goals reached</div>`;
+  $("story").innerHTML = `<ol class="goals" aria-label="Story milestones in order">${chips.join(`<li class="arrow" aria-hidden="true">→</li>`)}</ol>` +
+    `<div class="furthest">Furthest place reached: <b>${furthest}</b> · ${done} of ${stars.length} milestones reached</div>`;
 }
 
 function clampView(r) {
@@ -905,7 +903,7 @@ function renderWorld() {
     ctx.fillStyle = ok ? css("--good") : css("--gold"); ctx.strokeStyle = "#0b1020"; ctx.lineWidth = 2;
     ctx.beginPath(); ctx.arc(px, py, 8, 0, 7); ctx.stroke(); ctx.fill();
     ctx.fillStyle = "#0b1020"; ctx.font = "700 10px system-ui"; ctx.textAlign = "center"; ctx.fillText(ok ? "✓" : g.n, px, py + 3.5);
-    const t = (ok ? "✓ " : "") + g.n + " " + (GOAL_SHORT[g.n - 1] || g.name); ctx.font = "700 11px system-ui"; ctx.textAlign = "left";
+    const t = (ok ? "✓ " : "") + g.n + " " + (g.label || g.name) + " +" + g.reward; ctx.font = "700 11px system-ui"; ctx.textAlign = "left";
     const w = ctx.measureText(t).width + 8, lx = px + 11 + w > r.width ? px - 11 - w : px + 11;   // flip to the left near the right edge
     ctx.fillStyle = "rgba(11,16,32,.82)"; ctx.fillRect(lx, py - 8, w, 16);
     ctx.fillStyle = ok ? "#6ee7a0" : "#ffd166"; ctx.fillText(t, lx + 4, py + 4);

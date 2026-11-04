@@ -19,9 +19,16 @@ class WorldLayoutTests(unittest.TestCase):
             self.assertTrue(maps[key]["outdoor"], key)
             self.assertIn("ox", maps[key])
             self.assertEqual(len(maps[key]["rows"]), maps[key]["h"])
-        for key in ("24,5", "26,10", "10,7"):  # Elm's lab, Mr. Pokemon's house, Violet gym
+        for key in ("26,11", "10,7"):  # Violet gatehouse, Violet gym
             self.assertFalse(maps[key]["outdoor"], key)
-        self.assertEqual([s["n"] for s in data["stars"]], [1, 2, 3, 4, 5])
+        self.assertEqual([s["id"] for s in data["stars"]], ["route29", "cherrygrove", "route30", "route31", "violet_gate", "violet_city", "violet_gym", "beat_falkner"])
+        self.assertEqual([s["n"] for s in data["stars"]], list(range(1, 9)))
+        self.assertEqual(sum(s["reward"] for s in data["stars"]), 140)   # 5+10+10+10+5+15+15 plus 70 for the badge and event
+        self.assertEqual(len(data["legs"]), 1)
+        self.assertEqual(data["legs"][0]["steps"], 319)
+        blob = json.dumps(data["stars"]).lower()
+        for word in ("elm", "egg", " rival"):
+            self.assertNotIn(word, blob)
 
     def test_world_route_and_page_wiring(self):
         with tempfile.TemporaryDirectory() as tmp:
