@@ -213,12 +213,6 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                     if not frame.is_file():
                         return self._send(404, b"", "image/jpeg")
                     return self._send(200, frame.read_bytes(), "image/jpeg", cache="max-age=3600")
-                if route.startswith("/frames/env_") and route.endswith(".png"):
-                    name = route.rsplit("/", 1)[-1]
-                    frame = live_dir / name
-                    if not frame.is_file():
-                        return self._send(404, b"", "image/png")
-                    return self._send(200, frame.read_bytes(), "image/png")
             except (ConnectionError, OSError):
                 return
             except Exception as exc:  # pragma: no cover

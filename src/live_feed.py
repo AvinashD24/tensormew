@@ -91,6 +91,9 @@ class LiveFeed:
         history_dir: str | Path | None = None,
         frame_every: int = 5,
     ):
+        # Per-env live screenshots are intentionally NOT written: 24 PNG encodes per call cost ~1.4 s on a network
+        # volume and, run every rollout step, slowed training ~12x (238 s per update). Only the replay montage
+        # (history_dir, every ``frame_every`` updates) is saved.
         self.out_dir = Path(out_dir)
         self.out_dir.mkdir(parents=True, exist_ok=True)
         # Append-only per-run record (positions per update + frame montages) for replay after the run.
@@ -265,10 +268,6 @@ class LiveFeed:
 
             env["ep_return"] = round(float(self._ep_return[i]), 2)
             env["ep_steps"] = int(self._ep_steps[i])
-
-        if now - self._last_frame_t >= self.frame_interval and screens is not None:
-            self._write_frames(screens)
-            self._last_frame_t = now
 
         if now - self._last_state_t >= self.state_interval:
             dt = now - self._rate_t
@@ -465,23 +464,6 @@ class LiveFeed:
         Image.fromarray(sheet).save(self.history_dir / "frames" / f"u{update:06d}.jpg", format="JPEG", quality=72)
 
     # ---------------------------------------------------------------- snapshot
-    def _write_frames(self, screens: np.ndarray) -> None:
-        if Image is None:
-            return
-        for i in range(min(self.num_envs, len(screens))):
-            try:
-                path = self.out_dir / f"env_{i}.png"
-                tmp = path.with_suffix(".tmp.png")
-                Image.fromarray(np.ascontiguousarray(screens[i])).save(tmp, format="PNG", compress_level=1)
-                for attempt in range(5):
-                    try:
-                        os.replace(tmp, path)
-                        break
-                    except PermissionError:
-                        time.sleep(0.01 * (attempt + 1))
-            except Exception:
-                continue
-
     def _heat_payload(self) -> list[dict[str, Any]]:
         top = sorted(self._map_visits.items(), key=lambda kv: kv[1], reverse=True)[:MAX_HEAT_MAPS]
         out = []

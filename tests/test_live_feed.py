@@ -19,8 +19,18 @@ def _info(x, y, map_id=(24, 4), **extra):
 
 
 class LiveFeedTests(unittest.TestCase):
-    def _feed(self, tmp, n=2):
-        return LiveFeed(tmp, num_envs=n, action_names=ACTIONS, state_interval=0.0, frame_interval=0.0)
+    def _feed(self, tmp, n=2, **kw):
+        return LiveFeed(tmp, num_envs=n, action_names=ACTIONS, state_interval=0.0, frame_interval=0.0, **kw)
+
+    def test_no_per_env_pngs_are_written(self):
+        """Per-env PNGs cost ~1.4 s per step on a network volume (the v2-1 slowdown): the feature is gone."""
+        with tempfile.TemporaryDirectory() as tmp:
+            feed = self._feed(tmp)
+            screens = np.zeros((2, 144, 160, 3), dtype=np.uint8)
+            feed.observe(infos=[_info(1, 1), _info(2, 2)], actions=np.array([0, 1]),
+                         rewards=np.array([0.0, 0.0], dtype=np.float32), dones=np.array([False, False]), screens=screens)
+            self.assertFalse(list(Path(tmp).glob("env_*.png")))
+            self.assertTrue((Path(tmp) / "state.json").is_file())
 
     def test_heatmap_trails_and_actions(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -41,7 +51,7 @@ class LiveFeedTests(unittest.TestCase):
             heat = {h["map"]: h for h in snap["heat"]}
             self.assertEqual(heat["24,3"]["cells"], [[1, 1, 3]])
             self.assertEqual(sorted(c[:2] for c in heat["24,4"]["cells"]), [[5, 9], [6, 9], [7, 9]])
-            self.assertTrue((Path(tmp) / "env_0.png").is_file())
+            self.assertFalse((Path(tmp) / "env_0.png").exists())
             self.assertAlmostEqual(snap["envs"][0]["ep_return"], 1.5)
 
     def test_episode_finish_resets_and_records(self):
@@ -243,7 +253,6 @@ class DashboardServerTests(unittest.TestCase):
             live = Path(tmp) / "live"
             live.mkdir()
             (live / "state.json").write_text('{"t":1}')
-            (live / "env_0.png").write_bytes(b"\x89PNG")
             metrics = Path(tmp) / "m.jsonl"
             metrics.write_text(json.dumps({"update": 0, "mean_reward": 1.0}) + "\n")
             server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(live, metrics))
@@ -254,9 +263,8 @@ class DashboardServerTests(unittest.TestCase):
                 self.assertIn(b"TensorMew", get("/"))
                 self.assertEqual(json.loads(get("/api/live")), {"t": 1})
                 self.assertEqual(json.loads(get("/api/metrics"))[0]["update"], 0)
-                self.assertEqual(get("/frames/env_0.png"), b"\x89PNG")
                 with self.assertRaises(urllib.error.HTTPError):
-                    get("/frames/env_9.png")
+                    get("/frames/env_0.png")   # per-env live frames were removed
             finally:
                 server.shutdown()
                 server.server_close()

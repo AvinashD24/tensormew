@@ -317,7 +317,6 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
 </div>
 
 <div id="tip" role="tooltip"></div>
-<dialog id="zoom"><div class="row"><b id="zTitle"></b><button id="zClose" type="button">Close</button></div><img id="zImg" alt="Enlarged agent view"><div class="row" id="zMeta" style="margin:8px 0 0"></div></dialog>
 
 <script>
 "use strict";
@@ -605,11 +604,6 @@ function ensureEnvs(n) {
     envEls.push({ d, img: d.querySelector("img"), noimg: d.querySelector(".noimg"), tag: d.querySelector(".tag"), m1: d.querySelector(".m1"), a: d.querySelectorAll(".m2 span")[0], b: d.querySelectorAll(".m2 span")[1] });
   }
 }
-function loadFrame(img, i, noimg, big) {
-  const probe = new Image(), key = Math.floor(Date.now() / 500);
-  probe.onload = () => { img.src = probe.src; if (noimg) noimg.style.display = "none"; };
-  probe.src = `/frames/env_${i}.png?k=${key}`;
-}
 function renderEnvs() {
   return;  // the per-agent screen grid was removed: frames were mostly blank or the start frame
   if (!live || mode === "replay") return;
@@ -670,16 +664,6 @@ function renderHeat() {
   $("covSub").textContent = `${h.name} · ${cells.length} unique tiles · peak ${mx.toLocaleString()} visits`;
 }
 
-/* zoom */
-const zoom = $("zoom"); let zoomEnv = -1, zoomTimer = null;
-function openZoom(i) { zoomEnv = i; zoom.showModal(); refreshZoom(); zoomTimer = setInterval(refreshZoom, 500); }
-function refreshZoom() { if (zoomEnv < 0 || !live) return; const e = live.envs[zoomEnv];
-  $("zTitle").textContent = `Agent E${zoomEnv} · ${e.map_name || ""}`;
-  $("zMeta").innerHTML = `<span>tile (${e.x}, ${e.y}) · start ${e.state}</span><span>return ${sgn(e.ep_return)} · ${e.ep_steps} steps · last ${e.last_action}</span>`;
-  const p = new Image(); p.onload = () => { $("zImg").src = p.src; }; p.src = `/frames/env_${zoomEnv}.png?k=${Date.now()}`; }
-zoom.addEventListener("close", () => { clearInterval(zoomTimer); zoomEnv = -1; });
-$("zClose").onclick = () => zoom.close();
-zoom.addEventListener("click", (e) => { if (e.target === zoom) zoom.close(); });
 
 /* header */
 function renderHeader() {

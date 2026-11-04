@@ -1143,7 +1143,10 @@ def train(
 
             # 1. Collect rollouts with batched inference
             policy.eval()
+            phase = {"infer": 0.0, "env": 0.0, "feed": 0.0, "trunc": 0.0, "buf": 0.0}
+            _pc = time.perf_counter
             for step in range(T):
+                _t = _pc()
                 screens_t = (
                     torch.from_numpy(screens_cur).to(device).permute(0, 3, 1, 2).contiguous().float().div_(255.0)
                 )
@@ -1161,10 +1164,16 @@ def train(
                     logp_t = dist.log_prob(actions_t)
 
                 actions_np = actions_t.cpu().numpy()
+                _t2 = _pc()
+                phase["infer"] += _t2 - _t
                 screens_next, rams_next, rews, dones, map_counts, badges = vec_env.step(actions_np)
                 infos = vec_env.last_infos
+                _t3 = _pc()
+                phase["env"] += _t3 - _t2
                 if feed is not None:
                     feed.observe(infos=infos, actions=actions_np, rewards=rews, dones=dones, screens=screens_next)
+                _t4 = _pc()
+                phase["feed"] += _t4 - _t3
 
                 # Route progress per finished episode drives the entropy schedule.
                 for i in np.nonzero(dones)[0]:
@@ -1181,6 +1190,8 @@ def train(
                     buf_boot[step, torch.from_numpy(idx)] = policy_values(policy, f_scr, f_ram, f_hx, device)
                     buf_trunc[step] = torch.from_numpy(truncs)
 
+                _t5 = _pc()
+                phase["trunc"] += _t5 - _t4
                 if policy.use_gru and next_hx is not None:
                     if dones.any():
                         done_mask = torch.from_numpy(dones).to(device)
@@ -1197,7 +1208,9 @@ def train(
                 buf_values[step] = val.cpu()
 
                 screens_cur, rams_cur = screens_next, rams_next
+                phase["buf"] += _pc() - _t5
 
+            _t_roll = _pc()
             # 2. GAE with truncation bootstrapping and the value of the current observations
             last_value = policy_values(policy, screens_cur, rams_cur, hx, device)
             returns, advantages = compute_gae(
@@ -1218,11 +1231,21 @@ def train(
                 initial_hx=initial_hx,
                 dones=buf_dones.transpose(0, 1).contiguous(),
             )
+            _t_upd0 = _pc()
             stats = ppo_update(policy, optimizer, batch, hp, entropy_coef=entropy_coef)
             if hx is not None:
                 hx = hx.detach()
+            if device.type == "cuda":
+                torch.cuda.synchronize()
+            _t_upd1 = _pc()
 
             dt = time.time() - t0
+            print(
+                f"[time] update {update}: total {dt:.1f}s | rollout: policy {phase['infer']:.1f}s, envs {phase['env']:.1f}s, "
+                f"feed {phase['feed']:.1f}s, truncation {phase['trunc']:.1f}s, buffers {phase['buf']:.1f}s | "
+                f"gae+batch {_t_upd0 - _t_roll:.1f}s | ppo update {_t_upd1 - _t_upd0:.1f}s",
+                flush=True,
+            )
             max_maps = max(map_counts)
             max_badges = max(badges)
             cur_lr = optimizer.param_groups[0]["lr"]
