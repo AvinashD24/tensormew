@@ -19,7 +19,6 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from src.collision import is_cut_tree  # noqa: E402
-from src.falkner_nav import violet_gym_step  # noqa: E402
 from src.mover import walkable  # noqa: E402
 from src.return_nav import _Rom  # noqa: E402
 from src.route_graph import _HOP_DIRS, _OPPOSITE  # noqa: E402  (ledge rules shared with the reward graph)
@@ -36,7 +35,11 @@ MAPS = {
     (24, 5): ("ElmsLab", "TilesetLabColl", "Elm's Lab", False),
     (26, 10): ("MrPokemonsHouse", "TilesetTraditionalHouseColl", "Mr. Pokémon's House", False),
     (26, 11): ("Route31VioletGate", "TilesetGateColl", "Violet Gatehouse", False),
-    (10, 7): ("VioletGym", None, "Violet Gym", False),
+    # The gym's collision grid is the ROM's (tileset 15, whose collision table the symbol file labels ``TilesetEliteFourRoomColl``);
+    # it is the same grid ``src.route_graph`` walks (tests/test_dashboard_world.py asserts that).  It used to be the hand-coded
+    # S-curve of ``falkner_nav.violet_gym_step`` with every other tile drawn as a pit, which is NOT the real floor: the agent
+    # walks tiles that were drawn as pits, and the real shortest way (20 steps) is not that S-curve (24 steps).
+    (10, 7): ("VioletGym", "TilesetEliteFourRoomColl", "Violet Gym", False),
     (26, 5): ("CherrygrovePokecenter1F", "TilesetPokecenterColl", "Cherrygrove Pokécenter", False),
     (10, 10): ("VioletPokecenter1F", "TilesetPokecenterColl", "Violet Pokécenter", False),
 }
@@ -89,25 +92,9 @@ class Graph:
             self.warps[mid] = [(x, y, wid, (g, n)) for (y, x, wid, g, n) in rom.warps(prefix)]
             for (x, y, wid, dest) in self.warps[mid]:
                 self.warp_at[(mid, x, y)] = (wid, dest)
-        self.gym_cells = self._gym_bridge()
-
-    def _gym_bridge(self):
-        """Violet Gym floor from the verified S-curve route in falkner_nav.violet_gym_step."""
-        x, y, facing = 4, 14, "up"
-        tiles = [(4, 15), (4, 14)]
-        for _ in range(80):
-            a = violet_gym_step(x, y, facing)
-            if a == "a":
-                break
-            dx, dy = DIRS[a]
-            x, y, facing = x + dx, y + dy, a
-            tiles.append((x, y))
-        return tiles
 
     # --- movement graph ----------------------------------------------------------------------
     def walk_ok(self, mid, x, y, d):
-        if mid == (10, 7):
-            return (x, y) in set(self.gym_cells) or (x, y) == (5, 15)
         if (x, y) in NPC_BLOCKS.get(mid, ()):
             return False
         c = self.cells[mid].get((x, y))
@@ -183,8 +170,6 @@ class Graph:
 
 
 def tile_class(g: Graph, mid, x, y):
-    if mid == (10, 7):
-        return "f" if (x, y) in set(g.gym_cells) or (x, y) == (5, 15) else "p"  # p = pit
     c = g.cells[mid].get((x, y))
     if (mid, x, y) in g.warp_at:
         return "d"

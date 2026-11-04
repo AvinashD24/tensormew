@@ -53,6 +53,34 @@ class WorldLayoutTests(unittest.TestCase):
         self.assertEqual(len(data["stars"]), 8)
         self.assertEqual(data["legs"][0]["steps"], 309)
 
+    def test_gym_floor_is_the_roms_not_a_hand_coded_s_curve(self):
+        """The Violet Gym panel draws the real collision grid (the one ``src.route_graph`` walks), with the story path and the
+        tile in front of Falkner on drawn floor.  It used to draw only an S-curve and call every other tile a pit."""
+        from src import route_graph as rg
+        g = rg._graph()
+        if g is None:
+            self.skipTest("ROM not available")
+        data = json.loads((STATIC_DIR / "world_layout.json").read_text(encoding="utf-8"))
+        gym = {m["id"]: m for m in data["maps"]}["10,7"]
+        rows = gym["rows"]
+        cells = g.maps[(10, 7)].cells
+        self.assertEqual((gym["w"], gym["h"]), (10, 16))
+        for y in range(16):
+            for x in range(10):
+                self.assertEqual(rows[y][x] in "fd", rg.walkable(cells[(x, y)]), (x, y, rows[y][x]))
+        self.assertNotIn("p", "".join(rows))              # no pits: the old drawing's invention
+        self.assertEqual([x for x in range(10) if rows[15][x] == "d"], [4, 5])     # the two exit mats
+        node = rg.EGG_DELIVER_GOAL
+        dist = g.dist[0]
+        path = [rg.GOALS[0]]
+        while dist[node] > 0:                              # walk the phase-2 path and keep its gym tiles
+            node = next(n for n in g.fwd[node] if n is not None and dist.get(n, 1e9) == dist[node] - 1)
+            if node[0] == (10, 7):
+                path.append(node)
+        for _mid, x, y in path:
+            self.assertIn(rows[y][x], "fd", (x, y))
+        self.assertEqual(rg.GOALS[0], ((10, 7), 5, 2))     # in front of Falkner, who stands at (5, 1)
+
     def test_page_picks_the_route_from_the_run_meta(self):
         page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         for needle in ("egg_errand_route", "world.egg", "function syncProfile(", "const wStars", "const wLegs", "milestone_labels", "LEG_STYLE"):

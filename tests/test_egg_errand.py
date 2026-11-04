@@ -229,8 +229,9 @@ class PresetTests(unittest.TestCase):
     def test_only_long_v8_has_the_egg_route(self):
         for name in PRESETS:
             cfg = preset(name)
-            self.assertEqual(cfg.egg_errand_route, name == "long_v8", name)
-            self.assertEqual(cfg.story_profile(), sp.EGG_PROFILE if name == "long_v8" else sp.BASE_PROFILE)
+            egg = name in ("long_v8", "long_v9")   # long_v9 keeps the long_v8 egg-errand route
+            self.assertEqual(cfg.egg_errand_route, egg, name)
+            self.assertEqual(cfg.story_profile(), sp.EGG_PROFILE if egg else sp.BASE_PROFILE)
         for name in ("long_v3", "long_v4", "long_v5", "long_v6", "long_v7"):
             self.assertEqual(len(preset(name).dwell_level_targets), 9, name)
 

@@ -30,7 +30,15 @@ event flags in RAM, each with its own BFS distance field and a goal tile:
   phase 2 (egg given to Elm):       the opened graph, goal = the tile in front of Falkner (the 309-step route plus the walk
                                     from Elm's lab back to the New Bark start tile).
 
-``path_progress(state, egg=True)`` = ``phase_offset + max(0, phase_len - BFS distance to the phase goal)``: continuous at the
+NPCs ON THE ROUTE (checked tile by tile in the emulator; only the sprites that cut Route 30 are modelled as blockers above).
+Not modelled, all harmless for the distance except the first: the Guide Gent stands on (26,3) (32, 6) until the Cherrygrove tour
+is taken (flag 1790), so with him there the real shortest way is the row-7 bypass, 2 steps longer (329 / 311 instead of 327 / 309;
+the bypass costs at most a one-tile retreat in the BFS field); Mikey (5, 23) and Don (1, 7) on Route 30 stand on path tiles but
+the equally short column-4 / column-2 detours cost nothing; trainers force a battle when the path crosses their sight line
+(Mikey at (5, 24), Don at (1, 8..10), Abe in the gym at (4, 10) / (5, 10), Rod at (4, 6)); the Route 31 trainer at (21, 13) looks
+left along row 13 and never sees the row-12 path.
+
+``path_progress(state, egg=True)`` =``phase_offset + max(0, phase_len - BFS distance to the phase goal)``: continuous at the
 phase borders (the goal tile of one phase is the start tile of the next), so the best-ever reward never jumps.
 """
 

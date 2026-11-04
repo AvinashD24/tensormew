@@ -104,6 +104,57 @@ literature does not settle the value for this game; the flag exists so it can be
 | Auxiliary prediction heads | UNREAL (Jaderberg et al. 2016, arXiv 1611.05397): auxiliary tasks gave 880% human-normalized Atari score and a 10x mean learning speed-up on Labyrinth; Lample and Chaplot 2016 (arXiv 1609.05521): predicting game features "dramatically improves" training speed | Map id, lead-HP change and battle start 8 steps ahead, weight 0.05. Evidence is for A3C / DQN agents, not PPO + GRU; the weight and horizon are **guesses** |
 | Entropy 0.04 -> 0.01 becomes 0.01 -> 0.001 | OpenAI Five: 0.01 default, annealed to 0.001 in the long Rerun run (Figure 28: 0 still learns, 0.01 best early); Pleines 2025 use no entropy bonus (1e-3 .. 1e-6 gave no gain); Andrychowicz 2020: no evidence that entropy regularization helps when the action head starts small (it does here, gain 0.01). PPO paper Atari value 0.01 (recalled, not re-fetched) | Live v3-1 entropy 1.70 of 1.79 with approx_kl 0.006 and clip 0.06 means the policy is still near uniform, so the 0.04 start is not buying useful exploration |
 
+## long_v9: progress-first rewards (after run v8-1)
+
+Evidence (v8-1, `long_v8`, update 107, 12 envs x 256 steps, `logs/runs/v8-1`): positives battle +2208 (846 wild battles, 0 trainer
+battles), curiosity +1842, path +1176, tile +593, level +575, heal +272; negatives step -3345, white-out -1965 (131), retreat -1491,
+damage -1157, dwell -879, stagnation -665. Best path progress ~51 of 695, 92 % of visits on Route 29, from-start eval progress
+31 -> 13 (4 episodes, noisy), entropy 1.58 -> 0.99 (update 195), A on 39 %+ of the actions. Standing in the grass paid more than walking.
+
+Per-episode maxima under the config (2048-step episodes; "v8" = `long_v8`, "v9" = `long_v9`):
+
+| Term | v8 | v9 | Note |
+|---|---|---|---|
+| Path (whole egg-errand route, 695 tiles) | 0.3 x 695 = 208.5 | 1.0 x 695 = **695** | scale 0.3 -> 1.0; one tile = one step of walking = +0.99 net of the step cost |
+| Milestones / key events / badge (12 payments) | 195 | **292.5** (x1.5) up to 438.8 | with the speed bonus: x1.5 at step 0 down to x1.0 at the step limit (e.g. 1.33 at step 700) |
+| Wild battles (win 3, KO 1, damage 1.5 per HP fraction) | shared cap 20 (first 3 wins 3.0, later 0.2) | cap **6**; one full battle = 2.2 (x0.4), then x0.6^(n-2) from battle 3 (1.32, 0.79, ..., floor 0.22) | a farmer hits the cap in 4 battles (2.2 + 2.2 + 1.32 + 0.28) |
+| Trainer battles | inside the shared 20 | own cap **20**, win 5 / KO 1 / damage 1.5, undiminished | forced and story-gating (Falkner) |
+| Level-ups | 15 | 15, **only while the party's highest level is below the stage target** | grinding above the `dwell_level_targets` entry pays 0 |
+| Catches | 6 (3, 1.5, 0.75 ...) | **4**: 2 for a species not yet caught this episode, 0 for a duplicate | |
+| Heal / survive / potion | 10 / 3 / 3 | 10 / 3 / 3 (unchanged) | a full heal from 10 % HP pays 4.9, a 100-step walk back costs <= 2 (step + low-HP exposure); retreat / stagnation / dwell stay exempt on a heal trip |
+| Exploration (curiosity, tiles, warps, momentum ...) | 12 | **8** | |
+| Sum of the farmable sources (no trainer) | 69 | **49** | |
+| Retreat / stagnation / dwell / step | -15 / -10 / -15 / -20.5 | **-30** / -10 / -15 / -20.5 | the retreat cost per tile (0.35 x path scale) follows the larger path scale |
+| White-out | -15 and the episode ends | unchanged | |
+
+Ratios: whole-route path / farmable sum = 3.0 (v8) -> 14.2 (v9); path + milestones / farmable sum = 5.8 -> 20. Per step: a wild battle
+pays <= 2.2 over dozens of button presses (<= ~0.07 per step), a step along the route pays ~1.0. A milestone (5 to 60, x1.5 or
+more) is worth 3 to 40 full wild battles. The reward scaler divides by the running std of the discounted return and
+is warm-started by `warmup_rollout`, so the larger path total only rescales everything (a white-out is -15 = 15 path tiles; it also
+ends the episode, which forfeits the remaining route income, so it stays a strong deterrent).
+
+Time-awareness (`time_feature`): one observation input, steps_in_episode / episode_limit (jittered limit, 0..1), appended last.
+With a time limit that is not part of the state, the value of a state depends on the remaining time and a policy that cannot see
+the clock is non-Markov in the state (Pardo et al., "Time Limits in Reinforcement Learning", ICML 2018, arXiv 1712.00378: add the
+remaining time to the observation, and bootstrap at truncation, which this trainer already does). It says nothing about where to
+go. gamma stays 0.999: 0.999^700 = 0.50, so a milestone at the end of the route is still half-visible from the start.
+
+Entropy: `entropy_boost_threshold` 0.8 -> 1.0 (guard still `until` update 300, release at +0.2). v8-1 fell 1.58 -> 0.99 over 195
+updates while A rose to 39 %; v4-1 went 1.12 -> 0.40 in 37 updates, i.e. 0.8 is crossed too late to stop a collapse.
+
+| Change | Support | Status |
+|---|---|---|
+| Time feature | Pardo et al. 2018 (see above) | Literature-backed (the effect size for this game is unknown) |
+| Capped, decaying repeatable rewards | Pleines et al. 2025 (arXiv 2502.19920): uncapped heal / battle shaping is exploited; Ng, Harada & Russell 1999: shaping that is not a potential difference can change the optimal policy | Principle backed; the numbers (free 2, decay 0.6, floor 0.1, scale 0.4, budget 6, catch 2 / 4) are **guesses** |
+| Level reward gated by the stage target | the stage targets were chosen for the dwell penalty (Falkner L7 / L9) | Design choice, not from a paper |
+| Path scale 1.0, milestone x1.5, speed bonus up to x1.5 | none; the 2-3x requirement was met by arithmetic (table above) | **Guess**; the speed bonus is a time-to-goal shaping with no citation |
+| Entropy threshold 1.0 | own runs v4-1 / v8-1 | **Guess** backed by two logged runs |
+
+Risks: the large path reward may make the policy walk into grass at low HP (white-out -15 is small next to 1.0 per tile; the episode
+end and the low-HP exposure cost are the deterrents); the 6-point wild budget may slow learning to win battles that the level
+reward and Falkner's trainer budget (20) have to cover; the speed bonus pays a bit extra for rushing and so can raise the white-out
+rate (watch `whiteout_episodes`); `time_feature` makes old checkpoints unloadable.
+
 ## Open risks
 
 - Menu navigation in battle has to be discovered from 6 buttons. A random policy does reach FIGHT -> first move by pressing A, but switching, PACK and items are rarer. `long_v3` adds self-generated battle practice (battle archive states plus a decaying A-bias in battle); `long_v2` has neither.

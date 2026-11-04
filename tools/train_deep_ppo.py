@@ -39,6 +39,8 @@ Training-only environment features (all off in ``--config legacy``):
 - ``long_v8`` additions: battle-menu action mask, periodic from-start evaluation and ``egg_errand_route`` (``src.story_path`` EGG
   profile: 11 milestones incl. the egg received / delivered events, 80 observation inputs; ``src.route_graph`` three-phase path
   measure, 695 steps).  The workers and the trainer switch the process-global story profile from the config at startup.
+- ``long_v9`` additions (progress-first, ``src.anti_farm``): wild-battle diminishing returns + per-kind budgets, level reward gated
+  by the stage target, new-species-only catches, milestone scale x speed bonus, and the time-in-episode observation scalar (81 inputs).
 """
 
 from __future__ import annotations
@@ -60,6 +62,7 @@ import numpy as np
 import torch
 import torch.optim as optim
 
+from src.anti_farm import speed_multiplier
 from src.battle_obs import equip_supplies, heal_item_count
 from src.periodic_eval import EVAL_STATE, aggregate, episode_record, is_eval_update
 from src.battle_mask import N_ACTIONS as MASK_N_ACTIONS
@@ -607,6 +610,14 @@ class EnvWorker:
         self.heal_scale = float(cfg.get("heal_scale", 4.0))
         if self.heal_reward:
             self._budget_init["cap:heal"] = float(cfg.get("heal_budget", 8.0))
+        # long_v9 (all OFF when absent from cfg): anti-farming rules + their per-episode caps (src.anti_farm), milestone scale / speed
+        # bonus, and the time-in-episode observation scalar.
+        self.farm = cfg.get("farm")
+        self._budget_init.update({k: float(v) for k, v in (cfg.get("budget_caps") or {}).items()})
+        self.milestone_scale = float(cfg.get("milestone_scale", 1.0))
+        self.speed_bonus = float(cfg.get("milestone_speed_bonus", 1.0))
+        self.time_feature = bool(cfg.get("time_feature", False))
+        self._step0 = 0   # step counter at the start of the running episode (non-zero for a staggered first episode)
         self._intrinsic_scale = 1.0
         self._ep_start_stage = 0   # milestone diagnostics (src.milestone_stats)
         self._ep_furthest = 0
@@ -686,14 +697,27 @@ class EnvWorker:
         self.seen_tiles.add(tile)
         self.seen_maps.add((st.map_group, st.map_number))
         self.tile_visit_counts[tile] = self.tile_visit_counts.get(tile, 0) + 1
-        ram_vec = observe(st, self.visited, deep=True, seen_maps=self.seen_maps)
+        ram_vec = observe(st, self.visited, deep=True, seen_maps=self.seen_maps, time_frac=self._time_frac())
         if self.action_mask:
             self.last_mask = battle_action_mask(self.emu, st)   # only reads the tilemap while battle_mode != 0
         return self._screen(), ram_vec, st
 
     def _peek_obs(self, st):
         """Observation of ``st`` without touching the visit bookkeeping (the final obs of a truncated episode)."""
-        return self._screen(), observe(st, self.visited, deep=True, seen_maps=self.seen_maps)
+        return self._screen(), observe(st, self.visited, deep=True, seen_maps=self.seen_maps, time_frac=self._time_frac())
+
+    def _time_frac(self) -> float | None:
+        """Elapsed fraction of the running episode's step limit (the long_v9 observation scalar), or None when the feature is off."""
+        if not self.time_feature:
+            return None
+        return min(1.0, self.steps / float(max(1, self.ep_len)))
+
+    def _milestone_mult(self) -> float:
+        """Multiplier on this step's milestone / event / badge payments: the scale times the speed bonus (1.0 each when off)."""
+        mult = self.milestone_scale
+        if self.speed_bonus > 1.0:
+            mult *= speed_multiplier(self.steps + 1 - self._step0, self.ep_len - self._step0, self.speed_bonus)
+        return mult
 
     # -- episode control
     def _jitter(self, data: bytes) -> None:
@@ -761,6 +785,7 @@ class EnvWorker:
             # ones, so this first episode is simply cut short (truncated + bootstrapped like any time limit).
             self.steps = self._initial_offset()
             self._partial = self.steps > 0
+        self._step0 = self.steps
         self._first_episode = False
         self._jitter(data)
         st = self.reader.parse(self.emu.frame)
@@ -932,6 +957,13 @@ class EnvWorker:
             pr_kwargs["pay_heal"] = False   # src.heal_reward pays for HP actually restored instead of the flat terms
         if self.disable_bump and self.path_progress is not None:
             pr_kwargs["pay_bump"] = False   # long_v5: dwell + path progress cover wall hugging
+        if self.farm is not None:   # long_v9 anti-farming: wild-battle decay, catch rule, level gate by the stage target
+            pr_kwargs["farm"] = self.farm
+            if self.farm.get("gate_level") and self.dwell is not None:
+                pr_kwargs["level_target"] = self.dwell.target_level()
+        mult = self._milestone_mult()
+        if mult != 1.0:
+            pr_kwargs["milestone_mult"] = mult
         pr_info = StepInfo(consecutive_bumps=self.consecutive_bumps)
         species_before = len(self.caught_counts)
         step_rew, new_tile, new_map = progress_reward(
@@ -1639,6 +1671,11 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "heal_trip_threshold": cfg.lowhp_exposure_threshold,
         "action_mask": cfg.battle_action_mask,
         "egg_errand_route": cfg.egg_errand_route,
+        "farm": cfg.anti_farm_params(),
+        "budget_caps": cfg.budget_cap_overrides(),
+        "milestone_scale": cfg.milestone_reward_scale,
+        "milestone_speed_bonus": cfg.milestone_speed_bonus,
+        "time_feature": cfg.time_feature,
     }
 
 
@@ -1660,7 +1697,7 @@ def train(
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     use_gru = cfg.recurrent
     _story.set_profile(cfg.egg_errand_route)   # milestone list, story block and observation width of this run
-    obs_dim = deep_obs_dim()
+    obs_dim = deep_obs_dim(time_aware=cfg.time_feature)
     num_envs, rollout_steps, updates = cfg.envs, cfg.rollout_steps, cfg.updates
     save_path = cfg.save_path
     if resume:
@@ -1808,6 +1845,11 @@ def train(
         print(f"[path progress] +{cfg.path_progress_scale} per tile of new best progress along the story path "
               f"(best-ever per episode, never negative, start progress free; ~{cfg.path_progress_scale * _steps:.1f} for the whole {_steps}-step path)",
               flush=True)
+    if cfg.anti_farm or cfg.milestone_speed_bonus > 1.0 or cfg.milestone_reward_scale != 1.0 or cfg.time_feature:
+        print(f"[progress-first] milestone payments x{cfg.milestone_reward_scale:g} x speed bonus up to x{cfg.milestone_speed_bonus:g} "
+              f"(linear to x1 at the step limit) | anti-farm={'wild battles x%g, then x%g^(n-%d) from battle %d (floor %g), wild budget %g, trainer budget %g, level reward only below the stage target=%s, catch %g new species only (budget %g)' % (cfg.wild_battle_scale, cfg.battle_decay, cfg.battle_free_count, cfg.battle_free_count + 1, cfg.battle_floor, cfg.wild_battle_budget, cfg.trainer_battle_budget, cfg.level_gate_by_target, cfg.catch_reward, cfg.catch_budget) if cfg.anti_farm else 'off'} | "
+              f"time feature={'on (steps / episode limit, observation %d)' % obs_dim if cfg.time_feature else 'off'} | "
+              f"entropy boost below {cfg.entropy_boost_threshold:g}", flush=True)
     if cfg.egg_errand_route:
         _p = _story.profile()
         print(f"[egg errand] {_p.count} milestones {list(_p.names)} | story block {_p.feature_dim} floats, observation {obs_dim} | "
@@ -2208,7 +2250,7 @@ def train(
 def build_parser() -> argparse.ArgumentParser:
     """CLI parser.  Every config-backed flag defaults to None: it overrides the config only when typed."""
     parser = argparse.ArgumentParser(description="Deep Visual PPO Training", allow_abbrev=False)
-    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v8 = long_v7 + battle-menu action mask, periodic from-start evaluation and the egg-errand route: Mr. Pokemon egg -> Elm -> Falkner, 11 milestones, 695-step phased path, 80 observation inputs; long_v7 = long_v6 + learned-vs-head-start metrics split by reset source and healing care: low-HP exposure cost, battle-survive and potion-use bonuses, heal-trip exemption from retreat/stagnation/dwell, stronger capped heal reward; long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
+    parser.add_argument("--config", default="blueprint_v1", help="preset (long_v9 = long_v8 + progress-first rewards: 1.0 path reward per tile, milestone bonuses x1.5 with a speed bonus up to x1.5, diminishing wild-battle returns with a 6 budget, level reward only below the stage target, new-species-only catches, a time-in-episode observation scalar, entropy-boost threshold 1.0; long_v8 = long_v7 + battle-menu action mask, periodic from-start evaluation and the egg-errand route: Mr. Pokemon egg -> Elm -> Falkner, 11 milestones, 695-step phased path, 80 observation inputs; long_v7 = long_v6 + learned-vs-head-start metrics split by reset source and healing care: low-HP exposure cost, battle-survive and potion-use bonuses, heal-trip exemption from retreat/stagnation/dwell, stronger capped heal reward; long_v6 = long_v5 + route-checkpoint reverse-curriculum archive, dialogue-loop penalty, reward-scaler warm-up rollout; long_v5 = long_v4 + anti-collapse: bump/loop penalties off, no-effect A/B press penalty, path reward 0.3/tile, higher and slower-annealed entropy + entropy-boost safety net; long_v4 = long_v3 + dense best-ever path-progress reward, smaller decaying exploration budget, heal-for-HP reward, low-HP battle practice, aux prediction heads, gamma 0.999, lower entropy; long_v3 = long_v2 + dwell penalty with a level-target exemption + staggered episodes, battle practice, furthest-map resets; long_v2, blueprint_v1, long_v1, legacy are older) or a JSON config file")
     parser.add_argument("--updates", type=int, default=None)
     parser.add_argument("--rollout", type=int, default=None)
     parser.add_argument("--max-steps", type=int, default=None)

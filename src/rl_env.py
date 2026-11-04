@@ -21,6 +21,7 @@ from src.ram_parser import dialogue_open
 from src.step import DIRS
 from src.story_flags import REVERSE_EVENT_FLAGS
 from src import story_path as _story
+from src.anti_farm import battle_multiplier, level_pays
 from src.story_path import (
     BADGE_REWARD,
     KEY_EVENT_REWARDS,
@@ -61,10 +62,14 @@ OBS_DIM = BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS) + STORY_FEATURE_DIM + BA
 DEEP_OBS_DIM = BASE_OBS_DIM + STORY_FEATURE_DIM + BATTLE_FEATURE_DIM
 
 
-def deep_obs_dim(egg: bool | None = None) -> int:
-    """Width of the deep observation for the story profile of this process (or of the egg / base profile when given)."""
+TIME_FEATURE_DIM = 1   # long_v9 ``time_feature``: steps_in_episode / episode_limit, appended at the END of the deep vector
+
+
+def deep_obs_dim(egg: bool | None = None, time_aware: bool = False) -> int:
+    """Width of the deep observation for the story profile of this process (or of the egg / base profile when given);
+    ``time_aware`` adds the one time-in-episode scalar (``TrainConfig.time_feature``)."""
     p = _story.profile() if egg is None else _story.profile_for(egg)
-    return BASE_OBS_DIM + p.feature_dim + BATTLE_FEATURE_DIM
+    return BASE_OBS_DIM + p.feature_dim + BATTLE_FEATURE_DIM + (TIME_FEATURE_DIM if time_aware else 0)
 
 # Bumped whenever the observation or action layout changes; stored in checkpoints (see SpatialVisionPolicy.load).
 OBS_SCHEMA = "v2-no-oracle-learned-battles"
@@ -96,8 +101,10 @@ LEVEL_BUDGET = 15.0     # level-ups
 CATCH_BUDGET = 6.0      # new Pokemon
 HEAL_BUDGET = 15.0      # Pokecenter heals, Nurse Joy, healing items
 EXPLORE_BUDGET = 30.0   # new tiles / maps / warps / interactions / curiosity-like terms
+TRAINER_BUDGET = 20.0   # trainer-battle payments when ``farm`` (long_v9) splits them from the wild ones
 BUDGET_CAPS: dict[str, float] = {
     "battle": BATTLE_BUDGET,
+    "trainer": TRAINER_BUDGET,
     "level": LEVEL_BUDGET,
     "catch": CATCH_BUDGET,
     "heal": HEAL_BUDGET,
@@ -253,6 +260,9 @@ def progress_reward(
     goal_potential: bool = False,
     pay_heal: bool = True,
     pay_bump: bool = True,
+    farm: dict | None = None,
+    level_target: int | None = None,
+    milestone_mult: float = 1.0,
 ) -> tuple[float, bool, bool]:
     """Return reward and whether this step discovered a tile or a map.
 
@@ -274,7 +284,17 @@ def progress_reward(
     step whose ``info.consecutive_bumps`` is 0 is not a bump (an A / B press), so it pays no bump cost.
     ``pay_heal=False`` skips every ``heal`` payment here (the caller pays ``src.heal_reward`` instead, long_v4).
     ``pay_bump=False`` drops the wall-bump cost (long_v5, with the dense path-progress reward on).
+
+    long_v9 (progress-first; all three OFF by default, see ``src.anti_farm``):
+    * ``farm`` (needs ``budget``): ``{"free", "decay", "floor", "wild_scale", "gate_level", "catch_new_only", "catch_reward"}``.
+      Wild-battle damage / KO / win are multiplied by ``wild_scale * battle_multiplier(n)`` (``n`` = the episode's wild battle
+      count, ``budget["wild_battles"]``) and paid under the ``battle`` cap; trainer-battle payments keep their full size under their
+      own ``trainer`` cap.  A catch pays ``catch_reward`` only for a species not yet caught in the episode.
+    * ``level_target`` (with ``farm["gate_level"]``): the level-up reward is paid only while the party's highest level before the
+      gain is below it (``None`` = ungated, ``<= 0`` = pays nothing).
+    * ``milestone_mult``: multiplies the milestone, key-event and badge payments (milestone scale x speed bonus).
     """
+    farm_on = farm is not None and budget is not None
     new_tile = False
     new_map = False
     terms: dict[str, float] = {}
@@ -318,7 +338,7 @@ def progress_reward(
         seen_maps.add(map_id)
         milestone = _story.profile().map_milestones.get(map_id)
         if milestone is not None:
-            add("milestone", milestone.reward)  # on the story path: not part of any shaping budget
+            add("milestone", milestone.reward * milestone_mult)  # on the story path: not part of any shaping budget
             if info is not None:
                 info.story_progress = True
         else:
@@ -327,10 +347,16 @@ def progress_reward(
 
     # Badges
     if getattr(after, "badges", 0) > getattr(before, "badges", 0):
-        add("badge", BADGE_REWARD)
+        add("badge", BADGE_REWARD * milestone_mult)
 
     # Catching Pokémon (small, with diminishing returns for duplicate species)
     caught_any = False
+
+    def catch_pay(count: int) -> float:
+        if farm_on and farm.get("catch_new_only"):
+            return float(farm.get("catch_reward", 2.0)) if count <= 1 else 0.0
+        return catch_reward_for_species(count)
+
     before_count = getattr(before, "party_count", 0)
     after_count = getattr(after, "party_count", 0)
     if after_count > before_count:
@@ -342,9 +368,9 @@ def progress_reward(
             species_id = species_list[idx]
             if caught_counts is not None and species_id not in (0, 255):
                 caught_counts[species_id] = caught_counts.get(species_id, 0) + 1
-                add("catch", catch_reward_for_species(caught_counts[species_id]), "catch")
+                add("catch", catch_pay(caught_counts[species_id]), "catch")
             else:
-                add("catch", catch_reward_for_species(1), "catch")
+                add("catch", catch_pay(1), "catch")
 
     # Also check if party was full and caught straight to PC box
     before_dex = getattr(before, "pokedex_caught_count", 0)
@@ -355,9 +381,9 @@ def progress_reward(
             info.caught_pokemon = True
         if caught_counts is not None:
             caught_counts[0] = caught_counts.get(0, 0) + 1
-            add("catch", catch_reward_for_species(caught_counts[0]), "catch")
+            add("catch", catch_pay(caught_counts[0]), "catch")
         else:
-            add("catch", catch_reward_for_species(1), "catch")
+            add("catch", catch_pay(1), "catch")
 
     # Event flags: only the profile's key events pay (EVENT_BEAT_FALKNER; with the egg errand also the egg received / given
     # to Elm); any other flip pays a token amount or nothing.
@@ -373,7 +399,7 @@ def progress_reward(
                         seen_events.add(flag_id)
                         flag_name = REVERSE_EVENT_FLAGS.get(flag_id)
                         if flag_name in key_events:
-                            add("event", key_events[flag_name])
+                            add("event", key_events[flag_name] * milestone_mult)
                             if info is not None:
                                 info.story_progress = True
                         elif flag_name:
@@ -385,16 +411,33 @@ def progress_reward(
     level_gain = _party_level_gain(before, after)
     if level_gain > 0:
         before_levels = sum(getattr(before, "party_levels", ()) or [0])
-        add(
-            "level",
-            LEVEL_REWARD_SCALE * (level_reward_value(before_levels + level_gain) - level_reward_value(before_levels)),
-            "level",
-        )
+        gate = level_target if (farm_on and farm.get("gate_level")) else None
+        if level_pays(getattr(before, "party_levels", ()), gate):
+            add(
+                "level",
+                LEVEL_REWARD_SCALE * (level_reward_value(before_levels + level_gain) - level_reward_value(before_levels)),
+                "level",
+            )
         if info is not None:
             info.level_up = True
 
     # Battle, generic: damage dealt to the SAME enemy while it stays out, its KO, and the win when the fight ends.
     # (Whatever buttons the policy pressed to get there; nothing is scripted.)
+    if farm_on and in_battle_a and not in_battle_b and getattr(after, "battle_mode", 0) != 2:
+        budget["wild_battles"] = budget.get("wild_battles", 0) + 1   # a wild battle starts (an archive start mid-battle counts as the 1st)
+
+    def battle_pay(amount: float, trainer: bool) -> None:
+        """One damage / KO / win payment.  Without ``farm``: the old shared ``battle`` budget.  With it: trainer battles keep
+        their size under the ``trainer`` cap; wild ones are scaled and decayed per wild battle of the episode."""
+        if not farm_on:
+            add("battle", amount, "battle")
+        elif trainer:
+            add("battle", amount, "trainer")
+        else:
+            n = max(1, budget.get("wild_battles", 0))
+            add("battle", amount * float(farm.get("wild_scale", 1.0)) * battle_multiplier(
+                n, farm.get("free", 2), farm.get("decay", 0.6), farm.get("floor", 0.1)), "battle")
+
     if in_battle_b and in_battle_a:
         e_max = getattr(after, "enemy_max_hp", 0)
         same_enemy = (
@@ -404,13 +447,14 @@ def progress_reward(
         )
         e_before, e_after = getattr(before, "enemy_hp", 0), getattr(after, "enemy_hp", 0)
         if same_enemy and e_after < e_before:
-            add("battle", DAMAGE_DEALT_WEIGHT * (e_before - e_after) / e_max, "battle")
+            trainer_now = getattr(after, "battle_mode", 0) == 2
+            battle_pay(DAMAGE_DEALT_WEIGHT * (e_before - e_after) / e_max, trainer_now)
             if e_after == 0:
-                add("battle", KO_REWARD, "battle")
+                battle_pay(KO_REWARD, trainer_now)
     if in_battle_b and not in_battle_a:
         if not getattr(after, "fainted", False) and not caught_any:
             if getattr(before, "battle_mode", 0) == 2:
-                add("battle", TRAINER_WIN, "battle")
+                battle_pay(TRAINER_WIN, True)
             else:
                 # A genuine win leaves the wild Pokémon fainted (its HP stays in RAM after the battle);
                 # a flee leaves it alive. Unknown enemy HP (no max) counts as a win.
@@ -418,6 +462,8 @@ def progress_reward(
                 won = e_max <= 0 or getattr(after, "enemy_hp", 0) == 0
                 if not won:
                     add("battle", 0.0)
+                elif farm_on:
+                    battle_pay(WILD_WIN_FULL, False)   # decays with the wild battle count instead of the early / late rule
                 else:
                     if budget is not None:
                         # The early-wild rule keys off the episode's own win count (the party level stays put).
@@ -502,6 +548,7 @@ def observe(
     nav: LocalNav | None = None,
     deep: bool = False,
     seen_maps=None,
+    time_frac: float | None = None,
 ) -> np.ndarray:
     """Observation vector.
 
@@ -511,6 +558,7 @@ def observe(
 
     The story block says which milestones are done and the current map id; the battle block (``src.battle_obs``)
     holds the battle, party and bag facts. There is NO next-step direction and NO distance to a goal anywhere.
+    ``time_frac`` (deep only, ``TrainConfig.time_feature``): one extra last element, steps_in_episode / episode_limit in [0, 1].
     ``seen_maps`` (maps visited this episode) lets the milestone bits survive leaving a map; without it they are
     derived from the maps present in ``visited``.
     """
@@ -535,7 +583,10 @@ def observe(
     ]
     base = np.asarray(tiles + pos + flags + neighbors + extra, dtype=np.float64)
     if deep:
-        return np.concatenate([base, story_features(state, seen_maps), battle_features(state)])
+        vec = np.concatenate([base, story_features(state, seen_maps), battle_features(state)])
+        if time_frac is not None:   # long_v9 time-awareness: elapsed fraction of the episode limit (Pardo et al. 2018), not a goal hint
+            vec = np.concatenate([vec, [min(1.0, max(0.0, float(time_frac)))]])
+        return vec
     if nav is None:
         return base
     nav.update(state)

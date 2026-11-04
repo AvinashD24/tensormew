@@ -1,6 +1,8 @@
 """Single place for every training knob, with presets, JSON round trip and validation.
 
-Presets: ``long_v8`` (``long_v7`` plus valid-action masking of provably-no-op buttons in battle menus, a periodic from-start
+Presets: ``long_v9`` (``long_v8`` plus progress-first rewards: a 1.0 path reward per tile, 1.5x milestone bonuses with an up to 1.5x speed
+bonus, diminishing wild-battle returns with a small budget, level reward only below the stage target, new-species-only catches, a
+time-in-episode observation scalar and an earlier entropy-boost threshold), ``long_v8`` (``long_v7`` plus valid-action masking of provably-no-op buttons in battle menus, a periodic from-start
 evaluation and the egg-errand route: Mr. Pokemon's egg back to Elm before Route 30 opens, 11 milestones, 695-step path), ``long_v7`` (``long_v6`` plus learned-vs-head-start metrics split by reset source and healing-care reward terms),
 ``long_v6`` (``long_v5`` plus a route-checkpoint archive that restarts episodes along the agents' own best
 route progress, a dialogue-loop penalty and a reward-scaler warm-up rollout, after v5-1 got stuck at the end of Route 29),
@@ -26,6 +28,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from src import anti_farm as _anti_farm
 from src import dialogue_loop as _dialogue_loop
 from src import dwell as _dwell
 from src import entropy_guard as _entropy_guard
@@ -36,7 +39,7 @@ from src import story_path as _story_path
 from src import route_ckpt as _route_ckpt
 from src import stagnation as _stagnation
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6", "long_v7", "long_v8")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6", "long_v7", "long_v8", "long_v9")
 
 
 class ConfigError(ValueError):
@@ -257,6 +260,33 @@ class TrainConfig:
     # house, egg received, egg delivered), 3 more story bits in the observation (80 inputs instead of 77), the phase-aware
     # path-progress measure (695 steps instead of 309) and a 12-entry dwell_level_targets table.  Old checkpoints no longer fit.
     egg_errand_route: bool = False
+    # --- long_v9 fields (progress-first rewards and policy; all OFF / unchanged by default and in every older preset) ---
+    # Anti-farming (src.anti_farm + src.rl_env.progress_reward ``farm``): wild-battle win / KO / damage payments are scaled by
+    # wild_battle_scale and decay per wild battle of the episode (the first battle_free_count pay in full, then x battle_decay each,
+    # never below battle_floor), all under a small per-episode wild_battle_budget; trainer battles (forced, story-gating) keep
+    # their full size under their own trainer_battle_budget.  The level-up reward is paid only while the party's highest level is
+    # below the current story stage's dwell_level_targets entry (needs dwell_penalty), a catch pays catch_reward only for a species
+    # not yet caught in the episode (catch_budget per episode).
+    anti_farm: bool = False
+    battle_free_count: int = _anti_farm.FREE_BATTLES
+    battle_decay: float = _anti_farm.DECAY
+    battle_floor: float = _anti_farm.FLOOR
+    wild_battle_scale: float = _anti_farm.WILD_SCALE
+    wild_battle_budget: float = _anti_farm.WILD_BUDGET
+    trainer_battle_budget: float = _anti_farm.TRAINER_BUDGET
+    level_gate_by_target: bool = True
+    catch_new_species_only: bool = True
+    catch_reward: float = _anti_farm.CATCH_REWARD
+    catch_budget: float = _anti_farm.CATCH_BUDGET
+    # Milestone payments (maps, key events, the badge) are multiplied by milestone_reward_scale (1.0 = unchanged) and by a speed
+    # factor from milestone_speed_bonus (reached at step 0 of the episode, linearly down to 1.0 at the episode's step limit; 1.0 =
+    # off), so reaching a milestone sooner pays more.
+    milestone_reward_scale: float = 1.0
+    milestone_speed_bonus: float = 1.0
+    # Time-awareness (Pardo et al. 2018): one extra observation scalar, steps_in_episode / episode_limit in [0, 1], appended
+    # at the end of the deep vector (80 -> 81 inputs with the egg route).  Not a direction or distance hint.  Old checkpoints no
+    # longer load.
+    time_feature: bool = False
     # output
     save_path: str = "logs/deep_policy.pt"
 
@@ -374,6 +404,12 @@ class TrainConfig:
         if self.eval_every < 1 or self.eval_episodes < 1 or self.eval_max_steps < 1:
             errs.append(f"eval_every / eval_episodes / eval_max_steps must be >= 1 (got {self.eval_every} / "
                         f"{self.eval_episodes} / {self.eval_max_steps})")
+        errs.extend(_anti_farm.validate_params(
+            self.battle_free_count, self.battle_decay, self.battle_floor, self.wild_battle_scale, self.wild_battle_budget,
+            self.trainer_battle_budget, self.catch_reward, self.catch_budget, self.milestone_speed_bonus,
+            self.milestone_reward_scale))
+        if self.anti_farm and self.level_gate_by_target and not self.dwell_penalty:
+            errs.append("level_gate_by_target needs dwell_penalty (it supplies the per-stage level targets)")
         errs.extend(_idle_press.validate_params(self.idle_press_cost, self.idle_press_budget))
         errs.extend(_entropy_guard.validate_params(
             self.entropy_boost_threshold, self.entropy_boost_until, self.entropy_boost_coef, self.entropy_boost_margin))
@@ -400,6 +436,21 @@ class TrainConfig:
             "max_penalty": self.dwell_max_penalty, "ramp_steps": self.dwell_ramp_steps, "budget": self.dwell_budget,
             "grind_grace": self.dwell_grind_grace, "level_targets": list(self.dwell_level_targets),
         }
+
+    def anti_farm_params(self) -> dict | None:
+        """``farm`` argument of ``progress_reward`` (long_v9), or None when anti-farming is off."""
+        if not self.anti_farm:
+            return None
+        return {"free": self.battle_free_count, "decay": self.battle_decay, "floor": self.battle_floor,
+                "wild_scale": self.wild_battle_scale, "gate_level": bool(self.level_gate_by_target and self.dwell_penalty),
+                "catch_new_only": self.catch_new_species_only, "catch_reward": self.catch_reward}
+
+    def budget_cap_overrides(self) -> dict[str, float]:
+        """Per-episode budget caps handed to the worker's budget dict as ``cap:<key>`` (long_v9; empty when anti-farming is off)."""
+        if not self.anti_farm:
+            return {}
+        return {"cap:battle": float(self.wild_battle_budget), "cap:trainer": float(self.trainer_battle_budget),
+                "cap:catch": float(self.catch_budget)}
 
     def idle_press_params(self) -> dict | None:
         """Keyword arguments for ``src.idle_press.IdlePressTracker``, or None when the penalty is off."""
@@ -765,6 +816,50 @@ def long_v8() -> TrainConfig:
     return cfg
 
 
+def long_v9() -> TrainConfig:
+    """``long_v8`` made progress-first, after run v8-1 (update 107-195, 12 envs): battles (+2208; 846 wild battles, 0 trainer
+    battles) and curiosity (+1842) out-paid the path reward (+1176), the best path progress was ~51 of 695 tiles, 92 % of the
+    visits were on Route 29, 131 white-outs, entropy 1.58 -> 0.99 and A pressed 39-56 % of the time.  Changes (each behind its
+    own flag / field; arithmetic in ``research/analysis/design_hardcoded_vs_learned.md``):
+
+    1. progress dominates: ``path_progress_scale`` 0.3 -> 1.0 (the whole 695-tile route pays 695, 3.3x v8's 208; the
+       per-episode capped farming sources below sum to ~49), ``milestone_reward_scale`` 1.5 (the 12 story payments 195 -> 292)
+       and ``milestone_speed_bonus`` 1.5 (x1.5 at step 0 falling linearly to x1.0 at the episode's step limit), exploration budget
+       12 -> 8, retreat budget 15 -> 30 (the retreat cost per tile, 0.35 x the path scale, rises with it);
+    2. ``anti_farm``: wild-battle win / KO / damage x0.4 and x0.6^(n-2) from the 3rd wild battle of an episode (floor 10 %),
+       wild budget 6 per episode (v8: 20 for all battles), trainer battles undiminished under their own 20; level-ups
+       pay only while the party's highest level is below the stage target; a catch pays 2 for a new species only (budget 4);
+    3. ``time_feature``: steps_in_episode / episode_limit as the last observation input (Pardo et al. 2018, "Time Limits in
+       Reinforcement Learning": a policy that cannot see the clock cannot value urgency under a time limit; 80 -> 81 inputs);
+    4. ``entropy_boost_threshold`` 0.8 -> 1.0 (v8-1 was at 0.99 by update 195 with A on > 39 % of the actions; the boost to 0.05
+       now starts before the collapse that v4-1 showed at 1.1 -> 0.4 within 40 updates).
+
+    Everything else (egg-errand route, battle action mask, periodic eval, heal care, dwell / retreat / stagnation, route
+    checkpoints, white-out termination, dialogue-loop penalty, gamma 0.999) is ``long_v8``.  Old checkpoints no longer load.
+    """
+    cfg = long_v8()
+    cfg.name = "long_v9"
+    cfg.path_progress_scale = 1.0
+    cfg.milestone_reward_scale = 1.5
+    cfg.milestone_speed_bonus = 1.5
+    cfg.explore_budget = 8.0
+    cfg.retreat_budget = 30.0
+    cfg.anti_farm = True
+    cfg.battle_free_count = _anti_farm.FREE_BATTLES
+    cfg.battle_decay = _anti_farm.DECAY
+    cfg.battle_floor = _anti_farm.FLOOR
+    cfg.wild_battle_scale = _anti_farm.WILD_SCALE
+    cfg.wild_battle_budget = _anti_farm.WILD_BUDGET
+    cfg.trainer_battle_budget = _anti_farm.TRAINER_BUDGET
+    cfg.level_gate_by_target = True
+    cfg.catch_new_species_only = True
+    cfg.catch_reward = _anti_farm.CATCH_REWARD
+    cfg.catch_budget = _anti_farm.CATCH_BUDGET
+    cfg.time_feature = True
+    cfg.entropy_boost_threshold = 1.0
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
     if name == "blueprint_v1":
         return blueprint_v1()
@@ -786,6 +881,8 @@ def preset(name: str) -> TrainConfig:
         return long_v7()
     if name == "long_v8":
         return long_v8()
+    if name == "long_v9":
+        return long_v9()
     raise ConfigError(f"unknown preset '{name}' (known: {', '.join(PRESETS)})")
 
 

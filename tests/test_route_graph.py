@@ -203,6 +203,23 @@ class CorrectedRouteTests(unittest.TestCase):
                 elif td in rg._HOP_DIRS:
                     self.assertNotIn(_OPP[d], rg._HOP_DIRS[td], (src, d, dst))
 
+    def test_violet_gym_entrance_and_the_tile_in_front_of_falkner(self):
+        """Verified in the emulator (stage2_gym_entered.state, trainers' beaten flags set): the Violet City door at (18, 17) is
+        the Gym (10, 7) and not the Mart / school / Pokecenter, the 20 gym steps from the entrance mat (4, 15) all move, and
+        (5, 2) is where Falkner (5, 1) can be challenged (face up, A).  Bird Keepers Abe (2, 10) and Rod (7, 6) face right /
+        left with sight 3, so the path crosses their lines on (4, 10) / (5, 10) and (4, 6) whatever the route."""
+        g = self.g
+        city = g.maps[(10, 5)]
+        gym_doors = [(x, y) for (y, x, _wid, grp, num) in city.warps if (grp, num) == (10, 7)]
+        self.assertEqual(gym_doors, [(18, 17)])
+        self.assertEqual(g.warp_at[((10, 5), 18, 17)], ((10, 7), 4, 15))
+        self.assertEqual(g.fwd[((10, 5), 18, 18)][0], ((10, 7), 4, 15))       # up from the tile below the door
+        self.assertEqual(g.goal_distance(0, ((10, 7), 4, 15)), 20)
+        self.assertTrue(walkable(g.maps[(10, 7)].cells[(5, 2)]))
+        for x, y in ((2, 2), (3, 2), (6, 2), (7, 2)):                          # the wall stubs beside the approach tile
+            self.assertFalse(walkable(g.maps[(10, 7)].cells[(x, y)]), (x, y))
+
+
     def test_dashboard_layout_matches_the_route_and_marks_the_ledges(self):
         import json
         from tools.dashboard import STATIC_DIR

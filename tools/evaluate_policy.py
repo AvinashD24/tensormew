@@ -135,10 +135,13 @@ def execute_action(ctx: StepContext, act_idx: int, actions: tuple[str, ...]) -> 
     return before, reader.parse(emu.frame), moved
 
 
-def obs_vector(state, visited: set, obs_dim: int, seen_maps=None) -> np.ndarray:
-    """Observation in the layout the checkpoint was trained with (``DEEP_OBS_DIM``; no route oracle)."""
+def obs_vector(state, visited: set, obs_dim: int, seen_maps=None, time_frac: float | None = None) -> np.ndarray:
+    """Observation in the layout the checkpoint was trained with (``DEEP_OBS_DIM``; no route oracle).
+
+    A long_v9 checkpoint (one extra time-in-episode scalar) needs ``time_frac`` (steps / episode limit); without it the clock reads 0."""
     from src.rl_env import DEEP_OBS_DIM, deep_obs_dim, observe
 
+    tf = 0.0 if time_frac is None else float(time_frac)
     if obs_dim == DEEP_OBS_DIM:
         if _story.profile().egg:
             _story.set_profile(False)
@@ -146,8 +149,16 @@ def obs_vector(state, visited: set, obs_dim: int, seen_maps=None) -> np.ndarray:
     if obs_dim == deep_obs_dim(True):   # an egg-errand (long_v8) checkpoint: its 3 extra story bits need the egg profile
         _story.set_profile(True)
         return observe(state, visited, deep=True, seen_maps=seen_maps)
+    if obs_dim == deep_obs_dim(True, time_aware=True):   # a long_v9 checkpoint: egg profile plus the time scalar
+        _story.set_profile(True)
+        return observe(state, visited, deep=True, seen_maps=seen_maps, time_frac=tf)
+    if obs_dim == deep_obs_dim(False, time_aware=True):
+        if _story.profile().egg:
+            _story.set_profile(False)
+        return observe(state, visited, deep=True, seen_maps=seen_maps, time_frac=tf)
     raise ValueError(
-        f"unsupported checkpoint obs_dim {obs_dim} (expected {DEEP_OBS_DIM} or {deep_obs_dim(True)}); checkpoints from before the "
+        f"unsupported checkpoint obs_dim {obs_dim} (expected {DEEP_OBS_DIM}, {deep_obs_dim(True)} or the time-aware "
+        f"{deep_obs_dim(False, time_aware=True)} / {deep_obs_dim(True, time_aware=True)}); checkpoints from before the "
         "no-oracle observation cannot be evaluated, retrain with --config long_v2"
     )
 
@@ -182,7 +193,8 @@ class GameEnv:
         self.seen_maps.add((st.map_group, st.map_number))
         self.ctx.tile_visit_counts[tile] = self.ctx.tile_visit_counts.get(tile, 0) + 1
         screen = self.emu.pyboy.screen.ndarray[:, :, :3].copy()
-        return screen, obs_vector(st, self.seen_tiles, self.obs_dim, self.seen_maps), st
+        return screen, obs_vector(st, self.seen_tiles, self.obs_dim, self.seen_maps,
+                                  time_frac=getattr(self, 'steps', 0) / float(max(1, self.max_steps))), st
 
     def reset(self, seed: int):
         from src import rl_env
