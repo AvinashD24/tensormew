@@ -60,8 +60,31 @@ RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
 FRAME_RE = re.compile(r"^u\d{6}\.jpg$")
 
 
-def list_runs(runs_dir: Path) -> list[dict]:
-    """Saved training runs (newest first), read from each run's meta.json."""
+LIVE_FRESH_SEC = 180.0
+
+
+def _last_update_time(d: Path) -> float:
+    """When a run last wrote anything: history.jsonl mtime (falls back to meta.json)."""
+    for name in ("history.jsonl", "meta.json"):
+        try:
+            return (d / name).stat().st_mtime
+        except OSError:
+            continue
+    return 0.0
+
+
+def classify_run(finished: bool, last_update: float, is_live_id: bool, now: float) -> str:
+    """'live' only if it is the live run AND recently written; else 'finished' or 'stopped'."""
+    if finished:
+        return "finished"
+    if is_live_id and now - last_update <= LIVE_FRESH_SEC:
+        return "live"
+    return "stopped"
+
+
+def list_runs(runs_dir: Path, live_run_id: str | None = None, now: float | None = None) -> list[dict]:
+    """Saved training runs: the live one first, then by last update (newest first)."""
+    now = time.time() if now is None else now
     out: list[dict] = []
     if not runs_dir.is_dir():
         return out
@@ -73,16 +96,20 @@ def list_runs(runs_dir: Path) -> list[dict]:
             meta = json.loads(meta_path.read_text(encoding="utf-8"))
         except ValueError:
             continue
+        last = _last_update_time(d)
+        finished = bool(meta.get("finished", False))
         out.append(
             {
                 "id": d.name,
                 "started": meta.get("started"),
-                "finished": meta.get("finished", False),
+                "finished": finished,
                 "updates": meta.get("updates_logged", 0),
                 "num_envs": meta.get("num_envs"),
+                "last_update": last,
+                "status": classify_run(finished, last, d.name == live_run_id, now),
             }
         )
-    return sorted(out, key=lambda r: r.get("started") or 0, reverse=True)
+    return sorted(out, key=lambda r: (r["status"] != "live", -(r["last_update"] or 0)))
 
 
 def read_history(run_dir: Path) -> dict:
@@ -193,7 +220,10 @@ def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = Non
                 if route == "/api/world":  # ROM-derived stitched route map (tools/build_route_map.py) for the coverage view
                     return self._send(200, (STATIC_DIR / "world_layout.json").read_bytes(), "application/json", cache="no-cache")
                 if route == "/api/runs":
-                    return self._send(200, json.dumps(list_runs(runs_dir)).encode(), "application/json")
+                    live_id = None
+                    with contextlib.suppress(OSError, ValueError, AttributeError):
+                        live_id = json.loads((live_dir / "state.json").read_text(encoding="utf-8")).get("run_id")
+                    return self._send(200, json.dumps(list_runs(runs_dir, live_id)).encode(), "application/json")
                 m = re.fullmatch(r"/sprites/(\d{1,3})\.png", route)
                 if m:  # Gen 2 front sprites (PokeAPI/sprites); id is digits only, so no path traversal
                     sprite = STATIC_DIR / "sprites" / f"{int(m.group(1))}.png"

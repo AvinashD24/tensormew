@@ -262,6 +262,7 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
     </div>
     <span id="status" class="pill"><span class="dot"></span><span id="statusText">WAITING</span></span>
     <label class="runpick">Source <select id="runSel" aria-label="Choose live view or a saved run to replay"><option value="">Live</option></select></label>
+    <button class="theme" id="backLive" type="button" style="display:none">Back to live</button>
     <div class="chips" id="chips"></div>
     <button class="theme" id="themeBtn" type="button" aria-label="Toggle light and dark theme">Theme</button>
   </header>
@@ -287,6 +288,7 @@ dialog button { background: var(--panel2); border: 1px solid var(--border); colo
     </section>
 
     <section class="grid2">
+      <div class="card" id="staleBanner" style="display:none"></div>
       <div class="card" id="replayCard" style="display:none">
         <h2>Replay <span class="sub">scrub or press play: charts, map and milestones rewind together</span></h2>
         <div id="replayPane" style="display:block">
@@ -880,7 +882,15 @@ function renderHeat() {
 
 
 /* header */
+function renderStale() {
+  const el = $("staleBanner"), age = live && mode !== "replay" ? Date.now() / 1000 - live.t : 0;
+  if (mode !== "replay" && live && age > 120) {
+    el.textContent = `Live feed stopped \u2014 showing last data from ${live.run_id || "unknown run"} at ${new Date(live.t * 1000).toLocaleTimeString()}`;
+    el.style.display = "block";
+  } else el.style.display = "none";
+}
 function renderHeader() {
+  renderStale();
   const el = $("status"), age = live ? Date.now() / 1000 - live.t : Infinity;
   let cls = "", txt = "WAITING";
   if (mode === "replay") { cls = "done"; txt = "REPLAY"; }
@@ -1173,31 +1183,48 @@ function replayPlay() {
   const speed = Number($("repSpeed").value);
   rep.timer = setInterval(() => { rep.idx = Math.min(rep.records.length - 1, rep.idx + 1); replayRender(); if (rep.idx >= rep.records.length - 1) replayStop(); }, Math.max(40, 1000 / speed));
 }
+const LS_KEY = "tm_dash_run";
+const lsGet = () => { try { return localStorage.getItem(LS_KEY) || ""; } catch (e) { return ""; } };
+const lsSet = (v) => { try { v ? localStorage.setItem(LS_KEY, v) : localStorage.removeItem(LS_KEY); } catch (e) {} };
+let runsInfo = [];
 async function enterReplay(id) {
+  const info = runsInfo.find(r => r.id === id);
+  if (info && info.status === "live") { if (mode === "replay") exitReplay(); lsSet(""); $("runSel").value = id; return; }   // live run: follow, don't freeze
+  lsSet(id);
   $("subtitle").textContent = "loading saved run…";
   const r = await fetch(`/api/run/${encodeURIComponent(id)}/history`, { cache: "no-store" }); if (!r.ok) { $("subtitle").textContent = "could not load that run"; $("runSel").value = ""; return; }
   const h = await r.json(); if (!h.records.length) { $("subtitle").textContent = "that run has no saved updates yet"; $("runSel").value = ""; return; }
   replayStop(); mode = "replay"; selectedMap = null; $("runSel").value = id;
   rep = { id, meta: h.meta, records: h.records, frames: h.frames, prior: h.prior || [], metricsAll: h.records.map(x => ({ ...(x.metrics || {}), _wo: (x.components && x.components.neg) ? (x.components.neg.whiteout ?? 0) : null })).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
   if (rep.prior.length && rep.metricsAll.length) rep.metricsAll[0] = { ...rep.metricsAll[0], resumed: true };
-  $("replayCard").style.display = "block";
+  $("replayCard").style.display = "block"; $("backLive").style.display = "";
   $("repSlider").max = rep.records.length - 1;
   replayRender();
 }
 function exitReplay() {
   replayStop(); mode = "live"; rep = null; metrics = []; live = null; lastLiveT = 0; selectedMap = null;
-  $("replayCard").style.display = "none";
+  $("replayCard").style.display = "none"; $("backLive").style.display = "none"; lsSet("");
+  const liveR = runsInfo.find(r => r.status === "live"); $("runSel").value = liveR ? liveR.id : "";
   pollMetrics(); pollLive();
 }
 $("runSel").addEventListener("change", (e) => e.target.value ? enterReplay(e.target.value) : exitReplay());
+$("backLive").onclick = () => { exitReplay(); $("runSel").value = ""; };
 $("repPlay").onclick = replayPlay;
 $("repSlider").addEventListener("input", (e) => { replayStop(); rep.idx = Number(e.target.value); replayRender(); });
 $("repSpeed").addEventListener("change", () => { if (rep && rep.playing) { replayStop(); replayPlay(); } });
+let restored = false;
 async function refreshRuns() {
   try {
-    const runs = await (await fetch("/api/runs", { cache: "no-store" })).json(), sel = $("runSel"), cur = sel.value;
-    sel.innerHTML = `<option value="">Live</option>` + runs.map(r => `<option value="${r.id}">${r.id} (${r.updates} upd${r.finished ? "" : ", running"})</option>`).join("");
+    const runs = await (await fetch("/api/runs", { cache: "no-store" })).json(), sel = $("runSel"), cur = mode === "replay" && rep ? rep.id : "";
+    runsInfo = runs;
+    const lbl = (r) => r.status === "live" ? `LIVE \u2022 ${r.id} (${r.updates} upd)` : `${r.id} (${r.updates} upd, ${r.status === "finished" ? "finished" : "stopped"})`;
+    sel.innerHTML = `<option value="">Live view</option>` + runs.map(r => `<option value="${r.id}">${lbl(r)}</option>`).join("");
     sel.value = runs.some(r => r.id === cur) ? cur : "";
+    if (!restored) {
+      restored = true;
+      const saved = lsGet(), sr = runs.find(r => r.id === saved);
+      if (sr && sr.status !== "live" && mode === "live") enterReplay(saved); else if (saved) lsSet("");
+    }
   } catch (e) {}
 }
 refreshRuns(); setInterval(refreshRuns, 20000);
