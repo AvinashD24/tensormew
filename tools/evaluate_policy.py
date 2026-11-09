@@ -1,0 +1,593 @@
+"""Greedy evaluation of a trained checkpoint: argmax actions, no sticky actions, no noise.
+
+Usage:
+    python -m tools.evaluate_policy --checkpoint models/deep_policy.pt --episodes 8
+    python -m tools.evaluate_policy --checkpoint models/deep_policy.pt --start-state new_bark_outside \
+        --episodes 16 --max-steps 1500 --jitter 6 --name run42
+
+Each episode starts from the saved state (plus 0..``--jitter`` random safe moves so the episodes differ) and the
+policy plays until it beats Falkner or runs out of steps. Reported per episode and as mean with a bootstrap 95%
+interval: steps to reach each story milestone (leg times), events reached, maps visited, final stage, total reward and
+its components, and success (reached the last stage: Falkner beaten, Zephyr Badge). The policy plays its own battles.
+
+The game-step logic (``execute_action``) mirrors the training worker (``tools.train_deep_ppo._worker_fn``) so it can
+be shared later; this module deliberately does not import the trainer.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Callable
+
+import numpy as np
+
+from src import story_path as _story
+from src.story_path import MILESTONE_COUNT, MILESTONES, current_stage as _story_stage
+
+# Stage k = the k-th story milestone reached (0 = still in New Bark); the last stage means Falkner is beaten.
+# Base-profile module constants; the functions below follow the active story profile (an egg-errand checkpoint switches it).
+STAGE_NAMES = ("new_bark",) + tuple(m.name for m in MILESTONES)
+SUCCESS_STAGE = MILESTONE_COUNT
+
+
+def stage_names() -> tuple[str, ...]:
+    return ("new_bark",) + _story.profile().names
+
+
+def success_stage() -> int:
+    return _story.profile().count
+_REPORTED_EVENTS = (
+    "EVENT_GOT_A_POKEMON_FROM_ELM",
+    "EVENT_LEARNED_TO_CATCH_POKEMON",
+    "EVENT_BEAT_FALKNER",
+    "EVENT_GOT_TM31_MUD_SLAP",
+)
+_DELTA = {"up": (0, -1), "down": (0, 1), "left": (-1, 0), "right": (1, 0)}
+
+
+# ----------------------------------------------------------------------------- state helpers
+def _has_event(state, name: str) -> bool:
+    fn = getattr(state, "has_event", None)
+    try:
+        return bool(callable(fn) and fn(name))
+    except Exception:
+        return False
+
+
+def stage_of(state) -> int:
+    """Story stage 0..MILESTONE_COUNT from the current map / badge (see ``src.story_path.current_stage``)."""
+    return int(_story_stage(state))
+
+
+def _map_of(state) -> tuple[int, int]:
+    return (int(state.map_group), int(state.map_number))
+
+
+# ----------------------------------------------------------------------------- game stepping
+@dataclass
+class StepContext:
+    """Everything ``execute_action`` needs; per-episode counters live here."""
+
+    emu: Any
+    reader: Any
+    stepper: Any
+    macros: Any
+    tile_visit_counts: dict = field(default_factory=dict)
+    blocked_count: int = 0
+    consecutive_bumps: int = 0
+
+
+def execute_action(ctx: StepContext, act_idx: int, actions: tuple[str, ...]) -> tuple[Any, Any, bool]:
+    """Turn an action index into one game step, as the training worker does.
+
+    The policy presses the buttons in battle (A / B / directions go straight to the game). Overworld dialogue is
+    advanced by text mashing, ``a`` / ``b`` are button presses and directions go through ``TileStepper`` (with the
+    worker's 4-bump escape). Returns ``(before, after, moved)``.
+    """
+    from src.mover import walkable
+    from src.ram_parser import dialogue_open
+
+    emu, reader, stepper, macros = ctx.emu, ctx.reader, ctx.stepper, ctx.macros
+    before = reader.parse(emu.frame)
+    name = actions[act_idx]
+    moved = False
+    if before.battle_mode != 0:  # learned battle: the policy's button, no script
+        emu.press(name, frames=8)
+        emu.tick(12, render=False)
+        ctx.blocked_count = 0
+    elif dialogue_open(before):  # overworld dialogue only is auto-advanced
+        macros.mash_text(max_frames=80)
+        ctx.blocked_count = 0
+    elif name in ("a", "b"):
+        emu.press(name, frames=8)
+        emu.tick(12, render=False)
+    else:
+        res = stepper.step(name)
+        moved = bool(res.moved)
+        if not moved:
+            ctx.blocked_count += 1
+            if ctx.blocked_count >= 4:
+                cur = reader.parse(emu.frame)
+                tiles = getattr(cur, "tiles", {})
+                cands = []
+                for d in ("left", "right", "up", "down"):
+                    if walkable(tiles.get(d, 0xFF), d):
+                        dx, dy = _DELTA[d]
+                        cands.append((ctx.tile_visit_counts.get((cur.map_group, cur.map_number, cur.x + dx, cur.y + dy), 0), d))
+                if cands:
+                    cands.sort(key=lambda c: c[0])
+                    stepper.step(cands[0][1])
+                else:
+                    emu.press("b", frames=8)
+                    emu.tick(12, render=False)
+                ctx.blocked_count = 0
+        else:
+            ctx.blocked_count = 0
+    if not moved and before.battle_mode == 0 and not dialogue_open(before) and name not in ("a", "b"):
+        ctx.consecutive_bumps += 1
+    else:
+        ctx.consecutive_bumps = 0
+    return before, reader.parse(emu.frame), moved
+
+
+def obs_vector(state, visited: set, obs_dim: int, seen_maps=None, time_frac: float | None = None) -> np.ndarray:
+    """Observation in the layout the checkpoint was trained with (``DEEP_OBS_DIM``; no route oracle).
+
+    A long_v9 checkpoint (one extra time-in-episode scalar) needs ``time_frac`` (steps / episode limit); without it the clock reads 0."""
+    from src.rl_env import DEEP_OBS_DIM, deep_obs_dim, observe
+
+    tf = 0.0 if time_frac is None else float(time_frac)
+    if obs_dim == DEEP_OBS_DIM:
+        if _story.profile().egg:
+            _story.set_profile(False)
+        return observe(state, visited, deep=True, seen_maps=seen_maps)
+    if obs_dim == deep_obs_dim(True):   # an egg-errand (long_v8) checkpoint: its 3 extra story bits need the egg profile
+        _story.set_profile(True)
+        return observe(state, visited, deep=True, seen_maps=seen_maps)
+    if obs_dim == deep_obs_dim(True, time_aware=True):   # a long_v9 checkpoint: egg profile plus the time scalar
+        _story.set_profile(True)
+        return observe(state, visited, deep=True, seen_maps=seen_maps, time_frac=tf)
+    if obs_dim == deep_obs_dim(False, time_aware=True):
+        if _story.profile().egg:
+            _story.set_profile(False)
+        return observe(state, visited, deep=True, seen_maps=seen_maps, time_frac=tf)
+    raise ValueError(
+        f"unsupported checkpoint obs_dim {obs_dim} (expected {DEEP_OBS_DIM}, {deep_obs_dim(True)} or the time-aware "
+        f"{deep_obs_dim(False, time_aware=True)} / {deep_obs_dim(True, time_aware=True)}); checkpoints from before the "
+        "no-oracle observation cannot be evaluated, retrain with --config long_v2"
+    )
+
+
+class GameEnv:
+    """Headless PyBoy episode wrapper: ``reset(seed)`` and ``step(action) -> (obs..., reward, components, done)``."""
+
+    def __init__(self, start_state: str, obs_dim: int, max_steps: int, jitter: int = 6):
+        from src.emulator import Emulator
+        from src.macros import Macros
+        from src.ram_parser import RamParser
+        from src.rl_env import ACTIONS
+        from src.states import StateRegistry
+        from src.step import TileStepper
+
+        self.actions = tuple(ACTIONS)
+        self.start_state, self.obs_dim, self.max_steps, self.jitter = start_state, obs_dim, max_steps, jitter
+        self._data = StateRegistry().load_bytes(start_state)
+        self.emu = Emulator(headless=True, speed=0, rtc_lock=True)
+        self.reader = RamParser(self.emu)
+        self.ctx = StepContext(self.emu, self.reader, TileStepper(self.emu, self.reader), Macros(self.emu, self.reader))
+
+    def _equip_balls(self) -> None:
+        from src.battle_obs import equip_supplies
+
+        equip_supplies(self.emu)
+
+    def _observe(self):
+        st = self.reader.parse(self.emu.frame)
+        tile = (st.map_group, st.map_number, st.x, st.y)
+        self.seen_tiles.add(tile)
+        self.seen_maps.add((st.map_group, st.map_number))
+        self.ctx.tile_visit_counts[tile] = self.ctx.tile_visit_counts.get(tile, 0) + 1
+        screen = self.emu.pyboy.screen.ndarray[:, :, :3].copy()
+        return screen, obs_vector(st, self.seen_tiles, self.obs_dim, self.seen_maps,
+                                  time_frac=getattr(self, 'steps', 0) / float(max(1, self.max_steps))), st
+
+    def reset(self, seed: int):
+        from src import rl_env
+        from src.ram_parser import dialogue_open
+
+        self.emu.load_state(self._data)
+        self._equip_balls()
+        self.seen_tiles: set = set()
+        self.seen_maps: set = set()
+        self.caught_counts: dict = {}
+        self.seen_waypoints: set = set()
+        self.budget: dict = {}
+        self.ctx.tile_visit_counts.clear()
+        self.ctx.blocked_count = self.ctx.consecutive_bumps = 0
+        self.steps = 0
+        st = self.reader.parse(self.emu.frame)
+        init = getattr(rl_env, "initial_seen_events", None)
+        self.seen_events: set = set(init(st)) if callable(init) else set()
+        rng = np.random.default_rng(seed)
+        for _ in range(int(rng.integers(0, self.jitter + 1)) if self.jitter > 0 else 0):  # start jitter
+            cur = self.reader.parse(self.emu.frame)
+            if cur.battle_mode != 0 or dialogue_open(cur):
+                break
+            self.ctx.stepper.step(self.actions[int(rng.integers(0, 4))])
+        return self._observe()
+
+    def step(self, act_idx: int):
+        from src.rl_env import StepInfo, progress_reward
+
+        before, after, moved = execute_action(self.ctx, act_idx, self.actions)
+        unvisited = False
+        if 0 <= act_idx < 4:
+            dx, dy = _DELTA[self.actions[act_idx]]
+            unvisited = (before.map_group, before.map_number, before.x + dx, before.y + dy) not in self.seen_tiles
+        comps: dict[str, float] = {}
+        reward, _, _ = progress_reward(
+            before, after, moved, self.seen_tiles, self.seen_maps,
+            unvisited_neighbor=unvisited, caught_counts=self.caught_counts, seen_events=self.seen_events,
+            seen_waypoints=self.seen_waypoints, info=StepInfo(consecutive_bumps=self.ctx.consecutive_bumps),
+            components=comps, budget=self.budget,
+        )
+        self.steps += 1
+        screen, obs, st = self._observe()
+        return screen, obs, st, float(reward), comps, self.steps >= self.max_steps
+
+    def close(self) -> None:
+        self.emu.close()
+
+
+# ----------------------------------------------------------------------------- policy wrapper
+class GreedyPolicy:
+    """Argmax over a ``SpatialVisionPolicy`` (carries the GRU state when the checkpoint is recurrent)."""
+
+    def __init__(self, policy, device: str = "cpu"):
+        self.policy, self.device, self.hx = policy, device, None
+        self.obs_dim = int(policy.obs_dim)
+
+    def reset(self) -> None:
+        self.hx = None
+
+    def act(self, screen: np.ndarray, obs: np.ndarray) -> int:
+        ram = np.asarray(obs, dtype=np.float32)
+        if getattr(self.policy, "use_gru", False):
+            probs, self.hx = self.policy.probs_recurrent(screen, ram, self.hx, device=self.device)
+        else:
+            probs = self.policy.probs(screen, ram, device=self.device)
+        return int(np.argmax(probs))
+
+
+# ----------------------------------------------------------------------------- episodes and stats
+def run_episode(env, policy, seed: int, max_steps: int) -> dict:
+    """Play one greedy episode and return its metrics. ``env`` and ``policy`` are duck-typed (see GameEnv, GreedyPolicy)."""
+    policy.reset()
+    screen, obs, st = env.reset(seed)
+    stage = stage_of(st)
+    leg_steps: dict[int, int] = {}  # leg k is complete the first step the stage is >= k + 1
+    events_at: dict[str, int] = {name: 0 for name in _REPORTED_EVENTS if _has_event(st, name)}
+    maps = {_map_of(st)}
+    total = 0.0
+    comps: dict[str, float] = {}
+    steps = 0
+    t0 = time.time()
+    while steps < max_steps:
+        act = policy.act(screen, obs)
+        screen, obs, st, reward, c, done = env.step(act)
+        steps += 1
+        total += reward
+        for k, v in (c or {}).items():
+            comps[k] = comps.get(k, 0.0) + float(v)
+        maps.add(_map_of(st))
+        stage = max(stage, stage_of(st))
+        for k in range(stage):
+            leg_steps.setdefault(k, steps)
+        for name in _REPORTED_EVENTS:
+            if name not in events_at and _has_event(st, name):
+                events_at[name] = steps
+        if stage >= success_stage() or done:
+            break
+    return {
+        "seed": seed,
+        "steps": steps,
+        "final_stage": stage,
+        "final_stage_name": stage_names()[min(stage, len(stage_names()) - 1)],
+        "success": stage >= success_stage(),
+        "leg_steps": {str(k): v for k, v in sorted(leg_steps.items())},
+        "events": events_at,
+        "maps_visited": len(maps),
+        "maps": sorted(f"{g},{n}" for g, n in maps),
+        "total_reward": round(total, 3),
+        "components": {k: round(v, 3) for k, v in sorted(comps.items())},
+        "seconds": round(time.time() - t0, 1),
+    }
+
+
+def bootstrap_ci(values: list[float], n_boot: int = 2000, alpha: float = 0.05, seed: int = 0) -> tuple[float, float, float]:
+    """(mean, low, high) with a percentile bootstrap interval; NaNs when there are no values."""
+    if not values:
+        return (float("nan"),) * 3
+    arr = np.asarray(values, dtype=np.float64)
+    if len(arr) == 1:
+        return (float(arr[0]),) * 3
+    rng = np.random.default_rng(seed)
+    means = rng.choice(arr, size=(n_boot, len(arr)), replace=True).mean(axis=1)
+    return float(arr.mean()), float(np.quantile(means, alpha / 2)), float(np.quantile(means, 1 - alpha / 2))
+
+
+def _stat(values: list[float]) -> dict:
+    mean, lo, hi = bootstrap_ci(values)
+    return {"n": len(values), "mean": mean, "ci_low": lo, "ci_high": hi}
+
+
+def aggregate(episodes: list[dict]) -> dict:
+    """Mean and bootstrap interval across episodes. Leg times only average the episodes that reached the leg."""
+    legs = {}
+    for k in range(success_stage()):
+        reached = [e["leg_steps"][str(k)] for e in episodes if str(k) in e["leg_steps"]]
+        legs[str(k)] = {"name": stage_names()[k], "reached": len(reached), "of": len(episodes), **_stat(reached)}
+    comp_keys = sorted({k for e in episodes for k in e["components"]})
+    event_names = sorted({n for e in episodes for n in e["events"]})
+    return {
+        "episodes": len(episodes),
+        "success_rate": _stat([1.0 if e["success"] else 0.0 for e in episodes]),
+        "final_stage": _stat([float(e["final_stage"]) for e in episodes]),
+        "total_reward": _stat([e["total_reward"] for e in episodes]),
+        "steps": _stat([float(e["steps"]) for e in episodes]),
+        "maps_visited": _stat([float(e["maps_visited"]) for e in episodes]),
+        "legs": legs,
+        "components": {k: _stat([e["components"].get(k, 0.0) for e in episodes]) for k in comp_keys},
+        "events_reached": {n: sum(1 for e in episodes if n in e["events"]) for n in event_names},
+    }
+
+
+def format_report(result: dict) -> str:
+    agg = result["aggregate"]
+    f = lambda s, d=1: f"{s['mean']:.{d}f} [{s['ci_low']:.{d}f}, {s['ci_high']:.{d}f}]"
+    lines = [
+        f"Greedy evaluation: {result['checkpoint']}  start={result['start_state']}  episodes={agg['episodes']}  "
+        f"max_steps={result['max_steps']}",
+        "",
+        f"{'ep':>3} {'seed':>5} {'steps':>6} {'stage':<11} {'ok':>3} {'maps':>4} {'reward':>9}  legs (steps to finish each stage goal)",
+    ]
+    for i, e in enumerate(result["episodes"]):
+        legs = " ".join(f"{stage_names()[int(k)][:6]}={v}" for k, v in e["leg_steps"].items()) or "-"
+        lines.append(
+            f"{i:>3} {e['seed']:>5} {e['steps']:>6} {e['final_stage_name']:<11} {'yes' if e['success'] else 'no':>3} "
+            f"{e['maps_visited']:>4} {e['total_reward']:>9.1f}  {legs}"
+        )
+    lines += ["", "Mean [95% bootstrap CI]",
+              f"  success rate   {f(agg['success_rate'], 2)}",
+              f"  final stage    {f(agg['final_stage'], 2)}",
+              f"  total reward   {f(agg['total_reward'])}",
+              f"  steps          {f(agg['steps'], 0)}",
+              f"  maps visited   {f(agg['maps_visited'])}"]
+    for k, leg in agg["legs"].items():
+        t = f(leg, 0) if leg["reached"] else "never reached"
+        lines.append(f"  leg {k} {leg['name']:<10} reached {leg['reached']}/{leg['of']}  steps {t}")
+    if agg["components"]:
+        lines.append("  reward by component (mean per episode)")
+        for k, s in sorted(agg["components"].items(), key=lambda kv: -abs(kv[1]["mean"])):
+            lines.append(f"    {k:<12} {f(s)}")
+    if agg["events_reached"]:
+        lines.append("  events reached: " + ", ".join(f"{n.removeprefix('EVENT_').lower()} {c}/{agg['episodes']}" for n, c in agg["events_reached"].items()))
+    return "\n".join(lines)
+
+
+def evaluate(
+    env,
+    policy,
+    episodes: int,
+    max_steps: int,
+    seed: int = 0,
+    meta: dict | None = None,
+    on_episode: Callable[[int, dict], None] | None = None,
+) -> dict:
+    results = []
+    for i in range(episodes):
+        ep = run_episode(env, policy, seed + i, max_steps)
+        results.append(ep)
+        if on_episode:
+            on_episode(i, ep)
+    return {
+        **(meta or {}),
+        "max_steps": max_steps,
+        "success_definition": f"reached stage {success_stage()} (Falkner beaten, Zephyr Badge)",
+        "episodes": results,
+        "aggregate": aggregate(results),
+    }
+
+
+# ----------------------------------------------------------------------------- learned vs head start (sampled, training env)
+def summarize_sampled(episodes: list[dict]) -> dict:
+    """Mean / median best path progress and per-milestone reach rate and first-reach step over sampled episodes."""
+    from src.milestone_stats import milestone_labels
+
+    n = len(episodes)
+    best = sorted(float(e["best_path"]) for e in episodes if e.get("best_path") is not None)
+    gain = sorted(float(e["gain"]) for e in episodes if e.get("gain") is not None)
+
+    def med(v):
+        return float(np.median(v)) if v else None
+
+    out = {"episodes": n, "best_path_mean": float(np.mean(best)) if best else None, "best_path_median": med(best),
+           "gain_mean": float(np.mean(gain)) if gain else None, "whiteouts": sum(1 for e in episodes if e.get("whiteout")),
+           "milestones": {}}
+    for m, label in enumerate(milestone_labels()):
+        steps = [e["ms_steps"][str(m)] for e in episodes if str(m) in e.get("ms_steps", {})]
+        out["milestones"][label] = {"reached": len(steps), "rate": (len(steps) / n) if n else None,
+                                    "steps_mean": float(np.mean(steps)) if steps else None, "steps_median": med(steps)}
+    return out
+
+
+def run_sampled_episode(worker, net, seed: int, device: str = "cpu") -> dict:
+    """One STOCHASTIC episode (actions sampled from the policy, like training) in the real training ``EnvWorker``.
+
+    ``worker`` is a ``tools.train_deep_ppo.EnvWorker`` built without archives (always the base start state);
+    ``net`` a ``SpatialVisionPolicy`` or None (uniform random actions).  Records the best path progress, the gain over
+    the progress at the episode start, the step each milestone was first reached, white-out / end reason and a few
+    healing-diagnosis counters (steps with the lead below 30 % HP outside battle, heal payments, healing items used).
+    """
+    import torch
+
+    from src.battle_obs import heal_item_count
+
+    worker.rng = np.random.default_rng([int(seed), 7])
+    torch.manual_seed(int(seed))
+    screen, ram = worker.reset()
+    start_progress = worker.path_progress.best if worker.path_progress is not None else None
+    hx = None
+    ms_steps: dict[str, int] = {}
+    steps = lowhp_out = heal_events = items_used = 0
+    heal_reward = 0.0
+    prev_items = heal_item_count(worker.reader.parse(worker.emu.frame))
+    min_lead = 1.0
+    info: dict = {}
+    done = False
+    t0 = time.time()
+    while not done:
+        if net is None:
+            act = int(worker.rng.integers(0, 6))
+        else:
+            with torch.inference_mode():
+                s_t = (torch.from_numpy(screen).to(device).permute(2, 0, 1).unsqueeze(0).float().div_(255.0)
+                       .contiguous(memory_format=torch.channels_last))
+                r_t = torch.from_numpy(ram).float().to(device).unsqueeze(0)
+                if getattr(net, "use_gru", False):
+                    logits, _, hx = net.forward_recurrent(s_t, r_t, hx)
+                else:
+                    logits, _ = net(s_t, r_t)
+                act = int(torch.distributions.Categorical(logits=logits).sample().item())
+        screen, ram, _rew, done, _maps, _badges, info = worker.step(act)
+        steps += 1
+        for m_idx, m_steps, _base in (info.get("ms_new") or []):
+            ms_steps.setdefault(str(int(m_idx)), int(m_steps))
+        comps = info.get("reward_components") or {}
+        if comps.get("heal", 0.0) > 0:
+            heal_events += 1
+            heal_reward += float(comps["heal"])
+        if not done:   # after a done the info describes the NEW episode's first observation
+            fun = info.get("fun") or {}
+            ph = fun.get("ph") or []
+            if ph and ph[0][1] > 0:
+                frac = ph[0][0] / ph[0][1]
+                min_lead = min(min_lead, frac)
+                if frac < 0.3 and not fun.get("bm"):
+                    lowhp_out += 1
+            items = heal_item_count(worker.reader.parse(worker.emu.frame))
+            if items < prev_items:
+                items_used += prev_items - items
+            prev_items = items
+    best = info.get("ended_best_path")
+    return {"seed": int(seed), "steps": steps, "start_progress": start_progress, "best_path": best,
+            "gain": (None if best is None or start_progress is None else float(best) - float(start_progress)),
+            "ms_steps": ms_steps, "end_reason": info.get("end_reason"), "whiteout": info.get("end_reason") == "whiteout",
+            "lowhp_steps_outside_battle": lowhp_out, "heal_events": heal_events, "heal_reward": round(heal_reward, 3),
+            "heal_items_used": items_used, "min_lead_hp": round(min_lead, 3), "seconds": round(time.time() - t0, 1)}
+
+
+def sampled_eval_main(args) -> int:
+    """``--sampled``: evaluate a checkpoint (or ``--random-init`` weights) with sampled actions in the training env."""
+    import torch
+
+    torch.set_num_threads(6)
+    from src.deep_policy import SpatialVisionPolicy
+    from src.rl_env import ACTIONS, deep_obs_dim
+    from src.train_config import load_config
+    from tools.train_deep_ppo import EnvWorker, worker_env_cfg
+
+    cfg = load_config(args.config)
+    _story.set_profile(cfg.egg_errand_route)
+    if getattr(args, "uniform_random", False):
+        net, label = None, "uniform-random"   # equivalent to an untrained net whose logits are ~flat; ~3x faster on CPU
+    elif args.random_init:
+        torch.manual_seed(args.seed)
+        net = SpatialVisionPolicy(obs_dim=deep_obs_dim(), num_actions=len(ACTIONS), use_gru=cfg.recurrent,
+                                  gru_hidden_dim=512, aux_heads=bool(cfg.aux_loss and cfg.recurrent))
+        label = "random-init"
+    else:
+        net = SpatialVisionPolicy.load(args.checkpoint, device=args.device, check_schema=True)
+        label = str(args.checkpoint)
+    if net is not None:
+        net.set_battle_a_bias(0.0)
+        net.eval()
+        net.vision_trunk = net.vision_trunk.to(memory_format=torch.channels_last)   # ~30 % faster CPU inference
+    ecfg = worker_env_cfg(cfg, None, None, None)
+    ecfg.update({"stagger_episodes": False, "episode_len_jitter": 0.0, "seed": args.seed})
+    worker = EnvWorker(0, [args.start_state], args.max_steps, ecfg)
+    episodes = []
+    try:
+        for i in range(args.episodes):
+            ep = run_sampled_episode(worker, net, args.seed + i, args.device)
+            episodes.append(ep)
+            print(f"ep {i} seed {ep['seed']}: best {ep['best_path']} (gain {ep['gain']}) ms {ep['ms_steps']} "
+                  f"end {ep['end_reason']} steps {ep['steps']} lowHP-out {ep['lowhp_steps_outside_battle']} "
+                  f"heals {ep['heal_events']} items {ep['heal_items_used']} ({ep['seconds']}s)", flush=True)
+            out = {"label": label, "start_state": args.start_state, "max_steps": args.max_steps, "seed": args.seed,
+                   "config": cfg.name, "episodes": episodes, "summary": summarize_sampled(episodes)}
+            Path(args.out_dir).mkdir(parents=True, exist_ok=True)
+            (Path(args.out_dir) / f"{args.name or 'sampled'}.json").write_text(json.dumps(out, indent=1), encoding="utf-8")
+    finally:
+        worker.close()
+    print(json.dumps(summarize_sampled(episodes), indent=1))
+    return 0
+
+
+def main(argv=None) -> int:
+    ap = argparse.ArgumentParser(description="Greedy evaluation of a SpatialVisionPolicy checkpoint")
+    ap.add_argument("--checkpoint", default=None)
+    ap.add_argument("--start-state", default="new_bark_outside")
+    ap.add_argument("--episodes", type=int, default=8)
+    ap.add_argument("--max-steps", type=int, default=1500)
+    ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--jitter", type=int, default=6, help="max random safe moves after reset (0 disables)")
+    ap.add_argument("--name", default=None, help="output name: logs/eval/<name>.json (default: checkpoint stem)")
+    ap.add_argument("--out-dir", default="logs/eval")
+    ap.add_argument("--device", default="cpu")
+    ap.add_argument("--sampled", action="store_true",
+                    help="learned-vs-head-start mode: stochastic actions in the real training env from the base start state")
+    ap.add_argument("--random-init", action="store_true", help="with --sampled: untrained random-weight policy (baseline)")
+    ap.add_argument("--uniform-random", action="store_true", help="with --sampled: uniform random actions, no network (fast baseline)")
+    ap.add_argument("--config", default="long_v6", help="with --sampled: preset whose environment / reward settings are used")
+    args = ap.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if args.sampled:
+        if not (args.random_init or args.uniform_random or args.checkpoint):
+            ap.error("--sampled needs --checkpoint, --random-init or --uniform-random")
+        return sampled_eval_main(args)
+    if not args.checkpoint:
+        ap.error("--checkpoint is required")
+
+    from src.deep_policy import SpatialVisionPolicy
+
+    net = SpatialVisionPolicy.load(args.checkpoint, device=args.device, check_schema=True)
+    net.to(args.device)
+    policy = GreedyPolicy(net, args.device)
+    env = GameEnv(args.start_state, policy.obs_dim, args.max_steps, args.jitter)
+    try:
+        result = evaluate(
+            env, policy, args.episodes, args.max_steps, args.seed,
+            meta={"checkpoint": str(args.checkpoint), "start_state": args.start_state, "jitter": args.jitter, "seed": args.seed},
+            on_episode=lambda i, e: print(f"episode {i}: stage {e['final_stage_name']} in {e['steps']} steps, reward {e['total_reward']:.1f}", flush=True),
+        )
+    finally:
+        env.close()
+    print()
+    print(format_report(result))
+    name = args.name or Path(args.checkpoint).stem
+    out = Path(args.out_dir) / f"{name}.json"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(result, indent=1), encoding="utf-8")
+    print(f"\nwrote {out}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

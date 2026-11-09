@@ -1,6 +1,5 @@
 # tensormew (PokéMind) — System Specification
 
-**Single source of truth.** Consolidates hackathon execution (`CONTEXT.md` retired) and long-term CRYSTAL-HYBRID research direction (`pokemon_agent.pdf`).
 
 **Game:** Pokémon Crystal (GBC) on PyBoy · **ROM:** Crystal US **1.1** · **Implement with:** Cursor Agent
 
@@ -37,7 +36,6 @@ Compare **LLM-on-triggers** vs **LLM-every-step baseline** on the **same checkpo
 | --- | --- |
 | New Bark → 3+ badges via agent | **Stretch** — needs many checkpoints + segment scripts |
 | 8 badges + Lance | **Unlikely** unless heavily pre-seeded and scripted |
-| Full `pokemon_agent.pdf` stack (PPO, scouts, Metamon CI) | **Post-hackathon** — see [Appendix A](#appendix-a-crystal-hybrid-research-roadmap-deferred) |
 
 ---
 
@@ -87,7 +85,7 @@ Event-routed **two-layer** agent. Maps to `src/` modules — **do not** build Ti
 | `src/segment.py`, `src/chain.py`, `app.py` | Done | Explore until the map changes; thought log |
 | `src/rl_env.py`, `src/ppo.py` | Done | Natural-progress rewards; PPO learns while playing |
 
-Legacy entrypoints: `crystal_smoke.py` (hour-0 smoke), `tests/test_*.py`.
+Legacy entrypoints: `tests/test_*.py`.
 
 ---
 
@@ -100,7 +98,7 @@ Legacy entrypoints: `crystal_smoke.py` (hour-0 smoke), `tests/test_*.py`.
 - Python 3.13+, venv `.venv`, `pyboy==2.8.1`
 - ROM SHA1: `f2f52230b536214ef7c9924f483392993e226cfb` (Crystal US 1.1)
 - Paths: `rom/pokemon_crystal.gbc`, `rom/pokemon_crystal.sym`
-- Banked WRAM: `pyboy.memory[bank, addr]` for `0xD000–0xDFFF` (see `ram_parser` / `crystal_smoke.py`)
+- Banked WRAM: `pyboy.memory[bank, addr]` for `0xD000–0xDFFF` (see `ram_parser`)
 - SDL controls: arrows, `a` = A, `s` = B, Enter = Start
 
 ### 3.2 Hour-0 verification
@@ -108,9 +106,7 @@ Legacy entrypoints: `crystal_smoke.py` (hour-0 smoke), `tests/test_*.py`.
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-python crystal_smoke.py --headless
 pytest tests/ -q
-# In-game: python tools/make_state.py …  OR  crystal_smoke.py --make-state states/foo.state
 ```
 
 ### 3.3 Go/no-go checklist
@@ -128,16 +124,13 @@ pytest tests/ -q
 ```text
 tensormew/
 ├── SPEC.md                    ← you are here
-├── pokemon_agent.pdf          ← long research narrative (defer implementation)
-├── crystal_smoke.py
 ├── requirements.txt
 ├── rom/pokemon_crystal.{gbc,sym}
 ├── states/manifest.json       ← checkpoint registry (+ gitignored *.state)
 ├── src/                       ← emulator, ram_parser, step, … + mover, macros, triggers, llm
 ├── tools/                     ← make_state, import_sav, run_episode, replay
 ├── tests/
-├── app.py                     ← Streamlit (planned)
-└── .cursor/rules/crystal-hybrid.mdc
+└── app.py                     ← Streamlit (planned)
 ```
 
 ---
@@ -251,7 +244,6 @@ The segment searches unvisited walkable tiles until the map, badges, or a Cut tr
 
 ## 6. Hackathon implementation phases
 
-**Parallel Phase 1 (two devs):** [`phase-1/01-dev-a-execution.md`](phase-1/01-dev-a-execution.md) · [`phase-1/02-dev-b-supervisor.md`](phase-1/02-dev-b-supervisor.md)
 
 Work **H0 → H4** in order. One Cursor task per phase unless the user expands scope.
 
@@ -263,7 +255,7 @@ H0 Infra ──► H1 Mover ──► H2 Macros+Triggers ──► H3 LLM ──
 
 | Phase | Deliverables | Verification |
 | --- | --- | --- |
-| **H0** | emulator, ram_parser, step, states, tools, tests | `pytest tests/ -q`, `crystal_smoke.py --headless` |
+| **H0** | emulator, ram_parser, step, states, tools, tests | `pytest tests/ -q` |
 | **H1** | `mover.py`, walking on `route_test` save | `moved=True`, coords ±1, adj tiles update |
 | **H2** | `macros.py`, `triggers.py`, Cut on `ilex_cut` | E2E: blocked → trigger → `use_cut()` → pass |
 | **H3** | `llm_supervisor.py`, tool schema with `reason`, `always_on` baseline | Mock + one live tool call; cost log **and** decision trace |
@@ -293,10 +285,8 @@ H0 Infra ──► H1 Mover ──► H2 Macros+Triggers ──► H3 LLM ──
 
 ## 7. Cursor Agent workflow
 
-- **Contract:** `@SPEC.md` — not `pokemon_agent.pdf` for day-to-day work.
 - **One phase per task:** e.g. *"Implement H2 per SPEC §6; do not start H3."*
-- **Run commands:** `pytest`, `crystal_smoke.py`, `tools/run_episode.py` — report exit codes.
-- **Git:** pull `origin/main` before every push, then commit and push often. Rule file: [`.cursor/rules/parallel-git.mdc`](.cursor/rules/parallel-git.mdc).
+- **Run commands:** `pytest`, `tools/run_episode.py` — report exit codes.
 - **ROM:** do not rebuild from pret unless asked.
 
 **Kickoff (H1):**
@@ -323,13 +313,11 @@ Rekursiv and research deps — **do not invent packages**. Use when building [Ap
 | PyBoy | Emulator |
 | UT-Austin-RPL/metamon | Gen2OU combat (research phase) |
 
-Craftax patterns (frontier buffer, action-effect head) live in `pokemon_agent.pdf` + priml/configgle — **not** hackathon scope.
 
 ---
 
 ## Appendix A — CRYSTAL-HYBRID research roadmap (deferred)
 
-Long-term **3-tier** design from `pokemon_agent.pdf` / original SPEC:
 
 - **Tier 3:** Worker A (A* autopilot), Worker B (Recurrent PPO + Craftax curriculum), Worker C (Metamon + minimax)
 - **Tier 2:** Interrupt router, SayCan gate, ghost scouts, stall caps
@@ -352,7 +340,6 @@ Read the PDF for equations, WRAM tables, and acceptance benchmarks when resuming
 
 ## Appendix B — Cursor project rules
 
-Live copy: [`.cursor/rules/crystal-hybrid.mdc`](.cursor/rules/crystal-hybrid.mdc) (`alwaysApply: true`).
 
 Summary:
 
@@ -364,4 +351,3 @@ Summary:
 
 ---
 
-*Canonical spec for tensormew. Narrative detail: `pokemon_agent.pdf`. Hour-0: `crystal_smoke.py`.*

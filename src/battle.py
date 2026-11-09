@@ -210,7 +210,10 @@ def _item_guard(macros) -> _ItemGuard:
 
 
 def tactical_battle_step(state, macros, enemy_types: tuple[int, ...] = (2, 0), grind: bool = False):
-    """Execute optimal combat/capture/item/switch action:
+    """LEGACY SCRIPT: not used by the RL path (trainer, evaluator, play_live) any more. Battles are LEARNED there: the
+    policy presses the buttons itself. Kept for the scripted tools (run_episode, run_chain, ...) and its own tests.
+
+    Execute optimal combat/capture/item/switch action:
     - 0. Faint Recovery & Switch:
          - If all party Pokémon are fainted, clear whiteout dialogue to respawn.
          - If active Pokémon is fainted (cur_hp == 0), find first conscious party

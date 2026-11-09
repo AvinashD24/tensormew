@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from src.ppo import Policy, ppo_update
+from src import rl_env
 from src.rl_env import OBS_DIM, CrystalEnv
 from src.rl_env import progress_reward
 
@@ -101,7 +102,7 @@ class RewardTests(unittest.TestCase):
         _obs, reward, _done, info = env.step(3)
         self.assertTrue(info.discovered_tile)
         self.assertFalse(info.discovered_map)
-        self.assertAlmostEqual(reward, -0.01 + 1.0 + 0.2)
+        self.assertAlmostEqual(reward, -0.01 + rl_env.NEW_TILE_REWARD + rl_env.UNVISITED_NEIGHBOR_BONUS)
         _obs, back, _done, back_info = env.step(2)
         self.assertFalse(back_info.discovered_tile)
         self.assertAlmostEqual(back, -0.01)
@@ -220,59 +221,55 @@ class ExtendedRewardTests(unittest.TestCase):
         s0.party_count = 1
         s0.party_species = (155,)
 
-        # 1st catch: Pidgey (species 16) -> novelty reward 10.0
+        # 1st catch: Pidgey (species 16) -> small novelty reward (3.0)
         s1 = _S(1, 1, 0, 0)
         s1.party_count = 2
         s1.party_species = (155, 16)
         r1, _, _ = progress_reward(
             s0, s1, False, seen_tiles, seen_maps, caught_counts=caught_counts
         )
-        # Should get 10.0 catch reward - 0.01 step penalty
-        self.assertAlmostEqual(r1, -0.01 - 0.05 + 10.0)
+        self.assertAlmostEqual(r1, -0.01 - 0.05 + 3.0)
 
-        # 2nd catch: Duplicate Pidgey (species 16) -> 50% diminishing return (5.0)
+        # 2nd catch: Duplicate Pidgey (species 16) -> 50% diminishing return
         s2 = _S(1, 1, 0, 0)
         s2.party_count = 3
         s2.party_species = (155, 16, 16)
         r2, _, _ = progress_reward(
             s1, s2, False, seen_tiles, seen_maps, caught_counts=caught_counts
         )
-        self.assertAlmostEqual(r2, -0.01 - 0.05 + 5.0)
+        self.assertAlmostEqual(r2, -0.01 - 0.05 + 1.5)
         self.assertLess(r2, r1)
 
-        # 3rd catch: Another duplicate Pidgey (species 16) -> 25% diminishing return (2.5)
+        # 3rd catch: Another duplicate Pidgey (species 16) -> 25% diminishing return (floor 0.75)
         s3 = _S(1, 1, 0, 0)
         s3.party_count = 4
         s3.party_species = (155, 16, 16, 16)
         r3, _, _ = progress_reward(
             s2, s3, False, seen_tiles, seen_maps, caught_counts=caught_counts
         )
-        self.assertAlmostEqual(r3, -0.01 - 0.05 + 2.5)
+        self.assertAlmostEqual(r3, -0.01 - 0.05 + 0.75)
         self.assertLess(r3, r2)
 
-        # Catch a new unique species: Rattata (species 19) -> Full 10.0 reward!
+        # Catch a new unique species: Rattata (species 19) -> full novelty reward again
         s4 = _S(1, 1, 0, 0)
         s4.party_count = 5
         s4.party_species = (155, 16, 16, 16, 19)
         r4, _, _ = progress_reward(
             s3, s4, False, seen_tiles, seen_maps, caught_counts=caught_counts
         )
-        self.assertAlmostEqual(r4, -0.01 - 0.05 + 10.0)
+        self.assertAlmostEqual(r4, -0.01 - 0.05 + 3.0)
         self.assertGreater(r4, r3)
 
-    def test_story_flag_and_waypoint_rewards(self):
+    def test_story_milestone_and_badge_rewards(self):
         seen_tiles, seen_maps = set(), {(1, 1)}
         seen_events = set()
-        seen_waypoints = set()
 
-        # Step into Violet Gym (10, 7)
+        # Step into Violet Gym (10, 7): first arrival on a story map pays its milestone (no waypoint table any more)
         s0 = _S(10, 5, 5, 5)
         s1 = _S(10, 7, 5, 5)
-        r_gym, _, _ = progress_reward(
-            s0, s1, True, seen_tiles, seen_maps, seen_waypoints=seen_waypoints
-        )
-        # 10.0 new map + 20.0 Violet Gym waypoint + 1.0 new tile - 0.01
-        self.assertAlmostEqual(r_gym, -0.01 + 1.0 + 10.0 + 20.0)
+        r_gym, _, _ = progress_reward(s0, s1, True, seen_tiles, seen_maps)
+        # Violet Gym milestone (15.0) + 0.1 new tile - 0.01
+        self.assertAlmostEqual(r_gym, -0.01 + rl_env.NEW_TILE_REWARD + 15.0)
 
         # Beat Falkner event flag (1213: byte 151, bit 5)
         flags = [0] * 256
@@ -283,8 +280,8 @@ class ExtendedRewardTests(unittest.TestCase):
         r_falkner, _, _ = progress_reward(
             s1, s2, False, seen_tiles, seen_maps, seen_events=seen_events
         )
-        # EVENT_BEAT_FALKNER (50.0) + badge earned (30.0) - 0.01 - 0.05
-        self.assertAlmostEqual(r_falkner, -0.01 - 0.05 + 50.0 + 30.0)
+        # EVENT_BEAT_FALKNER (10.0) + badge earned (60.0) - 0.01 - 0.05
+        self.assertAlmostEqual(r_falkner, -0.01 - 0.05 + 10.0 + 60.0)
 
     def test_level_up_and_battle_victories(self):
         seen_tiles, seen_maps = set(), {(1, 1)}
@@ -317,7 +314,8 @@ class RewardShapingTests(unittest.TestCase):
     def test_story_stage_never_none(self):
         from src.rl_env import story_stage
 
-        self.assertEqual(story_stage(_S(26, 3, 0, 0)), 0.0)
+        self.assertAlmostEqual(story_stage(_S(26, 3, 0, 0)), 1 / 8)  # the current map counts as reached
+        self.assertEqual(story_stage(_S(24, 4, 0, 0)), 0.0)
 
     def test_heal_paid_once_per_pokecenter(self):
         seen_tiles, seen_maps, seen_waypoints = set(), {(26, 5)}, set()

@@ -23,9 +23,12 @@ class CurriculumAndRecurrentTrainingTests(unittest.TestCase):
         dones = torch.zeros(T, B, dtype=torch.bool)
         dones[4, 1] = True  # Env 1 terminates at step 4
 
-        returns, advantages = compute_gae(rewards, values, dones)
+        # trainer now uses src.ppo_update.compute_gae: (rewards, values, dones, last_value, gamma, lam)
+        returns, advantages = compute_gae(rewards, values, dones, torch.zeros(B), 0.99, 0.95)
         self.assertEqual(returns.shape, (T, B))
         self.assertEqual(advantages.shape, (T, B))
+        # the terminal step of env 1 does not bootstrap: its advantage is just reward - value
+        self.assertAlmostEqual(float(advantages[4, 1]), 1.0, places=5)
 
         # Check sequence evaluation
         policy = SpatialVisionPolicy(obs_dim=17, num_actions=5, use_gru=True, gru_hidden_dim=512)

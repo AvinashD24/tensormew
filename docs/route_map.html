@@ -1,0 +1,345 @@
+<title>Johto Route Map</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one wide stitched overworld canvas, then small interior plans, then the goal list.
+   Palette: cool slate terrain so the red route and gold stars are the only saturated things. */
+:root {
+  --bg: #edf0f4;
+  --surface: #ffffff;
+  --ink: #16202c;
+  --muted: #566475;
+  --rule: #d2d9e1;
+  --route: #d7263d;
+  --star: #f4b400;
+  --star-edge: #4a3600;
+  --heal: #0f8f86;
+  --t-floor: #e3eaf1;
+  --t-wall: #a3afbe;
+  --t-grass: #a8cfa0;
+  --t-water: #8cbfe4;
+  --t-ledge: #dccb9f;
+  --t-door: #8e6bb8;
+  --t-tree: #6c9a66;
+  --t-pit: #56647a;
+  --font-display: "Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e141b; --surface: #151d27; --ink: #e6ecf3; --muted: #93a1b3; --rule: #263343;
+    --route: #ff4d5e; --star: #ffc933; --star-edge: #2a1d00; --heal: #3ed1c4;
+    --t-floor: #31404f; --t-wall: #1b2530; --t-grass: #3d6148; --t-water: #29587c;
+    --t-ledge: #6e6141; --t-door: #a587d8; --t-tree: #2f4f38; --t-pit: #0a0f14;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e141b; --surface: #151d27; --ink: #e6ecf3; --muted: #93a1b3; --rule: #263343;
+  --route: #ff4d5e; --star: #ffc933; --star-edge: #2a1d00; --heal: #3ed1c4;
+  --t-floor: #31404f; --t-wall: #1b2530; --t-grass: #3d6148; --t-water: #29587c;
+  --t-ledge: #6e6141; --t-door: #a587d8; --t-tree: #2f4f38; --t-pit: #0a0f14;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55; }
+.page { max-width: 1120px; margin: 0 auto; padding-block: 32px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 28px; }
+h1, h2 { font-family: var(--font-display); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.05; font-weight: 700; }
+h2 { font-size: 21px; font-weight: 600; }
+p { margin: 0; }
+.lede { max-width: 66ch; color: var(--muted); margin-top: 10px; }
+.facts { display: flex; flex-wrap: wrap; gap: 6px 22px; margin-top: 16px; font-family: var(--font-mono); font-size: 13px; color: var(--muted); }
+.facts b { color: var(--ink); font-weight: 500; }
+.legs { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { font: inherit; font-size: 13px; color: var(--ink); background: var(--surface); border: 1px solid var(--rule);
+  border-radius: 6px; padding: 7px 11px; cursor: pointer; display: flex; gap: 8px; align-items: baseline; text-align: left; }
+.chip .n { font-family: var(--font-mono); color: var(--muted); font-size: 12px; }
+.chip[aria-pressed="true"] { border-color: var(--route); box-shadow: inset 0 0 0 1px var(--route); }
+.chip:focus-visible, .scroll:focus-visible { outline: 2px solid var(--route); outline-offset: 2px; }
+.stage { position: relative; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; }
+.scroll { overflow-x: auto; }
+.scroll > .inner { min-width: 680px; }
+canvas { display: block; width: 100%; height: auto; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 18px; margin-top: 10px; font-size: 13px; color: var(--muted); align-items: center; }
+.legend span { display: inline-flex; align-items: center; gap: 7px; }
+.sw { width: 12px; height: 12px; border-radius: 2px; border: 1px solid rgba(0,0,0,.18); display: inline-block; }
+.ln { width: 22px; height: 0; border-top: 3px solid var(--route); display: inline-block; }
+.ln.dash { border-top-style: dashed; border-top-width: 2px; }
+#tip { position: absolute; pointer-events: none; background: var(--ink); color: var(--bg); border-radius: 6px; padding: 7px 10px;
+  font-size: 13px; max-width: 260px; line-height: 1.35; opacity: 0; transform: translate(-50%, calc(-100% - 14px)); z-index: 2; }
+#tip b { font-family: var(--font-display); font-weight: 600; display: block; }
+.rooms { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; align-items: start; }
+.room { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.room canvas { max-width: 300px; margin-inline: auto; }
+.room figcaption { font-size: 13px; color: var(--muted); }
+.room figcaption b { display: block; color: var(--ink); font-family: var(--font-display); font-size: 15px; font-weight: 600; }
+.goals { list-style: none; margin: 0; padding: 0; display: grid; gap: 0; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+.goals li { display: grid; grid-template-columns: 34px 1fr auto; gap: 4px 12px; padding: 12px 14px; align-items: baseline; }
+.goals li + li { border-top: 1px solid var(--rule); }
+.goals .star { font-family: var(--font-mono); font-weight: 500; width: 26px; height: 26px; border-radius: 50%; background: var(--star); color: var(--star-edge);
+  display: inline-flex; align-items: center; justify-content: center; font-size: 12px; align-self: center; }
+.goals .nm { font-family: var(--font-display); font-weight: 600; }
+.goals .ds { color: var(--muted); font-size: 14px; grid-column: 2; }
+.goals .st { font-family: var(--font-mono); font-size: 12px; color: var(--muted); grid-row: 1; grid-column: 3; text-align: right; }
+.note { color: var(--muted); font-size: 13px; max-width: 80ch; }
+.note code { font-family: var(--font-mono); font-size: 12px; color: var(--ink); }
+@media (max-width: 520px) { .goals li { grid-template-columns: 30px 1fr; } .goals .st { grid-row: auto; grid-column: 2; text-align: left; } }
+</style>
+
+<div class="page">
+  <header>
+    <h1>Johto Route Map</h1>
+    <p class="lede">The shortest walkable route from Elm's Lab to Falkner's gym, found by breadth-first search over the ROM's collision grids. Red is the dense navigation signal; the gold stars are the story goals that carry the sparse rewards.</p>
+    <div class="facts" id="facts"></div>
+  </header>
+
+  <section aria-labelledby="h-over" style="display:flex;flex-direction:column;gap:12px">
+    <h2 id="h-over">Overworld</h2>
+    <div class="legs" id="legs" role="group" aria-label="Highlight a leg"></div>
+    <div class="stage" id="stage">
+      <div class="scroll" tabindex="0" aria-label="Overworld map, scrolls sideways on narrow screens">
+        <div class="inner"><canvas id="world" role="img" aria-label="Stitched map of New Bark Town, Route 29, Cherrygrove City, Route 30, Route 31 and Violet City with the shortest story route drawn in red and the five story goals marked with stars"></canvas></div>
+      </div>
+      <div id="tip" role="status"></div>
+      <div class="legend" id="legend"></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-in" style="display:flex;flex-direction:column;gap:12px">
+    <h2 id="h-in">Inside the buildings</h2>
+    <div class="rooms" id="rooms"></div>
+  </section>
+
+  <section aria-labelledby="h-goals" style="display:flex;flex-direction:column;gap:12px">
+    <h2 id="h-goals">Story goals in order</h2>
+    <ol class="goals" id="goals"></ol>
+    <p class="note">Generated by <code>tools/build_route_map.py</code>. Trainer and NPC tiles are not treated as walls, so the route can pass where a trainer would stop the player and start a battle. The gym floor is drawn from the verified bridge route in <code>src/falkner_nav.py</code>, not from the tileset.</p>
+  </section>
+</div>
+
+<script>
+const D = {"maps":{"24_4":{"id":"24_4","name":"New Bark Town","w":20,"h":18,"rows":["wwwwwwwwwwwwwwwwwwww","wwwwwwwwwwwwwwwwwwww","wwffwwwwwwwwwwwwwwww","wwfwwwdwwwwwwwwwwwww","wwffffffffffwwwwwwww","wwfffffffffwwdwwwwww","wwffffffffffffffffaa","wwffffffffffffffffaa","ffffffffwfffffffffaa","ffffffffffffffffffaa","wwwwwwfffffffffffwww","wwwdwwfffffffffffwww","ffffffffffwwwwfffwww","fffffffffwwdwwfffwww","wwfffffffffffffffwww","wwwwwwfffffffffffwww","wwwwwwwwwwwwwwwwwwww","wwwwwwwwwwwwwwwwwwww"],"outdoor":true,"ox":0,"oy":0},"24_3":{"id":"24_3","name":"Route 29","w":60,"h":18,"rows":["wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww","wwwwwwwwwwwfffwwwwwwwwwwwwwdwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww","wwwwwwwwwwwffffwfffwwwwwffffffwwwwwwwwggggggggfffwwwwwwwwwww","wwwwwwwwwwfffffwffffffwwffffffwwwwwwwwggggggggwwwwwwwwwwwwww","wwffffwwwwfffffwggggfffwffffffwwwwggffggggggwwwwwwwwwwwwwwww","wwfwfffwwwwfwwwwggggwffffffffffwwwggffggggggwwwwwwwwwwwwwwww","ffffffffwfggggggggwwwfffffffffffggggggwwffwwwwwwwfffffwwwwww","ffffffffwfggggggggwwwwwfffffffffggggggwwffwwwwwffffwffwwwwww","wwwwffffwffffffwwwwwwwwffffffwffwwwwggwwggfwffffffffffffffff","wwwwffffwwwfwwwwwwwwwwwwwwwwwwtwwwwwggwwggfwffffffffffffffff","wwwwggfffffffffffffffwwwffffwfffffffffffggfwggggffffffwwwwww","wwwwggfffffffffffwwwftffffffwfffffffffffggfwggggffffffwwwwww","wwwwggggggwwwfffffwwwwwfffffwffffffwwwfffffwggggggggggwwwwww","wwwwggggggwwwwwwwwwwwwffffffwwwfwwwwwwwwwwwwggggggggggwwwwww","wwwwggggwwwwwwffffffffffffffffffffwwwwggggggggggwwwwwwwwwwww","wwwwggggwwwwwwffffffffffffffffffffwwwwggggggggggwwwwwwwwwwww","wwwwwwwwwwwwwwwwwwwwwwwwffffffffffffffffggggwwwwwwwwwwwwwwww","wwwwwwwwwwwwwwwwwwwwwwwwwwffffffffffffffggggwwwwwwwwwwwwwwww"],"outdoor":true,"ox":-60,"oy":0},"26_3":{"id":"26_3","name":"Cherrygrove City","w":40,"h":18,"rows":["wwwwwwwwwwwwwwwwffwwwwwwwwwwwwwwwwaaaaww","wwwwwwwwwwwwwwwwffwwwwwwwwwwwwwwwwaaaaww","wwwwwwwwwwwwwwwwffwwwwwwwwwwwwwwwwwfffww","wwwwwwwwwwwwwwwwffwwwwwdwwwwwdwwwwwwffww","aawwaaaawwwwffffffffffffffffffffwwwwwwww","aawwaaaawwwwffffffffffffffffffffwwwwwwww","aaawaaaaaaffffffwwwwffffffffffffffffffff","aaawaaaaaaffffffwdwwffffffffffffffffffff","wwwwaaaaaaffffffffffffffwwwwffwfffwwwwww","wwaaaaaaaafffffffffffffwwdwwffffffwwwwww","waaawwaaaaaaaaffffffffffffffffwwwwwwwwww","waaawwaaaaaaaaffffffffffffffffwdwwwwwwww","waaaffffaaaaaaaawwwwwwffffffffffffwwwwww","waaaffffaaaaaaaawwwwwwffffffffffffwwwwww","waaaaaaaaaaawwwwaawwwwwwwwwwwwwwwwwwwwww","waaaaaaaaaaawawwaawwwwwwwwwwwwwwwwwwwwww","wwaawwwwaaaawaaaaawwwwwwwwwwwwwwwwwwwwww","awwwwaawwwwwwaaaaawwwwwwwwwwwwwwwwwwwwww"],"outdoor":true,"ox":-100,"oy":0},"26_1":{"id":"26_1","name":"Route 30","w":20,"h":54,"rows":["wwwwffffwwwwwwwwwwww","wwwwffffwwwwwwwwwwww","wwwwffffwwwwwwwwwwww","wwwwwwffwwwwffffwwww","wwwwffffwwffffffwwww","wwffffffwwfffffwwdww","ggfffffftfffffffffff","ggffffffwfffffffffff","ggfffffwwwffffffffff","ggffffwwwwffffffffff","ggffffwwwwwwffffffww","ggwwwwwwwwwwffffffww","ggffffwwwwwwffggggww","ggffffwwwwwwffggggww","ffggffwwwwwwggwwgggg","ffggffffwwwwggwwgggg","wwggffffwwwwffwwwwgg","wwggwwwwwwffffwwwwgg","wwggffffwwggwwwwgggg","wwggffffwwggwwwwgggg","wwffffffwwggwwffffww","wwfwffffwwggwwffffww","wwffffwwwwffggggwwww","wwffffwwwwffggggwwww","wwffffwwwwwwggffwwww","wwwwwfwwwwwwggffwwww","wwffffggwwwwwwffwwww","wwffffggwwwwwwffwwww","wwffffggggwwffffwwww","wwffffggggwwfwffwwww","wwffffffffffffffffww","wwffffffffffffffffww","wwffffffffffffggggww","wwffffffffffffggggww","wwffwwwwffggggggwwww","wwffwwwwffggggggwwww","wwffwwwwwwwwggggwwww","wwwwwwwwwwwwggggwwww","wwffffwwwwwwggaaaaww","wwffffwdwwwwggaaaaww","wwffffffffffffaaaaww","wwffffffffffffaaaaww","wwwwwwffffffffaaaaww","wwwwwwfffwffffaaaaww","wwwwwwffffffffwwwwww","wwwwwwffffffffwwwwww","wwwwwwffffffggwwwwww","wwwwwwwwwwwwggwwwwww","wwwwwwffggggggwwwwww","wwwwwwffggggggwwwwww","wwwwwwffwwwwwwwwwwaa","wwwwwwffwwwwwwwwwwaa","wwwwwwffwwwwwwwwwwaa","wwwwwwffwwwwwwwwwwaa"],"outdoor":true,"ox":-90,"oy":-54},"26_2":{"id":"26_2","name":"Route 31","w":40,"h":18,"rows":["wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwffffffw","wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwffffffw","wwwwwwwwwwwwwwwwaaaaaawwwwwwwwwwwffffffw","wwwwwwwwwwwwwwwwaaaaaawwwwwwwwwwwffffffw","wwwwwwfffffffwwwaaaaaaaaaawwffffwffffffw","wwwwwwfwffffftffaaaaaaaaaawwfffwwwdwwwww","wwwwdffffffffwffffffaaaaaawwffffffffffww","wwwwdffffffffwffffffaaaaaawwffffffffffww","wwwwwwfffffffwfffffffffffffffffffffffwww","wwwwwwwwwfwwwwfffffffffffffffffffffffwww","wwwwwwggggggggwwffffffwwwtwwwwwwggfffwww","wwwwwwggggggggwwwwwfwwwwffwwwwwwggffwwww","wwwwwwwwggggggffggffffwwfffwwwwwggggwwww","wwwwwwwwggggggffggffffwwfffwwwwwggggwwww","wwwwwwwwwwggffggfffffwwwffffggggggwwwwww","wwwwwwwwwwggffggfffffwwwffffggggggwwwwww","wwwwwwwwwwwwwwwwwwwwwwwwffffwwwwwwwwwwww","wwwwwwwwwwwwwwwwwwwwwwwwffffwwwwwwwwwwww"],"outdoor":true,"ox":-110,"oy":-72},"10_5":{"id":"10_5","name":"Violet City","w":40,"h":36,"rows":["wwwwffffwwaaaaaaaawwwwwwwwwwwwwwwwwwwwww","wwwwffffwwaaaaaaaawwwwwwwwwwwwwwwwwwwwww","wwwwwwffffaaaaaaaawwwwwwwwwwwwaaaaffwwww","wwwwwwffffaaaaaaaawwwwwwwwwwwwaaaaffwwww","wwwwwwwwwwwwwwaaaawwwwwwwwwwwwaaaaffffww","wwwwwwwwwwwwwwaaaawwwwwdwwwwwwaaaaffffww","wwwwwwwwwwwwwwaaaawwwwwfwwwwwwaaaaffffww","wwwwwwwwwwwwwwaaaawwwwffffwwwwaaaaffffww","ffffffffwwwwwwaaaawwwwffwfwwwwaaaaffffww","ffffffffwwwwwwaaaawwwwffffwwwwaaaaffffww","wwwwwwffwwwwwwaaaawwwwffffaaaaaaaawwwwww","wwwwwwffwwwwwwaaaawwwwffffaaaaaaaawwwwww","wwwwwwffwwwwwwaaaawwwwffffaaaaaaaawwwwww","wwwwwwffwwwwwwaaaawwwwffffaaaaaaaawwwwww","wwwwwwffwwwwwwaawwwwwwffffffwwwwwwwwwfww","wwwdwwffwwwwffaawwwwwwffffffwwwwwwwwwfww","wwffffffwwwwffffwwwwwwffffffwwwwwwwwwfww","wwffffffwdwwfffwwwdwwwfffffwwwdwwwwwwfww","wwwwffffffffffffffffffffffffffffwwwwffww","wwwwffffffffffffffffffffffffffffwwwwtwww","wwwwwwwwffffffffffffffffwffffffffwwwfwww","wwwwwwwwwwwwfffffffffffffffffffffffffwww","wwwwwwwwwwwwffffffwwwwwwwwffffwwwwwwwwww","fffwwwwwwwwwffwwwwwwwwwwwwwfwwwwwwwwwwww","fffwwwwwwwwwffwwwwwwwwwwwwffffwwwwwwfffd","wwwwwwwwwwwwffwwwwwwwwwwwwffffwdwwfffffd","ffwfwwwwwwwwffwwwwwwwwwwwwffffffffffffww","ffffwwwwwwwwffwwwwwwwwwwffffffffffffffww","ffwwwwwwwwwwffffwwwwwwwwfffffffffffffwww","ffwfwwwwwwwwffffwwwwwdwwfffffffffffffwww","ffffwfwwwwwwffffwwwwffffffffffffwwwwwwww","ffffffwwwwwwffffwwwwffffffffffwwwwwwwwww","ffwwwwwwwwwwwwffwwwwwwwwwwwwwwwwwwwwwwww","ffwwwwwwwwwwwwffwwwwwwwwwwwwwwwwwwwwwwww","wwwwwwwwwwwwwwffwwwwwwwwwwwwwwwwwwwwwwww","wwwwwwwwwwwwwwffwwwwwwwwwwwwwwwwwwwwwwww"],"outdoor":true,"ox":-151,"oy":-90},"24_5":{"id":"24_5","name":"Elm's Lab","w":10,"h":12,"rows":["wwwwwwwwww","wwwwffwwww","wwffffffff","ffffffwwww","ffffffffff","ffwwffffff","wwwwffwwww","wwwwffwwww","ffffffffff","ffffffffff","ffffffffff","ffffddffff"],"outdoor":false},"26_10":{"id":"26_10","name":"Mr. Pok\u00e9mon's House","w":8,"h":8,"rows":["ffwfwwww","ffffwfww","ffffffwf","ffffffwf","ffffwwww","ffffwwff","ffwfffff","ffddffff"],"outdoor":false},"26_11":{"id":"26_11","name":"Violet Gatehouse","w":10,"h":8,"rows":["wwwwwwwwww","wwwffffwww","ffwffffwff","ffwwwwwwff","dffffffffd","dffffffffd","ffwwwwwwff","ffwffffwff"],"outdoor":false},"10_7":{"id":"10_7","name":"Violet Gym","w":10,"h":16,"rows":["pppppppppp","pppppppppp","pppppfpppp","pppppfpppp","pppppfpppp","pppppfpppp","ppffffpppp","ppfppppppp","ppffffffpp","pppppppfpp","ppppffffpp","ppppfppppp","ppppfppppp","ppppfppppp","ppppfppppp","ppppffpppp"],"outdoor":false},"26_5":{"id":"26_5","name":"Cherrygrove Pok\u00e9center","w":10,"h":8,"rows":["wwwwwwwwww","wwwffwfffw","wwwwwwffff","ffffffffff","ffffffffff","fffffffwwf","ffffffffff","dffddffwwf"],"outdoor":false},"10_10":{"id":"10_10","name":"Violet Pok\u00e9center","w":10,"h":8,"rows":["wwwwwwwwww","wwwffwfffw","wwwwwwffff","ffffffffff","ffffffffff","fffffffwwf","ffffffffff","dffddffwwf"],"outdoor":false}},"legs":[{"index":0,"from":"elm_start","to":"mr_pokemon","steps":215,"segments":[{"map":"24_5","pts":[[5,3],[5,4],[5,5],[5,6],[5,7],[5,8],[5,9],[5,10]]},{"map":"24_4","pts":[[6,3],[6,4],[6,5],[6,6],[6,7],[6,8],[6,9],[5,9],[4,9],[3,9],[2,9],[1,9],[0,9]]},{"map":"24_3","pts":[[59,9],[58,9],[57,9],[56,9],[55,9],[54,9],[53,9],[53,10],[53,11],[53,12],[53,13],[52,13],[51,13],[50,13],[49,13],[48,13],[47,13],[47,14],[47,15],[46,15],[45,15],[44,15],[43,15],[43,16],[42,16],[41,16],[40,16],[39,16],[38,16],[37,16],[36,16],[35,16],[34,16],[33,16],[33,15],[33,14],[32,14],[31,14],[31,13],[31,12],[31,11],[31,10],[32,10],[33,10],[34,10],[35,10],[36,10],[36,9],[36,8],[36,7],[36,6],[35,6],[34,6],[33,6],[32,6],[31,6],[30,6],[30,5],[29,5],[28,5],[27,5],[26,5],[25,5],[24,5],[23,5],[22,5],[22,4],[21,4],[20,4],[19,4],[19,5],[18,5],[17,5],[17,6],[17,7],[16,7],[15,7],[14,7],[13,7],[12,7],[12,8],[11,8],[11,9],[11,10],[10,10],[9,10],[8,10],[7,10],[7,9],[7,8],[7,7],[7,6],[6,6],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6]]},{"map":"26_3","pts":[[39,6],[38,6],[37,6],[36,6],[35,6],[34,6],[33,6],[32,6],[31,6],[31,5],[31,4],[30,4],[29,4],[28,4],[27,4],[26,4],[25,4],[24,4],[23,4],[22,4],[21,4],[20,4],[19,4],[18,4],[17,4],[17,3],[17,2],[17,1],[17,0]]},{"map":"26_1","pts":[[7,53],[7,52],[7,51],[7,50],[7,49],[7,48],[8,48],[9,48],[10,48],[11,48],[12,48],[12,47],[12,46],[12,45],[12,44],[12,43],[12,42],[12,41],[12,40],[12,39],[12,38],[12,37],[12,36],[12,35],[12,34],[12,33],[12,32],[12,31],[12,30],[12,29],[12,28],[13,28],[14,28],[14,27],[14,26],[14,25],[14,24],[14,23],[14,22],[14,21],[14,20],[15,20],[16,20],[16,19],[16,18],[17,18],[18,18],[18,17],[18,16],[18,15],[18,14],[17,14],[17,13],[17,12],[17,11],[17,10],[17,9],[17,8],[17,7],[17,6]]},{"map":"26_10","pts":[[2,7],[1,7],[1,6],[1,5],[2,5],[3,5],[3,6]]}]},{"index":1,"from":"mr_pokemon","to":"rival","steps":85,"segments":[{"map":"26_10","pts":[[3,6]]},{"map":"26_1","pts":[[17,5],[17,6],[17,7],[17,8],[17,9],[17,10],[17,11],[17,12],[17,13],[17,14],[17,15],[18,15],[18,16],[18,17],[18,18],[18,19],[17,19],[17,20],[17,21],[16,21],[15,21],[15,22],[15,23],[15,24],[15,25],[15,26],[15,27],[15,28],[15,29],[15,30],[15,31],[15,32],[15,33],[15,34],[15,35],[15,36],[15,37],[14,37],[13,37],[13,38],[13,39],[13,40],[13,41],[13,42],[13,43],[13,44],[13,45],[13,46],[13,47],[13,48],[13,49],[12,49],[11,49],[10,49],[9,49],[8,49],[7,49],[7,50],[7,51],[7,52],[7,53]]},{"map":"26_3","pts":[[17,0],[17,1],[17,2],[17,3],[17,4],[17,5],[18,5],[19,5],[20,5],[20,6],[20,7],[21,7],[22,7],[23,7],[24,7],[25,7],[26,7],[27,7],[28,7],[29,7],[30,7],[31,7],[32,7],[33,7]]}]},{"index":2,"from":"rival","to":"elm_egg","steps":126,"segments":[{"map":"26_3","pts":[[33,7],[34,7],[35,7],[36,7],[37,7],[38,7],[39,7]]},{"map":"24_3","pts":[[0,7],[1,7],[2,7],[3,7],[4,7],[4,8],[4,9],[4,10],[5,10],[6,10],[7,10],[8,10],[9,10],[10,10],[11,10],[11,9],[11,8],[11,7],[11,6],[12,6],[13,6],[14,6],[15,6],[16,6],[16,5],[16,4],[17,4],[18,4],[19,4],[20,4],[21,4],[21,5],[21,6],[22,6],[23,6],[23,7],[24,7],[25,7],[26,7],[27,7],[28,7],[29,7],[30,7],[31,7],[32,7],[33,7],[34,7],[35,7],[36,7],[36,8],[36,9],[36,10],[36,11],[35,11],[34,11],[33,11],[32,11],[32,12],[31,12],[31,13],[31,14],[31,15],[31,16],[32,16],[33,16],[34,16],[35,16],[36,16],[37,16],[38,16],[38,15],[38,14],[39,14],[40,14],[41,14],[42,14],[43,14],[44,14],[44,13],[44,12],[44,11],[44,10],[44,9],[44,8],[45,8],[46,8],[47,8],[48,8],[49,8],[50,8],[51,8],[52,8],[53,8],[54,8],[55,8],[56,8],[57,8],[58,8],[59,8]]},{"map":"24_4","pts":[[0,8],[1,8],[2,8],[2,7],[2,6],[2,5],[2,4],[3,4],[4,4],[5,4],[6,4]]},{"map":"24_5","pts":[[4,11],[4,10],[4,9],[4,8],[4,7],[4,6],[4,5],[4,4],[4,3],[5,3]]}]},{"index":3,"from":"elm_egg","to":"falkner","steps":338,"segments":[{"map":"24_5","pts":[[5,3],[5,4],[5,5],[5,6],[5,7],[5,8],[5,9],[5,10]]},{"map":"24_4","pts":[[6,3],[6,4],[6,5],[6,6],[6,7],[6,8],[6,9],[5,9],[4,9],[3,9],[2,9],[1,9],[0,9]]},{"map":"24_3","pts":[[59,9],[58,9],[57,9],[56,9],[55,9],[54,9],[53,9],[53,10],[53,11],[53,12],[53,13],[52,13],[51,13],[50,13],[49,13],[48,13],[47,13],[47,14],[47,15],[46,15],[45,15],[44,15],[43,15],[43,16],[42,16],[41,16],[40,16],[39,16],[38,16],[37,16],[36,16],[35,16],[34,16],[33,16],[33,15],[33,14],[32,14],[31,14],[31,13],[31,12],[31,11],[31,10],[32,10],[33,10],[34,10],[35,10],[36,10],[36,9],[36,8],[36,7],[36,6],[35,6],[34,6],[33,6],[32,6],[31,6],[30,6],[30,5],[29,5],[28,5],[27,5],[26,5],[25,5],[24,5],[23,5],[22,5],[22,4],[21,4],[20,4],[19,4],[19,5],[18,5],[17,5],[17,6],[17,7],[16,7],[15,7],[14,7],[13,7],[12,7],[12,8],[11,8],[11,9],[11,10],[10,10],[9,10],[8,10],[7,10],[7,9],[7,8],[7,7],[7,6],[6,6],[5,6],[4,6],[3,6],[2,6],[1,6],[0,6]]},{"map":"26_3","pts":[[39,6],[38,6],[37,6],[36,6],[35,6],[34,6],[33,6],[32,6],[31,6],[31,5],[31,4],[30,4],[29,4],[28,4],[27,4],[26,4],[25,4],[24,4],[23,4],[22,4],[21,4],[20,4],[19,4],[18,4],[17,4],[17,3],[17,2],[17,1],[17,0]]},{"map":"26_1","pts":[[7,53],[7,52],[7,51],[7,50],[7,49],[7,48],[8,48],[9,48],[10,48],[11,48],[12,48],[12,47],[12,46],[12,45],[12,44],[12,43],[12,42],[12,41],[12,40],[12,39],[12,38],[12,37],[12,36],[12,35],[12,34],[12,33],[12,32],[12,31],[12,30],[11,30],[10,30],[9,30],[9,29],[9,28],[8,28],[7,28],[7,27],[7,26],[6,26],[5,26],[5,25],[5,24],[5,23],[5,22],[5,21],[5,20],[5,19],[5,18],[4,18],[3,18],[3,17],[3,16],[3,15],[3,14],[3,13],[3,12],[2,12],[1,12],[1,11],[1,10],[1,9],[1,8],[1,7],[1,6],[2,6],[2,5],[3,5],[4,5],[4,4],[5,4],[6,4],[6,3],[6,2],[6,1],[6,0]]},{"map":"26_2","pts":[[26,17],[26,16],[26,15],[26,14],[27,14],[28,14],[29,14],[30,14],[31,14],[32,14],[32,13],[32,12],[32,11],[32,10],[32,9],[31,9],[30,9],[29,9],[28,9],[27,9],[26,9],[25,9],[24,9],[23,9],[22,9],[21,9],[20,9],[20,10],[19,10],[19,11],[19,12],[18,12],[17,12],[16,12],[15,12],[14,12],[13,12],[13,11],[13,10],[12,10],[11,10],[10,10],[9,10],[9,9],[9,8],[9,7],[8,7],[7,7],[6,7],[5,7]]},{"map":"26_11","pts":[[9,5],[8,5],[7,5],[6,5],[5,5],[4,5],[3,5],[2,5],[1,5]]},{"map":"10_5","pts":[[39,25],[38,25],[37,25],[37,26],[36,26],[35,26],[34,26],[33,26],[32,26],[31,26],[30,26],[29,26],[29,25],[29,24],[28,24],[27,24],[27,23],[27,22],[27,21],[27,20],[27,19],[27,18],[26,18],[25,18],[24,18],[23,18],[22,18],[21,18],[20,18],[19,18],[18,18]]},{"map":"10_7","pts":[[4,15],[4,14],[4,13],[4,12],[4,11],[4,10],[5,10],[6,10],[7,10],[7,9],[7,8],[6,8],[5,8],[4,8],[3,8],[2,8],[2,7],[2,6],[3,6],[4,6],[5,6],[5,5],[5,4],[5,3],[5,2]]}]}],"stars":[{"id":"elm_start","n":1,"name":"Elm's Lab","desc":"Start: Professor Elm gives the starter and the egg errand","map":"24_5","x":5,"y":3,"wmap":"24_4","wx":6,"wy":3},{"id":"mr_pokemon","n":2,"name":"Mr. Pok\u00e9mon","desc":"Receive the Mystery Egg","map":"26_10","x":3,"y":6,"wmap":"26_1","wx":17,"wy":5},{"id":"rival","n":3,"name":"Rival ambush","desc":"Cherrygrove rival battle","map":"26_3","x":33,"y":7,"wmap":"26_3","wx":33,"wy":7},{"id":"elm_egg","n":4,"name":"Elm's Lab","desc":"Deliver the Mystery Egg to Professor Elm","map":"24_5","x":5,"y":3,"wmap":"24_4","wx":6,"wy":3},{"id":"falkner","n":5,"name":"Falkner","desc":"Violet Gym: defeat Falkner for the Zephyr Badge","map":"10_7","x":5,"y":2,"wmap":"10_5","wx":18,"wy":17}],"heals":[{"name":"Cherrygrove Pok\u00e9center","map":"26_3","x":29,"y":3},{"name":"Violet Pok\u00e9center","map":"10_5","x":31,"y":25}],"gate":{"route31":[4,6],"violet":[39,24]},"total_steps":764};
+const LEG_NAMES = ["Elm's Lab to Mr. Pokémon", "Mr. Pokémon to the Cherrygrove rival", "Rival back to Elm's Lab", "Elm's Lab to Falkner"];
+const LEG_OFF = [[-0.45, -0.45], [0.45, -0.45], [-0.45, 0.45], [0.45, 0.45]];
+const ROOMS = [
+  ["24_5", "Elm's Lab", "Stars 1 and 4: start here, and come back with the egg."],
+  ["26_10", "Mr. Pokémon's House", "Star 2: collect the Mystery Egg."],
+  ["26_11", "Violet Gatehouse", "Walk straight through to Violet City."],
+  ["10_7", "Violet Gym", "Star 5: the bridge winds up to Falkner. Dark tiles are pits."]
+];
+const CH = { f: "--t-floor", w: "--t-wall", g: "--t-grass", a: "--t-water", l: "--t-ledge", d: "--t-door", t: "--t-tree", p: "--t-pit" };
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+let active = null;
+
+const legsTotal = D.total_steps;
+document.getElementById("facts").innerHTML =
+  `<span><b>${legsTotal}</b> steps in total</span><span><b>${D.legs.length}</b> legs</span><span><b>${D.stars.length}</b> goals</span><span><b>6</b> outdoor maps</span>`;
+
+/* ---- chips ---- */
+const legsEl = document.getElementById("legs");
+function chip(label, n, idx) {
+  const b = document.createElement("button");
+  b.className = "chip"; b.type = "button";
+  b.innerHTML = `<span>${label}</span><span class="n">${n}</span>`;
+  b.addEventListener("click", () => { active = (active === idx) ? null : idx; sync(); });
+  return b;
+}
+const chips = [];
+D.legs.forEach((l, i) => { const b = chip(`${i + 1}. ${LEG_NAMES[i]}`, `${l.steps} steps`, i); chips.push(b); legsEl.appendChild(b); });
+function sync() { chips.forEach((b, i) => b.setAttribute("aria-pressed", String(active === i))); drawAll(); }
+
+/* ---- goals list ---- */
+const goalsEl = document.getElementById("goals");
+D.stars.forEach((s, i) => {
+  const prior = i ? D.legs[i - 1].steps : 0;
+  const li = document.createElement("li");
+  li.innerHTML = `<span class="star">${s.n}</span><span class="nm">${s.name}</span><span class="st">${i ? "+" + prior + " steps" : "start"}</span><span class="ds">${s.desc}</span>`;
+  goalsEl.appendChild(li);
+});
+
+/* ---- helpers ---- */
+function groupStars() {
+  const m = new Map();
+  D.stars.forEach(s => { const k = `${s.wmap}:${s.wx}:${s.wy}`; if (!m.has(k)) m.set(k, { ...s, ns: [] }); m.get(k).ns.push(s.n); });
+  return [...m.values()];
+}
+function roomStars() {
+  const m = new Map();
+  D.stars.forEach(s => { const k = `${s.map}:${s.x}:${s.y}`; if (!m.has(k)) m.set(k, { ...s, ns: [] }); m.get(k).ns.push(s.n); });
+  return [...m.values()];
+}
+function starPath(ctx, cx, cy, r) {
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const a = -Math.PI / 2 + i * Math.PI / 5, rr = i % 2 ? r * 0.45 : r;
+    ctx.lineTo(cx + Math.cos(a) * rr, cy + Math.sin(a) * rr);
+  }
+  ctx.closePath();
+}
+function drawStar(ctx, cx, cy, r, text, side) {
+  starPath(ctx, cx, cy, r);
+  ctx.fillStyle = css("--star"); ctx.strokeStyle = css("--star-edge"); ctx.lineWidth = Math.max(1.5, r / 6);
+  ctx.fill(); ctx.stroke();
+  if (text) {
+    const fs = Math.round(r * 1.05);
+    ctx.font = `500 ${fs}px ${css("--font-mono")}`; ctx.textBaseline = "middle"; ctx.textAlign = side === "left" ? "right" : "left";
+    const tx = cx + (side === "left" ? -r - 4 : r + 4);
+    ctx.lineWidth = 4; ctx.strokeStyle = css("--surface"); ctx.lineJoin = "round"; ctx.strokeText(text, tx, cy);
+    ctx.fillStyle = css("--ink"); ctx.fillText(text, tx, cy);
+  }
+}
+function drawTiles(ctx, m, px, py, S) {
+  const col = {}; for (const k in CH) col[k] = css(CH[k]);
+  for (let y = 0; y < m.h; y++) {
+    const row = m.rows[y];
+    for (let x = 0; x < m.w; x++) { ctx.fillStyle = col[row[x]] || col.w; ctx.fillRect(px + x * S, py + y * S, S + 0.4, S + 0.4); }
+  }
+}
+function arrow(ctx, x, y, ang, sz) {
+  ctx.save(); ctx.translate(x, y); ctx.rotate(ang);
+  ctx.beginPath(); ctx.moveTo(sz, 0); ctx.lineTo(-sz * 0.7, sz * 0.75); ctx.lineTo(-sz * 0.7, -sz * 0.75); ctx.closePath();
+  ctx.fillStyle = css("--route"); ctx.strokeStyle = css("--surface"); ctx.lineWidth = sz * 0.35; ctx.lineJoin = "round";
+  ctx.stroke(); ctx.fill(); ctx.restore();
+}
+function strokeLine(ctx, pts, w, alpha, S) {
+  if (pts.length === 1) {
+    ctx.globalAlpha = alpha; ctx.fillStyle = css("--route"); ctx.beginPath(); ctx.arc(pts[0][0], pts[0][1], w * 1.1, 0, 7); ctx.fill(); ctx.globalAlpha = 1; return;
+  }
+  ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.setLineDash([]);
+  ctx.globalAlpha = alpha;
+  ctx.strokeStyle = css("--surface"); ctx.lineWidth = w + 2.4;
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke();
+  ctx.strokeStyle = css("--route"); ctx.lineWidth = w;
+  ctx.beginPath(); pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1])); ctx.stroke();
+  const every = Math.max(16, Math.round(120 / S));
+  for (let i = Math.floor(every / 2); i < pts.length - 1; i += every) {
+    arrow(ctx, pts[i][0], pts[i][1], Math.atan2(pts[i + 1][1] - pts[i][1], pts[i + 1][0] - pts[i][0]), w * 1.7);
+  }
+  ctx.globalAlpha = 1;
+}
+function dash(ctx, a, b, w, alpha) {
+  ctx.globalAlpha = alpha; ctx.setLineDash([w * 1.6, w * 1.6]); ctx.lineCap = "butt";
+  ctx.strokeStyle = css("--route"); ctx.lineWidth = Math.max(1.5, w * 0.7);
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+}
+
+/* ---- world ---- */
+const outdoor = Object.values(D.maps).filter(m => m.outdoor);
+const PAD = 3, S = 8;
+const minX = Math.min(...outdoor.map(m => m.ox)) - PAD, minY = Math.min(...outdoor.map(m => m.oy)) - PAD;
+const maxX = Math.max(...outdoor.map(m => m.ox + m.w)) + PAD, maxY = Math.max(...outdoor.map(m => m.oy + m.h)) + PAD;
+const world = document.getElementById("world");
+const tip = document.getElementById("tip");
+function sizeCanvas(c, wPx, hPx) {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  c.width = Math.round(wPx * dpr); c.height = Math.round(hPx * dpr);
+  const ctx = c.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return ctx;
+}
+const wp = (m, x, y, off) => [(m.ox + x + 0.5 - minX + off[0]) * S, (m.oy + y + 0.5 - minY + off[1]) * S];
+function drawWorld() {
+  const W = (maxX - minX) * S, H = (maxY - minY) * S;
+  const ctx = sizeCanvas(world, W, H);
+  ctx.clearRect(0, 0, W, H);
+  outdoor.forEach(m => drawTiles(ctx, m, (m.ox - minX) * S, (m.oy - minY) * S, S));
+  // map names
+  ctx.textAlign = "left"; ctx.textBaseline = "middle"; ctx.font = `600 13px ${css("--font-display")}`;
+  outdoor.forEach(m => {
+    const x = (m.ox + 1 - minX) * S, y = (m.oy + 1.6 - minY) * S;
+    ctx.lineWidth = 4; ctx.lineJoin = "round"; ctx.strokeStyle = css("--surface"); ctx.strokeText(m.name.toUpperCase(), x, y);
+    ctx.fillStyle = css("--muted"); ctx.fillText(m.name.toUpperCase(), x, y);
+  });
+  // heal markers
+  D.heals.forEach(h => {
+    const m = D.maps[h.map], p = wp(m, h.x, h.y, [0, 0]);
+    ctx.beginPath(); ctx.arc(p[0], p[1], 6, 0, 7); ctx.fillStyle = css("--surface"); ctx.fill();
+    ctx.lineWidth = 2; ctx.strokeStyle = css("--heal"); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(p[0] - 3, p[1]); ctx.lineTo(p[0] + 3, p[1]); ctx.moveTo(p[0], p[1] - 3); ctx.lineTo(p[0], p[1] + 3); ctx.stroke();
+  });
+  // legs
+  const starById = Object.fromEntries(D.stars.map(s => [s.id, s]));
+  D.legs.forEach(leg => {
+    const off = LEG_OFF[leg.index].map(v => v);
+    const alpha = active === null || active === leg.index ? 1 : 0.16;
+    const w = active === leg.index ? 3.2 : 2.4;
+    const items = [];
+    const first = D.maps[leg.segments[0].map], last = D.maps[leg.segments[leg.segments.length - 1].map];
+    const sf = starById[leg.from], st = starById[leg.to];
+    if (!first.outdoor) items.push({ a: wp(D.maps[sf.wmap], sf.wx, sf.wy, off) });
+    leg.segments.forEach(seg => {
+      const m = D.maps[seg.map];
+      if (m.outdoor) items.push({ pts: seg.pts.map(p => wp(m, p[0], p[1], off)) });
+      else if (items.length) items.push({ gap: true });
+    });
+    if (!last.outdoor) items.push({ z: wp(D.maps[st.wmap], st.wx, st.wy, off) });
+    let prev = null, gap = false;
+    items.forEach(it => {
+      if (it.a) { prev = it.a; gap = true; }
+      else if (it.gap) gap = true;
+      else if (it.pts) {
+        if (gap && prev) dash(ctx, prev, it.pts[0], w, alpha);
+        strokeLine(ctx, it.pts, w, alpha, S); prev = it.pts[it.pts.length - 1]; gap = false;
+      } else if (it.z && prev) dash(ctx, prev, it.z, w, alpha);
+    });
+  });
+  // stars
+  groupStars().forEach(s => {
+    const m = D.maps[s.wmap], p = wp(m, s.wx, s.wy, [0, 0]);
+    s.px = p; drawStar(ctx, p[0], p[1], 10, s.ns.join("·"), s.n === 5 ? "left" : "right");
+  });
+  starPos = groupStars().map(s => ({ s, p: wp(D.maps[s.wmap], s.wx, s.wy, [0, 0]) }));
+  world.dataset.w = W; world.dataset.h = H;
+}
+let starPos = [];
+world.addEventListener("pointermove", e => {
+  const r = world.getBoundingClientRect(), k = (world.dataset.w) / r.width;
+  const x = (e.clientX - r.left) * k, y = (e.clientY - r.top) * k;
+  const hit = starPos.find(o => Math.hypot(o.p[0] - x, o.p[1] - y) < 14);
+  if (!hit) { tip.style.opacity = 0; return; }
+  const sr = document.getElementById("stage").getBoundingClientRect();
+  tip.innerHTML = `<b>${hit.s.ns.join(" · ")}  ${hit.s.name}</b>${hit.s.ns.length > 1 ? "Start, and the egg delivery" : hit.s.desc}`;
+  tip.style.left = (e.clientX - sr.left) + "px"; tip.style.top = (e.clientY - sr.top) + "px"; tip.style.opacity = 1;
+});
+world.addEventListener("pointerleave", () => { tip.style.opacity = 0; });
+
+/* ---- rooms ---- */
+const roomsEl = document.getElementById("rooms");
+const roomCanvas = {};
+ROOMS.forEach(([id, name, note]) => {
+  const fig = document.createElement("figure"); fig.className = "room";
+  const c = document.createElement("canvas"); c.setAttribute("role", "img");
+  c.setAttribute("aria-label", `${name} floor plan with the route in red`);
+  const cap = document.createElement("figcaption"); cap.innerHTML = `<b>${name}</b>${note}`;
+  fig.append(c, cap); roomsEl.appendChild(fig); roomCanvas[id] = c;
+});
+function drawRoom(id) {
+  const m = D.maps[id], RS = 28, c = roomCanvas[id];
+  const ctx = sizeCanvas(c, m.w * RS, m.h * RS);
+  drawTiles(ctx, m, 0, 0, RS);
+  const pt = (p, off) => [(p[0] + 0.5 + off[0] * 0.55) * RS, (p[1] + 0.5 + off[1] * 0.55) * RS];
+  D.legs.forEach(leg => {
+    const alpha = active === null || active === leg.index ? 1 : 0.16;
+    leg.segments.filter(sg => sg.map === id).forEach(sg => strokeLine(ctx, sg.pts.map(p => pt(p, LEG_OFF[leg.index])), 4, alpha, RS * 0.4));
+  });
+  roomStars().filter(s => s.map === id).forEach(s => { const p = pt([s.x, s.y], [0, 0]); drawStar(ctx, p[0], p[1], 12, s.ns.join("·"), "right"); });
+}
+
+/* ---- legend ---- */
+function legend() {
+  const el = document.getElementById("legend");
+  const sw = v => `<span class="sw" style="background:var(${v})"></span>`;
+  el.innerHTML = `<span><i class="ln"></i>Shortest route</span><span><i class="ln dash"></i>Through a building</span>` +
+    `<span>${sw("--t-floor")}Walkable</span><span>${sw("--t-grass")}Tall grass (wild battles, catches)</span><span>${sw("--t-water")}Water</span>` +
+    `<span>${sw("--t-ledge")}One-way ledge</span><span>${sw("--t-wall")}Blocked</span><span>${sw("--t-door")}Door</span>` +
+    `<span style="color:var(--heal)">⊕ Pokécenter (heal)</span>`;
+}
+function drawAll() { drawWorld(); ROOMS.forEach(r => drawRoom(r[0])); }
+legend();
+sync();
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(drawAll);
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
+new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+</script>

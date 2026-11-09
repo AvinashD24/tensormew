@@ -1,0 +1,279 @@
+<title>Policy and Reward Blueprint</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@600;700&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: figure, figure, then reference tables. Blue marks the learned part of the system and
+   the sparse rewards; gray is everything scripted or hand-coded today. */
+:root {
+  --bg: #eef1f5; --surface: #ffffff; --ink: #162030; --muted: #566475; --rule: #d3dae3;
+  --accent: #1d63c9; --accent-soft: #dbe7fa; --gray: #8a97a8; --warn: #b4232f;
+  --font-display: "Bricolage Grotesque", "Trebuchet MS", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0e141b; --surface: #151d27; --ink: #e6ecf3; --muted: #95a3b5; --rule: #273445;
+    --accent: #6aa7ff; --accent-soft: #1c2f4d; --gray: #6f7d90; --warn: #ff7b86; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0e141b; --surface: #151d27; --ink: #e6ecf3; --muted: #95a3b5; --rule: #273445;
+  --accent: #6aa7ff; --accent-soft: #1c2f4d; --gray: #6f7d90; --warn: #ff7b86; color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font-family: var(--font-body); font-size: 15px; line-height: 1.55; }
+.page { max-width: 1060px; margin: 0 auto; padding-block: 32px 64px; display: flex; flex-direction: column; gap: 36px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); }
+h1, h2, h3 { font-family: var(--font-display); margin: 0; text-wrap: balance; letter-spacing: -0.01em; }
+h1 { font-size: clamp(30px, 5vw, 44px); line-height: 1.05; font-weight: 700; }
+h2 { font-size: 22px; font-weight: 600; }
+h3 { font-size: 16px; font-weight: 600; }
+p { margin: 0; }
+.lede { max-width: 68ch; color: var(--muted); margin-top: 10px; }
+section { display: flex; flex-direction: column; gap: 14px; }
+figure { margin: 0; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+figcaption, .note { color: var(--muted); font-size: 13.5px; max-width: 80ch; }
+.fig { overflow-x: auto; }
+.fig svg { display: block; min-width: 720px; width: 100%; height: auto; color: var(--ink); }
+svg text { font-family: var(--font-body); font-size: 12.5px; fill: currentColor; }
+svg .mono { font-family: var(--font-mono); font-size: 11.5px; }
+svg .sub { fill: var(--muted); font-size: 11.5px; }
+svg .ttl { font-family: var(--font-display); font-weight: 600; font-size: 13.5px; }
+.box { fill: var(--surface); stroke: var(--gray); stroke-width: 1.5; }
+.box.learn { stroke: var(--accent); stroke-width: 2.2; fill: var(--accent-soft); }
+.ln { stroke: var(--gray); stroke-width: 1.6; fill: none; }
+.ln.acc { stroke: var(--accent); }
+.ln.dash { stroke-dasharray: 5 4; }
+.hd { fill: var(--gray); } .hd.acc { fill: var(--accent); }
+.bar-s { fill: var(--accent); } .bar-t { fill: var(--gray); } .bar-d { fill: url(#hatch); stroke: var(--accent); stroke-width: 1.5; }
+.bar-n { fill: none; stroke: var(--warn); stroke-width: 1.8; }
+.axis { stroke: var(--rule); stroke-width: 1; }
+.tag { font-family: var(--font-mono); font-size: 11px; padding: 1px 7px; border-radius: 4px; border: 1px solid var(--rule); color: var(--muted); white-space: nowrap; }
+.tag.new { background: var(--accent); border-color: var(--accent); color: var(--surface); }
+.tag.chg { border-color: var(--accent); color: var(--accent); }
+.tw { overflow-x: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; }
+table { border-collapse: collapse; width: 100%; min-width: 680px; font-size: 14px; }
+th, td { text-align: left; padding: 9px 14px; vertical-align: top; border-top: 1px solid var(--rule); }
+thead th { border-top: 0; font-family: var(--font-mono); font-weight: 500; font-size: 11.5px; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+tr.grp td { background: var(--accent-soft); font-family: var(--font-display); font-weight: 600; border-top: 1px solid var(--rule); }
+td.v { font-family: var(--font-mono); font-size: 13px; white-space: nowrap; }
+td.s { white-space: nowrap; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.card { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 16px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.card p { color: var(--muted); font-size: 14px; }
+ol.steps { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 8px; }
+ol.steps li::marker { font-family: var(--font-mono); color: var(--accent); }
+code { font-family: var(--font-mono); font-size: 12.5px; }
+</style>
+
+<div class="page">
+  <header>
+    <h1>Policy and Reward Blueprint</h1>
+    <p class="lede">How the agent would play the early game end to end: who presses the buttons in each situation, and which rewards teach the one part that learns. Values come from <code>src/rl_env.py</code>; anything not in the code today is marked new.</p>
+  </header>
+
+  <section aria-labelledby="h-flow">
+    <h2 id="h-flow">Who acts</h2>
+    <figure>
+      <div class="fig">
+        <svg viewBox="0 0 960 440" role="img" aria-label="Control flow: the emulator state feeds a mode check. Walking goes to the learned navigation policy, battle goes to a scripted tactical controller, dialogue goes to a text-mash macro. A stage manager supplies the walking policy with the current goal. All three produce button presses that go back to the emulator. A reward builder reads the state and feeds PPO, which trains only the navigation policy.">
+          <defs>
+            <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="hd"/></marker>
+            <marker id="aha" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" class="hd acc"/></marker>
+          </defs>
+          <!-- stage manager -->
+          <rect class="box" x="400" y="12" width="290" height="62" rx="8"/>
+          <text class="ttl" x="545" y="34" text-anchor="middle">Stage manager</text>
+          <text class="sub" x="545" y="52" text-anchor="middle">event flags pick the goal</text>
+          <text class="sub" x="545" y="66" text-anchor="middle">HP under 50% swaps in the Pokécenter</text>
+          <line class="ln acc" x1="545" y1="74" x2="545" y2="104" marker-end="url(#aha)"/>
+          <text class="sub" x="553" y="93">goal, next step, stage</text>
+          <!-- emulator -->
+          <rect class="box" x="60" y="170" width="130" height="70" rx="8"/>
+          <text class="ttl" x="125" y="199" text-anchor="middle">Game</text>
+          <text class="sub" x="125" y="217" text-anchor="middle">PyBoy + RAM</text>
+          <line class="ln" x1="190" y1="205" x2="220" y2="205" marker-end="url(#ah)"/>
+          <!-- mode -->
+          <rect class="box" x="220" y="170" width="110" height="70" rx="8"/>
+          <text class="ttl" x="275" y="199" text-anchor="middle">Mode?</text>
+          <text class="sub" x="275" y="217" text-anchor="middle">from RAM flags</text>
+          <!-- fan out -->
+          <polyline class="ln" points="330,205 365,205 365,126 400,126" marker-end="url(#ah)"/>
+          <polyline class="ln" points="330,205 400,205" marker-end="url(#ah)"/>
+          <polyline class="ln" points="330,205 365,205 365,284 400,284" marker-end="url(#ah)"/>
+          <!-- lanes -->
+          <rect class="box learn" x="400" y="104" width="290" height="44" rx="8"/>
+          <text class="ttl" x="414" y="123">Walking: navigation policy</text>
+          <text class="sub" x="414" y="139">learned · PPO · up, down, left, right, A</text>
+          <rect class="box" x="400" y="183" width="290" height="44" rx="8"/>
+          <text class="ttl" x="414" y="202">Battle: tactical controller</text>
+          <text class="sub" x="414" y="218">scripted · best move, item guard, switching</text>
+          <rect class="box" x="400" y="262" width="290" height="44" rx="8"/>
+          <text class="ttl" x="414" y="281">Dialogue: text mash</text>
+          <text class="sub" x="414" y="297">scripted · advance text until it closes</text>
+          <!-- buttons bus -->
+          <line class="ln" x1="690" y1="126" x2="740" y2="126"/>
+          <line class="ln" x1="690" y1="205" x2="740" y2="205"/>
+          <line class="ln" x1="690" y1="284" x2="740" y2="284"/>
+          <line class="ln" x1="740" y1="126" x2="740" y2="284"/>
+          <line class="ln" x1="740" y1="205" x2="790" y2="205" marker-end="url(#ah)"/>
+          <rect class="box" x="790" y="170" width="130" height="70" rx="8"/>
+          <text class="ttl" x="855" y="199" text-anchor="middle">Buttons</text>
+          <text class="sub" x="855" y="217" text-anchor="middle">press, tick frames</text>
+          <!-- return loop -->
+          <polyline class="ln" points="855,240 855,340 125,340 125,240" marker-end="url(#ah)"/>
+          <text class="sub" x="490" y="333" text-anchor="middle">next frame, new state</text>
+          <!-- reward path -->
+          <polyline class="ln acc dash" points="60,205 28,205 28,396 200,396" marker-end="url(#aha)"/>
+          <text class="sub" x="43" y="300" transform="rotate(-90 43 300)" text-anchor="middle">state before and after</text>
+          <rect class="box" x="200" y="372" width="220" height="48" rx="8"/>
+          <text class="ttl" x="310" y="393" text-anchor="middle">Reward builder</text>
+          <text class="sub" x="310" y="409" text-anchor="middle">dense route + sparse events</text>
+          <line class="ln acc dash" x1="420" y1="396" x2="500" y2="396" marker-end="url(#aha)"/>
+          <text class="sub" x="460" y="388" text-anchor="middle">reward</text>
+          <rect class="box learn" x="500" y="372" width="260" height="48" rx="8"/>
+          <text class="ttl" x="514" y="393">PPO update</text>
+          <text class="sub" x="514" y="409">changes the walking policy only</text>
+        </svg>
+      </div>
+      <figcaption>Only the walking policy learns. Battle and dialogue are scripted, so battle, healing and talking rewards reach the policy as credit for the walking choices that led there: entering grass at low HP, reaching the Pokécenter, standing in front of the right NPC.</figcaption>
+    </figure>
+
+    <div class="two">
+      <div class="card"><h3>What the walking policy sees</h3>
+        <p>5×5 local grid and blocked-tile mask, last action, HP fraction, party size and top level, battle and dialogue flags. New: stage one-hot (or the event flags), the first step of the shortest path to the current goal, and remaining distance to that goal.</p></div>
+      <div class="card"><h3>Why the stage must be in the input</h3>
+        <p>Route 30 is walked north to Mr. Pokémon, south with the egg, and north again to Violet. Without the stage, one tile asks for three different directions.</p></div>
+    </div>
+  </section>
+
+  <section aria-labelledby="h-mag">
+    <h2 id="h-mag">Reward sizes</h2>
+    <figure>
+      <div class="fig">
+        <svg id="mag" viewBox="0 0 960 470" role="img" aria-label="Bar chart of reward sizes. The hand-coded route potentials today add up to about 350 points over the walk to Falkner, which is seven times the 50 points for beating Falkner. The proposed route progress is 60 points in total. Other one-time rewards range from 5 to 50, and fainting costs 25.">
+          <defs>
+            <pattern id="hatch" width="7" height="7" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="7" height="7" fill="var(--surface)"/><line x1="0" y1="0" x2="0" y2="7" stroke="var(--accent)" stroke-width="3"/></pattern>
+          </defs>
+        </svg>
+      </div>
+      <figcaption>Walking to the gym is worth about 350 points today because the hand-coded stage potentials in <code>story_potential</code> climb from 0 to roughly 350. Beating Falkner is worth 50. The agent is paid far more for the commute than for the goal. Scaling route progress to 60 points keeps the dense signal as a guide and lets the milestones decide what matters.</figcaption>
+    </figure>
+  </section>
+
+  <section aria-labelledby="h-tab">
+    <h2 id="h-tab">Every signal</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Signal</th><th>Fires when</th><th>Value</th><th>Status</th></tr></thead>
+      <tbody>
+        <tr class="grp"><td colspan="4">Navigation (dense)</td></tr>
+        <tr><td>Route progress</td><td>Each step along the shortest path to the current goal. Potential is steps remaining on the whole route, so it is continuous across goals.</td><td class="v">0.08 × change in Φ<br>≈ 60 to Falkner</td><td class="s"><span class="tag new">new</span></td></tr>
+        <tr><td>Step cost</td><td>Every step</td><td class="v">−0.01</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Bump</td><td>Move blocked, outside battle and dialogue</td><td class="v">−0.05 × min(4, bumps in a row)</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Per-map waypoints</td><td>First visit to each map on the way to the gym or back with the egg</td><td class="v">3 to 20, +15 per map on the egg return</td><td class="s"><span class="tag chg">remove</span></td></tr>
+        <tr><td>Hand-coded stage potentials</td><td>Manhattan distance to hand-placed coordinates</td><td class="v">sum ≈ 350</td><td class="s"><span class="tag chg">replace</span></td></tr>
+
+        <tr class="grp"><td colspan="4">Story milestones (sparse, once)</td></tr>
+        <tr><td>Starter, egg, rival, egg delivered</td><td>Event flag flips</td><td class="v">15, 20, 15, 20</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Mom talk, catch tutorial, TM31, Togepi egg</td><td>Event flag flips</td><td class="v">10, 5, 10, 10</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Falkner beaten, badge, Cut</td><td>Event flag or badge count rises</td><td class="v">50, 30, 20</td><td class="s"><span class="tag">exists</span></td></tr>
+
+        <tr class="grp"><td colspan="4">Battling (scripted fighting, learned avoidance)</td></tr>
+        <tr><td>Trainer battle won</td><td>Battle ends with the lead still up</td><td class="v">+5</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Wild battle won</td><td>Same, by lead level and quest stage</td><td class="v">+3 under Lv 7, 0 during the egg errand, +0.2 after</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Level up</td><td>Party level sum rises; full credit to 15, a quarter after</td><td class="v">5 × change</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Catch</td><td>Party gains a species; repeats halve</td><td class="v">10, 5, 2.5, floor 0.5</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Damage taken</td><td>Party HP drops</td><td class="v">−2 × fraction of max HP lost</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Lead below 25% HP</td><td>Every step</td><td class="v">−0.05</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>White-out</td><td>Lead faints</td><td class="v">−25</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Train to target level</td><td>Gym prep: walk to a grass patch until the lead reaches the target</td><td class="v">goal override, no new reward</td><td class="s"><span class="tag new">new</span></td></tr>
+
+        <tr class="grp"><td colspan="4">Healing</td></tr>
+        <tr><td>Pokécenter heal</td><td>HP rises inside a Pokécenter, once per center per episode</td><td class="v">15 + 10 × fraction healed</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Talk to Nurse Joy</td><td>Dialogue opens while hurt in a Pokécenter</td><td class="v">+2</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Heal detour</td><td>HP under 50%: the goal becomes the Pokécenter door, then the route resumes</td><td class="v">goal override, same potential</td><td class="s"><span class="tag new">new</span></td></tr>
+
+        <tr class="grp"><td colspan="4">Talking</td></tr>
+        <tr><td>New interaction</td><td>First A press that opens text from a tile and facing</td><td class="v">+0.5</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Goal conversation</td><td>The goal tile is the one in front of the NPC; the flag flip pays the milestone</td><td class="v">via milestones</td><td class="s"><span class="tag chg">change</span></td></tr>
+
+        <tr class="grp"><td colspan="4">Exploration</td></tr>
+        <tr><td>New tile</td><td>First visit this episode</td><td class="v">+1 (+2 on objective maps) → 0.05 with a route graph</td><td class="s"><span class="tag chg">change</span></td></tr>
+        <tr><td>Unvisited neighbor</td><td>Step toward a tile never seen</td><td class="v">+0.2 → 0 with a route graph</td><td class="s"><span class="tag chg">change</span></td></tr>
+        <tr><td>New map, new warp</td><td>First time per episode</td><td class="v">+10, +1</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Frontier shaping</td><td>Closer to the nearest unvisited tile; used where no route graph exists</td><td class="v">4 × (γΦ' − Φ)</td><td class="s"><span class="tag">exists</span></td></tr>
+        <tr><td>Count-based curiosity</td><td>Fallback for unmapped areas</td><td class="v">0.08 scale</td><td class="s"><span class="tag">exists</span></td></tr>
+
+        <tr class="grp"><td colspan="4">Episode rules</td></tr>
+        <tr><td>Stepping back into a finished map</td><td>Ends the episode</td><td class="v">−2</td><td class="s"><span class="tag chg">make stage-aware</span></td></tr>
+        <tr><td>Truncation</td><td>64 steps per episode; resets come from saved states, 30% from the frontier list</td><td class="v">bootstrap the value, balance start stages</td><td class="s"><span class="tag chg">change</span></td></tr>
+      </tbody></table></div>
+    <p class="note">With a route graph, exploration pays almost nothing so it cannot outbid the route. Where the graph has no map yet (later Johto), the full exploration terms come back automatically.</p>
+  </section>
+
+  <section aria-labelledby="h-noise">
+    <h2 id="h-noise">Noise and exploration</h2>
+    <div class="tw"><table>
+      <thead><tr><th>Knob</th><th>Today</th><th>Proposed</th></tr></thead>
+      <tbody>
+        <tr><td>Entropy bonus</td><td class="v">0.03, fixed</td><td>Anneal to 0.005 as route progress per episode rises, so the policy commits once the path is clear.</td></tr>
+        <tr><td>Action mask</td><td class="v">blocked tiles removed from the softmax</td><td>Keep. Also mask A while no dialogue target is in front of the player.</td></tr>
+        <tr><td>Start states</td><td class="v">30% from the frontier list</td><td>Sample stages evenly so the return leg is trained as often as the first.</td></tr>
+        <tr><td>Sticky actions</td><td class="v">none</td><td>Repeat the last move with probability 0.1 in training; off at evaluation.</td></tr>
+        <tr><td>Start jitter</td><td class="v">none</td><td>0 to 6 random moves in safe maps after a reset.</td></tr>
+        <tr><td>Evaluation</td><td class="v">sampled</td><td>Greedy, no noise, from the New Bark save.</td></tr>
+      </tbody></table></div>
+  </section>
+
+  <section aria-labelledby="h-order">
+    <h2 id="h-order">Build order</h2>
+    <ol class="steps">
+      <li>Merge <code>return_nav</code> and <code>falkner_nav</code> into one route graph with warps, and compute <code>Φ(stage, tile)</code>.</li>
+      <li>Add stage, next-step direction and remaining distance to the observation.</li>
+      <li>Swap the hand-coded potentials for route progress at 0.08 per step, and delete the per-map waypoints.</li>
+      <li>Cut new-tile and neighbor bonuses when a route graph covers the map.</li>
+      <li>Make the finished-map penalty stage-aware so the egg return is allowed.</li>
+      <li>Test: Φ rises along the path, including across each goal; a full circle telescopes to the end value; the same tile gives different features at stage 1 and stage 3.</li>
+      <li>Train from stage-balanced start states with the entropy schedule, and compare steps-to-goal per leg against the scripted navigators.</li>
+    </ol>
+  </section>
+</div>
+
+<script>
+(function () {
+  var svg = document.getElementById("mag"), NS = "http://www.w3.org/2000/svg";
+  // label, value, class, display text
+  var rows = [
+    ["Route progress today (hand-coded)", 350, "bar-t", "≈350"],
+    ["Route progress proposed", 60, "bar-d", "60"],
+    ["Falkner beaten", 50, "bar-s", "50"],
+    ["Badge", 30, "bar-s", "30"],
+    ["Egg received, egg delivered, Cut", 20, "bar-s", "20 each"],
+    ["Pokécenter heal (first per center)", 25, "bar-s", "15 to 25"],
+    ["Starter, rival", 15, "bar-s", "15 each"],
+    ["New map, first catch, Togepi, TM31", 10, "bar-s", "10 each"],
+    ["Trainer battle won", 5, "bar-s", "5"],
+    ["Level up, per level (early)", 5, "bar-s", "5"],
+    ["White-out (penalty)", 25, "bar-n", "−25"]
+  ];
+  var L = 280, R = 120, W = 960, top = 18, rh = 38, bw = W - L - R, max = 350;
+  function el(n, a, t) { var e = document.createElementNS(NS, n); for (var k in a) e.setAttribute(k, a[k]); if (t != null) e.textContent = t; return e; }
+  svg.appendChild(el("line", { x1: L, y1: top - 6, x2: L, y2: top + rows.length * rh, "class": "axis" }));
+  rows.forEach(function (r, i) {
+    var y = top + i * rh, w = Math.max(3, r[1] / max * bw);
+    var g = el("g", {});
+    g.appendChild(el("title", {}, r[0] + ": " + r[3]));
+    var lab = el("text", { x: L - 12, y: y + 17, "text-anchor": "end" }, r[0]); g.appendChild(lab);
+    g.appendChild(el("rect", { x: L, y: y + 4, width: w, height: 22, rx: 3, "class": r[2] }));
+    g.appendChild(el("text", { x: L + w + 8, y: y + 20, "class": "mono" }, r[3]));
+    svg.appendChild(g);
+  });
+  var kx = L, ky = top + rows.length * rh + 14;
+  [["bar-s", "one-time reward"], ["bar-d", "dense route progress, proposed"], ["bar-t", "dense route progress, today"], ["bar-n", "penalty"]].forEach(function (k, i) {
+    var x = L + [0, 120, 330, 520][i];
+    svg.appendChild(el("rect", { x: x, y: ky - 10, width: 14, height: 12, rx: 2, "class": k[0] }));
+    svg.appendChild(el("text", { x: x + 20, y: ky, "class": "sub" }, k[1]));
+  });
+})();
+</script>

@@ -2,7 +2,12 @@
 
 Combines a ResNet-18 style convolutional visual backbone over the raw Game Boy
 144x160 RGB screen buffer with a multi-layer RAM embedding trunk to produce
-spatially-aware, quest-aware action distributions and value estimates.
+spatially-aware action distributions and value estimates.
+
+Checkpoints are tied to the observation / action layout (``OBS_SCHEMA`` below). The v2 layout removed the route
+oracle (next-step direction and distance-to-goal features), added battle features and the B button, so old
+checkpoints cannot be loaded; ``SpatialVisionPolicy.load`` raises ``CheckpointIncompatibleError`` instead of
+producing silent garbage.
 """
 
 from __future__ import annotations
@@ -21,6 +26,18 @@ try:
 except ImportError:
     TORCH_AVAILABLE = False
     nn = object  # type: ignore
+
+# Layout of the RAM vector and the action set a checkpoint was trained with (src.rl_env.OBS_SCHEMA mirrors this).
+OBS_SCHEMA = "v2-no-oracle-learned-battles"
+
+# Index of the in-battle flag in the RAM vector (src.rl_env.observe: 4 neighbor tiles, x, y, badges, battle, ...) and
+# the index of the A button in the action set (src.rl_env.ACTIONS = 4 directions, a, b). Tests pin both to rl_env.
+BATTLE_FLAG_INDEX = 7
+ACTION_A_INDEX = 4
+
+
+class CheckpointIncompatibleError(RuntimeError):
+    """The checkpoint was trained with a different observation / action layout than this code uses."""
 
 
 if TORCH_AVAILABLE:
@@ -97,18 +114,24 @@ if TORCH_AVAILABLE:
 
         def __init__(
             self,
-            obs_dim: int = 21,
-            num_actions: int = 5,
+            obs_dim: int = 77,
+            num_actions: int = 6,
             ram_hidden_dim: int = 256,
             fusion_dim: int = 512,
             use_gru: bool = False,
             gru_hidden_dim: int = 512,
+            aux_heads: bool = False,
         ):
             super().__init__()
             self.obs_dim = obs_dim
             self.num_actions = num_actions
             self.use_gru = use_gru
             self.gru_hidden_dim = gru_hidden_dim
+            # Early-training bias added to the A logit while the in-battle flag is set. A plain float (not a parameter
+            # or buffer: it is not part of the state dict) set by the trainer from its schedule; 0 = off, which is what
+            # evaluation uses. It is applied inside every logit computation below, so act() / forward() (rollout) and
+            # evaluate_actions*() (PPO update) always describe the SAME distribution and the log-probs stay valid.
+            self.battle_a_bias = 0.0
 
             # 1. Visual Backbone (~11.17M params)
             self.vision_trunk = ResNet18VisionTrunk(in_channels=3)
@@ -140,6 +163,17 @@ if TORCH_AVAILABLE:
             self.actor = nn.Linear(head_dim, num_actions)
             self.critic = nn.Linear(head_dim, 1)
 
+            # 6. Optional auxiliary prediction head (src.aux_tasks; training only). It reads the same recurrent features
+            # as the actor / critic, so its gradients shape the shared trunk, but it is not part of forward(),
+            # act() or the action / value outputs. Its parameters are all named ``aux_head.*`` so checkpoints without
+            # them still load (missing keys tolerated) and inference never needs them.
+            self.aux_head = None
+            if aux_heads:
+                from src.aux_tasks import AUX_OUT_DIM  # lazy: the task module pulls in the observation layout
+
+                self.aux_head = nn.Sequential(nn.Linear(head_dim, 128), nn.ReLU(inplace=True),
+                                              nn.Linear(128, AUX_OUT_DIM))
+
             self._init_weights()
 
         def _init_weights(self):
@@ -157,6 +191,35 @@ if TORCH_AVAILABLE:
             nn.init.orthogonal_(self.actor.weight, gain=0.01)
 
         @property
+        def aux_enabled(self) -> bool:
+            return getattr(self, "aux_head", None) is not None
+
+        def set_battle_a_bias(self, value: float) -> None:
+            self.battle_a_bias = float(value)
+
+        @staticmethod
+        def _mask_logits(logits: torch.Tensor, action_mask) -> torch.Tensor:
+            """Valid-action masking (``src.battle_mask``): masked logits become a large negative number, so the softmax,
+            the sampled action, the log-prob AND the entropy all describe the masked distribution. ``action_mask`` is a
+            boolean tensor / array broadcastable to ``logits`` (True = allowed) or None (no-op). Called in every logit
+            path (act, forward, evaluate_actions*), always with the mask stored in the rollout, so the rollout log-prob
+            and the PPO re-evaluation agree."""
+            if action_mask is None:
+                return logits
+            mask = torch.as_tensor(action_mask, device=logits.device).to(torch.bool)
+            return logits.masked_fill(~mask.reshape(logits.shape), -1e9)
+
+        def _bias_logits(self, logits: torch.Tensor, ram_obs: torch.Tensor) -> torch.Tensor:
+            """Add ``battle_a_bias`` to the A logit of every sample whose in-battle flag is set (no-op at 0)."""
+            bias = self.battle_a_bias
+            if not bias:
+                return logits
+            in_battle = (ram_obs[..., BATTLE_FLAG_INDEX] > 0.5).to(logits.dtype)
+            onehot = torch.zeros(logits.shape[-1], dtype=logits.dtype, device=logits.device)
+            onehot[ACTION_A_INDEX] = 1.0
+            return logits + (bias * in_battle).unsqueeze(-1) * onehot
+
+        @property
         def param_count(self) -> int:
             return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
@@ -165,8 +228,9 @@ if TORCH_AVAILABLE:
             screen: torch.Tensor,
             ram_obs: torch.Tensor,
             hx: torch.Tensor | None = None,
+            action_mask=None,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
-            """Forward pass returning (action_logits, value)."""
+            """Forward pass returning (action_logits, value). ``action_mask`` (bool, True = allowed) masks the logits."""
             vis_feat = self.vision_trunk(screen)
             ram_feat = self.ram_trunk(ram_obs)
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
@@ -180,7 +244,7 @@ if TORCH_AVAILABLE:
             else:
                 out = fused
 
-            logits = self.actor(out)
+            logits = self._mask_logits(self._bias_logits(self.actor(out), ram_obs), action_mask)
             value = self.critic(out).squeeze(-1)
             return logits, value
 
@@ -189,6 +253,7 @@ if TORCH_AVAILABLE:
             screen: torch.Tensor,
             ram_obs: torch.Tensor,
             hx: torch.Tensor | None = None,
+            action_mask=None,
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
             """Recurrent forward pass returning (action_logits, value, new_hx)."""
             vis_feat = self.vision_trunk(screen)
@@ -205,7 +270,7 @@ if TORCH_AVAILABLE:
                 out = fused
                 new_hx = None
 
-            logits = self.actor(out)
+            logits = self._mask_logits(self._bias_logits(self.actor(out), ram_obs), action_mask)
             value = self.critic(out).squeeze(-1)
             return logits, value, new_hx
 
@@ -217,8 +282,10 @@ if TORCH_AVAILABLE:
             ram_np: np.ndarray,
             deterministic: bool = False,
             device: str = "cpu",
+            action_mask=None,
         ) -> Tuple[int, float, float]:
-            """Take numpy screen (144, 160, 3) and ram (17,) and return (action, logp, value)."""
+            """Take numpy screen (144, 160, 3) and the RAM vector (obs_dim,) and return (action, logp, value).
+            ``action_mask`` (bool (num_actions,), True = allowed) restricts sampling / argmax and the returned log-prob."""
             self.eval()
             # Format screen: (H, W, C) -> (1, C, H, W) normalized to [0, 1]
             if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
@@ -234,7 +301,7 @@ if TORCH_AVAILABLE:
             )
             ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
 
-            logits, value = self.forward(screen_t, ram_t)
+            logits, value = self.forward(screen_t, ram_t, action_mask=action_mask)
             dist = Categorical(logits=logits)
             if deterministic:
                 action = torch.argmax(logits, dim=-1)
@@ -296,13 +363,13 @@ if TORCH_AVAILABLE:
             return p, next_hx
 
         def evaluate_actions(
-            self, screen: torch.Tensor, ram_obs: torch.Tensor, actions: torch.Tensor
+            self, screen: torch.Tensor, ram_obs: torch.Tensor, actions: torch.Tensor, action_mask=None
         ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-            """Evaluate actions for PPO loss updates."""
+            """Evaluate actions for PPO loss updates (``action_mask``: the mask stored with the rollout step)."""
             if screen.dim() == 5:
                 # Sequential evaluation (B, T, C, H, W)
-                return self.evaluate_actions_sequence(screen, ram_obs, actions)
-            logits, values = self.forward(screen, ram_obs)
+                return self.evaluate_actions_sequence(screen, ram_obs, actions, action_mask=action_mask)
+            logits, values = self.forward(screen, ram_obs, action_mask=action_mask)
             dist = Categorical(logits=logits)
             log_probs = dist.log_prob(actions)
             entropy = dist.entropy()
@@ -314,7 +381,10 @@ if TORCH_AVAILABLE:
             ram_obs: torch.Tensor,
             actions: torch.Tensor,
             hx: torch.Tensor | None = None,
-        ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+            dones: torch.Tensor | None = None,
+            return_aux: bool = False,
+            action_mask=None,
+        ):
             """Evaluate sequential trajectory chunk for recurrent PPO loss updates.
 
             Args:
@@ -322,6 +392,11 @@ if TORCH_AVAILABLE:
                 ram_obs: (B, T, obs_dim)
                 actions: (B, T)
                 hx: (1, B, gru_hidden_dim) initial hidden state for each chunk
+                dones: optional (B, T) bool; ``dones[b, t]`` means env b's episode ended after step t, so its hidden
+                    state is zeroed before step t + 1 (as the rollout does). None keeps the old behavior of
+                    carrying the hidden state across episode boundaries.
+                return_aux: also return the raw auxiliary-head output ``(B, T, AUX_OUT_DIM)`` as a 4th element
+                    (needs ``aux_heads=True``); the default 3-tuple is unchanged.
             """
             B, T = screens.shape[:2]
             screens_flat = screens.reshape(B * T, *screens.shape[2:])
@@ -331,32 +406,52 @@ if TORCH_AVAILABLE:
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1)).reshape(B, T, -1)
 
             if self.use_gru and self.gru is not None:
-                gru_out, _ = self.gru(fused, hx)
+                if dones is None:
+                    gru_out, _ = self.gru(fused, hx)
+                else:
+                    # Run the GRU in chunks cut where any env ended an episode; envs that ended get a zero state.
+                    dones = dones.to(fused.device).bool()
+                    cuts = [t + 1 for t in range(T - 1) if bool(dones[:, t].any())]
+                    outs, h, start = [], hx, 0
+                    for end in cuts + [T]:
+                        chunk, h = self.gru(fused[:, start:end], h)
+                        outs.append(chunk)
+                        if end < T:
+                            keep = (~dones[:, end - 1]).to(h.dtype).view(1, B, 1)
+                            h = h * keep
+                        start = end
+                    gru_out = torch.cat(outs, dim=1)
                 out = gru_out.reshape(B * T, -1)
             else:
                 out = fused.reshape(B * T, -1)
 
-            logits = self.actor(out)
+            logits = self._bias_logits(self.actor(out), ram_flat)
             values = self.critic(out).squeeze(-1).reshape(B, T)
-            dist = Categorical(logits=logits.reshape(B, T, self.num_actions))
+            logits = self._mask_logits(logits.reshape(B, T, self.num_actions), action_mask)   # (B, T, A) mask from the rollout
+            dist = Categorical(logits=logits)
             log_probs = dist.log_prob(actions)
             entropy = dist.entropy()
+            if return_aux:
+                if not self.aux_enabled:
+                    raise RuntimeError("return_aux needs a policy built with aux_heads=True")
+                return log_probs, entropy, values, self.aux_head(out).reshape(B, T, -1)
             return log_probs, entropy, values
 
         def save(self, path: str | Path) -> None:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
-            torch.save(
-                {
-                    "state_dict": self.state_dict(),
-                    "obs_dim": self.obs_dim,
-                    "num_actions": self.num_actions,
-                    "param_count": self.param_count,
-                    "use_gru": self.use_gru,
-                    "gru_hidden_dim": self.gru_hidden_dim,
-                    "model_type": "SpatialVisionPolicy",
-                },
-                str(path),
-            )
+            blob = {
+                "state_dict": self.state_dict(),
+                "obs_dim": self.obs_dim,
+                "num_actions": self.num_actions,
+                "param_count": self.param_count,
+                "use_gru": self.use_gru,
+                "gru_hidden_dim": self.gru_hidden_dim,
+                "model_type": "SpatialVisionPolicy",
+                "obs_schema": OBS_SCHEMA,
+            }
+            if self.aux_enabled:
+                blob["aux_heads"] = True   # only written when on, so older/no-aux checkpoints keep their exact format
+            torch.save(blob, str(path))
 
         @classmethod
         def load(
@@ -365,7 +460,16 @@ if TORCH_AVAILABLE:
             device: str = "cpu",
             override_use_gru: bool | None = None,
             override_obs_dim: int | None = None,
+            check_schema: bool = False,
+            override_aux_heads: bool | None = None,
         ) -> "SpatialVisionPolicy":
+            """Load a checkpoint. ``check_schema=True`` (trainer, evaluator, play_live) rejects checkpoints from another
+            observation / action layout with ``CheckpointIncompatibleError``. ``override_obs_dim`` must equal the saved
+            width (zero-padding old checkpoints is no longer offered: the new features change the meaning of columns).
+
+            ``override_aux_heads=True`` (the trainer, long_v4) builds the auxiliary head; a checkpoint without it loads
+            with the head freshly initialised (missing ``aux_head.*`` keys are tolerated), and a checkpoint with it loads
+            into a policy without the head (the extra keys are dropped). Evaluation leaves it at None: no head."""
             p = Path(path)
             if not p.exists():
                 fallback = Path("models") / p.name
@@ -377,26 +481,50 @@ if TORCH_AVAILABLE:
             gru_hidden_dim = checkpoint.get("gru_hidden_dim", 512)
             checkpoint_obs_dim = checkpoint.get("obs_dim", 17)
             target_obs_dim = checkpoint_obs_dim if override_obs_dim is None else override_obs_dim
+            schema = checkpoint.get("obs_schema")
+            if check_schema:
+                # Only checkpoints written by this code carry the schema; anything else (v1 had 30-dim RAM vectors
+                # with the route oracle and 5 actions) would load into a different input layout.
+                if schema is not None and schema != OBS_SCHEMA:
+                    raise CheckpointIncompatibleError(
+                        f"{p}: checkpoint observation schema '{schema}' != current '{OBS_SCHEMA}'. Retrain from scratch "
+                        "(old checkpoints used the route oracle and scripted battles and cannot be loaded)."
+                    )
+                if schema is None and (checkpoint_obs_dim != target_obs_dim or checkpoint.get("num_actions", 5) != 6):
+                    raise CheckpointIncompatibleError(
+                        f"{p}: old checkpoint (obs_dim={checkpoint_obs_dim}, num_actions={checkpoint.get('num_actions', 5)}) "
+                        f"is incompatible with the current layout (obs_dim={target_obs_dim}, num_actions=6, schema "
+                        f"'{OBS_SCHEMA}'): the route oracle features were removed, battle features and the B button were "
+                        "added. Retrain from scratch (--config long_v2)."
+                    )
+            if override_obs_dim is not None and checkpoint_obs_dim != override_obs_dim:
+                raise CheckpointIncompatibleError(
+                    f"{p}: checkpoint obs_dim {checkpoint_obs_dim} != expected {override_obs_dim}; observation layouts "
+                    "are not interchangeable. Retrain from scratch."
+                )
 
             model = cls(
                 obs_dim=target_obs_dim,
                 num_actions=checkpoint.get("num_actions", 5),
                 use_gru=use_gru,
                 gru_hidden_dim=gru_hidden_dim,
+                aux_heads=bool(override_aux_heads),
             )
 
             state_dict = checkpoint["state_dict"]
-            if target_obs_dim > checkpoint_obs_dim and "ram_trunk.0.weight" in state_dict:
-                old_w = state_dict["ram_trunk.0.weight"]
-                new_w = torch.zeros(old_w.shape[0], target_obs_dim, device=old_w.device, dtype=old_w.dtype)
-                new_w[:, :old_w.shape[1]] = old_w
-                torch.nn.init.orthogonal_(new_w[:, old_w.shape[1]:], gain=0.1)
-                state_dict["ram_trunk.0.weight"] = new_w
-
+            if not model.aux_enabled:
+                state_dict = {k: v for k, v in state_dict.items() if not k.startswith("aux_head.")}
             strict = (use_gru == saved_use_gru)
-            model.load_state_dict(state_dict, strict=strict)
+            if strict and model.aux_enabled:
+                result = model.load_state_dict(state_dict, strict=False)
+                bad = [k for k in list(result.missing_keys) + list(result.unexpected_keys) if not k.startswith("aux_head.")]
+                if bad:
+                    raise RuntimeError(f"checkpoint {p} does not match the policy: {bad[:6]}")
+            else:
+                model.load_state_dict(state_dict, strict=strict)
             model.to(device)
             model.eval()
+            # battle_a_bias stays 0 here: it is a training-time aid the trainer sets per update (see the sidecar)
             return model
 
 else:

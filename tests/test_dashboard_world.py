@@ -1,0 +1,201 @@
+import json
+import tempfile
+import threading
+import unittest
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+
+from tools.dashboard import STATIC_DIR, lineage_prior, make_handler
+
+
+class WorldLayoutTests(unittest.TestCase):
+    """The coverage view draws every route map in one picture from the ROM-derived layout file."""
+
+    def test_layout_file_has_the_whole_early_route(self):
+        data = json.loads((STATIC_DIR / "world_layout.json").read_text(encoding="utf-8"))
+        maps = {m["id"]: m for m in data["maps"]}
+        for key in ("24,4", "24,3", "26,3", "26,1", "26,2", "10,5"):  # New Bark ... Violet City
+            self.assertTrue(maps[key]["outdoor"], key)
+            self.assertIn("ox", maps[key])
+            self.assertEqual(len(maps[key]["rows"]), maps[key]["h"])
+        for key in ("26,11", "10,7"):  # Violet gatehouse, Violet gym
+            self.assertFalse(maps[key]["outdoor"], key)
+        self.assertEqual([s["id"] for s in data["stars"]], ["route29", "cherrygrove", "route30", "route31", "violet_gate", "violet_city", "violet_gym", "beat_falkner"])
+        self.assertEqual([s["n"] for s in data["stars"]], list(range(1, 9)))
+        self.assertEqual(sum(s["reward"] for s in data["stars"]), 140)   # 5+10+10+10+5+15+15 plus 70 for the badge and event
+        self.assertEqual(len(data["legs"]), 1)
+        self.assertEqual(data["legs"][0]["steps"], 309)
+        blob = json.dumps(data["stars"]).lower()
+        for word in ("elm", "egg", " rival"):
+            self.assertNotIn(word, blob)
+
+    def test_layout_has_the_three_phase_egg_route_for_egg_errand_runs(self):
+        from src.story_path import EGG_PATH_STEPS, EGG_PHASE_STEPS
+        data = json.loads((STATIC_DIR / "world_layout.json").read_text(encoding="utf-8"))
+        egg = data["egg"]
+        self.assertEqual([s["id"] for s in egg["stars"]], ["route29", "cherrygrove", "route30", "mr_pokemon_house", "egg_received",
+                                                           "egg_delivered", "route31", "violet_gate", "violet_city", "violet_gym", "beat_falkner"])
+        self.assertEqual([s["n"] for s in egg["stars"]], list(range(1, 12)))
+        self.assertEqual(sum(s["reward"] for s in egg["stars"]), 195)    # 125 + 70 for the badge and the Falkner event
+        self.assertEqual([s["event"] for s in egg["stars"] if s.get("event")], [True, True])
+        self.assertEqual([(l["phase"], l["steps"]) for l in egg["legs"]], list(enumerate(EGG_PHASE_STEPS)))
+        self.assertEqual(egg["total"], EGG_PATH_STEPS)
+        self.assertEqual(sum(l["steps"] for l in egg["legs"]), 695)
+        for leg in egg["legs"]:
+            self.assertTrue(leg["segments"] and leg["label"])
+        maps = {m["id"]: m for m in data["maps"]}
+        for star in egg["stars"]:                       # every star sits on a map that is drawn
+            self.assertIn(star["wmap"].replace("_", ","), maps)
+        self.assertIn("24,5", maps)                     # Elm's lab and Mr. Pokemon's house interiors are in the layout
+        self.assertIn("26,10", maps)
+        # old runs: the base keys are untouched and still describe the 309-step route
+        self.assertEqual(len(data["stars"]), 8)
+        self.assertEqual(data["legs"][0]["steps"], 309)
+
+    def test_gym_floor_is_the_roms_not_a_hand_coded_s_curve(self):
+        """The Violet Gym panel draws the real collision grid (the one ``src.route_graph`` walks), with the story path and the
+        tile in front of Falkner on drawn floor.  It used to draw only an S-curve and call every other tile a pit."""
+        from src import route_graph as rg
+        g = rg._graph()
+        if g is None:
+            self.skipTest("ROM not available")
+        data = json.loads((STATIC_DIR / "world_layout.json").read_text(encoding="utf-8"))
+        gym = {m["id"]: m for m in data["maps"]}["10,7"]
+        rows = gym["rows"]
+        cells = g.maps[(10, 7)].cells
+        self.assertEqual((gym["w"], gym["h"]), (10, 16))
+        for y in range(16):
+            for x in range(10):
+                self.assertEqual(rows[y][x] in "fd", rg.walkable(cells[(x, y)]), (x, y, rows[y][x]))
+        self.assertNotIn("p", "".join(rows))              # no pits: the old drawing's invention
+        self.assertEqual([x for x in range(10) if rows[15][x] == "d"], [4, 5])     # the two exit mats
+        node = rg.EGG_DELIVER_GOAL
+        dist = g.dist[0]
+        path = [rg.GOALS[0]]
+        while dist[node] > 0:                              # walk the phase-2 path and keep its gym tiles
+            node = next(n for n in g.fwd[node] if n is not None and dist.get(n, 1e9) == dist[node] - 1)
+            if node[0] == (10, 7):
+                path.append(node)
+        for _mid, x, y in path:
+            self.assertIn(rows[y][x], "fd", (x, y))
+        self.assertEqual(rg.GOALS[0], ((10, 7), 5, 2))     # in front of Falkner, who stands at (5, 1)
+
+    def test_page_picks_the_route_from_the_run_meta(self):
+        page = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
+        for needle in ("egg_errand_route", "world.egg", "function syncProfile(", "const wStars", "const wLegs", "milestone_labels", "LEG_STYLE"):
+            self.assertIn(needle, page, needle)
+        self.assertNotIn("/319 tiles", page)              # the path length comes from the run now
+
+    def test_event_markers_use_the_runs_milestone_names_and_path_length(self):
+        from tools import dashboard_events as de
+        recs = [{"update": u, "metrics": {"update": u, "ms_reach_cum": [1.0] * min(u, 6) + [0.0] * (11 - min(u, 6)),
+                                          "path_best_max_cum": float(u * 100)}} for u in range(1, 8)]
+        base = de.derive(recs)
+        self.assertTrue(all("/309 tiles" in e["x"] for e in base["events"] if e["t"] == "path"))
+        egg = de.derive(recs, de.EGG_MILESTONE_NAMES, 695)
+        self.assertTrue(any("Egg delivered" in e["x"] for e in egg["events"] if e["t"] == "ms"))
+        self.assertTrue(all("/695 tiles" in e["x"] for e in egg["events"] if e["t"] == "path"))
+        with tempfile.TemporaryDirectory() as tmp:
+            run = Path(tmp)
+            (run / "history.jsonl").write_text("\n".join(json.dumps(r) for r in recs) + "\n", encoding="utf-8")
+            (run / "meta.json").write_text(json.dumps({"run": {"egg_errand_route": True, "path_total": 695,
+                                                                "milestone_labels": de.EGG_MILESTONE_NAMES}}), encoding="utf-8")
+            out = de.run_events(run)
+            self.assertTrue(any("/695 tiles" in e["x"] for e in out["events"] if e["t"] == "path"))
+
+    def test_world_route_and_page_wiring(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(Path(tmp) / "live", Path(tmp) / "m.jsonl", Path(tmp) / "runs"))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                world = json.loads(urllib.request.urlopen(base + "/api/world", timeout=5).read())
+                self.assertGreaterEqual(len(world["maps"]), 12)
+                page = urllib.request.urlopen(base + "/", timeout=5).read().decode("utf-8")
+                self.assertIn("renderWorld", page)
+                self.assertNotIn('id="mapTabs"', page)      # no per-map tabs any more
+                self.assertNotIn('id="envs"', page)         # no per-agent screen grid
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
+def _mk_run(runs: Path, name: str, started: float, first: int, last: int) -> None:
+    d = runs / name
+    d.mkdir(parents=True)
+    (d / "meta.json").write_text(json.dumps({"run_id": name, "started": started}), encoding="utf-8")
+    lines = [json.dumps({"update": u, "metrics": {"update": u, "run": name}}) for u in range(first, last + 1)]
+    (d / "history.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+class LineageTests(unittest.TestCase):
+    """A resumed run continues the update numbering of the run it was restored from."""
+
+    def test_chain_of_three_trims_replaced_updates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            _mk_run(runs, "a", 100.0, 0, 50)    # ran to 50, but c resumed from the 30 checkpoint
+            _mk_run(runs, "b", 200.0, 31, 80)   # resumed from a (a.last+1 >= 31), ran past c's start
+            _mk_run(runs, "c", 300.0, 61, 90)
+            got = lineage_prior(runs, "c")
+            self.assertEqual([m["update"] for m in got], list(range(0, 61)))  # b trimmed to < 61, a to < 31
+            self.assertEqual([m["run"] for m in got[:31]], ["a"] * 31)
+            self.assertEqual({m["run"] for m in got[31:]}, {"b"})
+            self.assertEqual([m["update"] for m in got if m.get("resumed")], [31])  # divider where b took over
+
+    def test_replaced_updates_are_dropped(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            _mk_run(runs, "old", 100.0, 0, 103)
+            _mk_run(runs, "new", 200.0, 100, 146)
+            got = lineage_prior(runs, "new")
+            self.assertEqual([m["update"] for m in got], list(range(0, 100)))
+            self.assertEqual(lineage_prior(runs, "old"), [])
+
+    def test_no_match(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            _mk_run(runs, "a", 100.0, 0, 20)
+            _mk_run(runs, "gap", 200.0, 40, 60)     # would need a.last + 1 >= 40
+            _mk_run(runs, "fresh", 300.0, 0, 10)    # restarts at 0: nobody starts before it
+            _mk_run(runs, "early", 50.0, 45, 70)    # started earlier than a and begins after gap's first update
+            self.assertEqual(lineage_prior(runs, "gap"), [])
+            self.assertEqual(lineage_prior(runs, "fresh"), [])
+            self.assertEqual(lineage_prior(runs, "missing"), [])
+            self.assertEqual(lineage_prior(runs, None), [])
+
+    def test_latest_started_candidate_wins(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            runs = Path(tmp)
+            _mk_run(runs, "p1", 100.0, 0, 120)
+            _mk_run(runs, "p2", 150.0, 0, 110)
+            _mk_run(runs, "r", 200.0, 100, 130)
+            self.assertEqual({m["run"] for m in lineage_prior(runs, "r")}, {"p2"})
+
+    def test_routes_prepend_prior(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            _mk_run(root / "runs", "old", 100.0, 0, 5)
+            _mk_run(root / "runs", "new", 200.0, 4, 8)
+            (root / "live").mkdir()
+            (root / "live" / "state.json").write_text(json.dumps({"run_id": "new"}), encoding="utf-8")
+            (root / "m.jsonl").write_text("\n".join(json.dumps({"update": u}) for u in range(4, 9)) + "\n", encoding="utf-8")
+            server = ThreadingHTTPServer(("127.0.0.1", 0), make_handler(root / "live", root / "m.jsonl", root / "runs"))
+            threading.Thread(target=server.serve_forever, daemon=True).start()
+            base = f"http://127.0.0.1:{server.server_address[1]}"
+            try:
+                full = json.loads(urllib.request.urlopen(base + "/api/metrics?since=-1", timeout=5).read())
+                self.assertEqual([m["update"] for m in full], list(range(0, 9)))
+                self.assertTrue(full[4].get("resumed"))
+                inc = json.loads(urllib.request.urlopen(base + "/api/metrics?since=6", timeout=5).read())
+                self.assertEqual([m["update"] for m in inc], [7, 8])
+                hist = json.loads(urllib.request.urlopen(base + "/api/run/new/history", timeout=5).read())
+                self.assertEqual([m["update"] for m in hist["prior"]], [0, 1, 2, 3])
+            finally:
+                server.shutdown()
+                server.server_close()
+
+
+if __name__ == "__main__":
+    unittest.main()

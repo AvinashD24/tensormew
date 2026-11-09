@@ -1,21 +1,22 @@
 import unittest
+import unittest.mock
 from types import SimpleNamespace
 
 import numpy as np
 
+from src import rl_env
 from src.collision import COLL_WALL
 from src.local_nav import NAV_DIM, LocalNav
 from src.ppo import MlpPolicy, Policy, mask_logits
+from src.battle_obs import BATTLE_FEATURE_DIM
 from src.rl_env import (
     BASE_OBS_DIM,
     MASK_START,
-    OBJECTIVE_TILE_BOOST,
     OBS_DIM,
     OBS_EVENT_FLAGS,
     observe,
-    progress_reward,
-    story_objective_maps,
 )
+from src.story_path import STORY_FEATURE_DIM
 
 FLOOR = 0x00
 
@@ -32,7 +33,7 @@ def _state(x, y, up=FLOOR, down=FLOOR, left=FLOOR, right=FLOOR):
 
 class LocalNavTests(unittest.TestCase):
     def test_obs_dim_includes_nav_block(self):
-        self.assertEqual(OBS_DIM, BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS))
+        self.assertEqual(OBS_DIM, BASE_OBS_DIM + NAV_DIM + len(OBS_EVENT_FLAGS) + STORY_FEATURE_DIM + BATTLE_FEATURE_DIM)
         self.assertEqual(len(LocalNav().features(_state(5, 5))), NAV_DIM)
 
     def test_wall_is_flagged_blocked(self):
@@ -93,15 +94,15 @@ class MaskTests(unittest.TestCase):
         policy = Policy(rng=np.random.default_rng(1))
         obs = self._obs([1, 1, 1, 0])
         actions = {policy.act(obs)[0] for _ in range(200)}
-        self.assertTrue(actions <= {3, 4})
+        self.assertTrue(actions <= {3, 4, 5})
 
     def test_all_blocked_is_left_alone(self):
-        logits = np.zeros(5)
+        logits = np.zeros(6)
         out = mask_logits(logits, self._obs([1, 1, 1, 1]))
         self.assertTrue(np.array_equal(out, logits))
 
     def test_short_legacy_observation_is_not_masked(self):
-        logits = np.zeros(5)
+        logits = np.zeros(6)
         self.assertTrue(np.array_equal(mask_logits(logits, np.zeros(17)), logits))
 
 
@@ -132,31 +133,14 @@ class _Story:
 
 
 class StoryTests(unittest.TestCase):
-    def test_objective_maps_follow_the_story(self):
-        get_egg = story_objective_maps(_Story())
-        self.assertIn((26, 1), get_egg)  # Route 30 leads to Mr. Pokemon
-        self.assertIn((26, 10), get_egg)
-        returning = story_objective_maps(_Story({"EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"}))
-        self.assertIn((24, 5), returning)  # Elm's lab
-        done = {"EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON", "EVENT_GAVE_MYSTERY_EGG_TO_ELM"}
-        self.assertIn((10, 7), story_objective_maps(_Story(done)))  # Violet gym
-
-    def test_new_tile_on_objective_map_pays_the_boost(self):
-        before = _Story(map_id=(26, 1), x=5, y=5)
-        after = _Story(map_id=(26, 1), x=5, y=4)
-        boosted, _, _ = progress_reward(before, after, True, set(), {(26, 1)}, shaping=0.0, legacy_potential=False)
-        before = _Story(map_id=(99, 1), x=5, y=5)
-        after = _Story(map_id=(99, 1), x=5, y=4)
-        plain, _, _ = progress_reward(before, after, True, set(), {(99, 1)}, shaping=0.0, legacy_potential=False)
-        self.assertAlmostEqual(boosted - plain, OBJECTIVE_TILE_BOOST - 1.0)
-
     def test_event_vector_is_in_the_observation(self):
         nav = LocalNav()
-        flags = {"EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON"}
+        flags = {"EVENT_LEARNED_TO_CATCH_POKEMON"}
         obs = observe(_Story(flags), set(), nav)
         self.assertEqual(len(obs), OBS_DIM)
-        events = obs[-len(OBS_EVENT_FLAGS) :]
-        index = OBS_EVENT_FLAGS.index("EVENT_GOT_MYSTERY_EGG_FROM_MR_POKEMON")
+        tail = STORY_FEATURE_DIM + BATTLE_FEATURE_DIM
+        events = obs[-len(OBS_EVENT_FLAGS) - tail : -tail]
+        index = OBS_EVENT_FLAGS.index("EVENT_LEARNED_TO_CATCH_POKEMON")
         self.assertEqual(events[index], 1.0)
         self.assertEqual(float(events.sum()), 1.0)
 

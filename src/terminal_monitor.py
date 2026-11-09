@@ -38,6 +38,7 @@ class TerminalMonitor:
         self.last_maps_discovered: int = 0
         self.updates_since_map_change: int = 0
         self.update_count: int = 0
+        self.last_status: str = ""
 
         # Colors enabled if terminal supports it
         self.use_color = hasattr(sys.stdout, "isatty") and sys.stdout.isatty()
@@ -177,6 +178,7 @@ class TerminalMonitor:
             approx_kl=approx_kl,
             maps_discovered=maps_discovered,
         )
+        self.last_status = status_key
 
         # Formatted fields
         upd_str = f"{update:4d}"

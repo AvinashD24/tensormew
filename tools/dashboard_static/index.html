@@ -1,0 +1,1568 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TensorMew Live Training</title>
+<style>
+:root {
+  --bg: #0b1020; --panel: #121a33; --panel2: #18223f; --border: #26335c;
+  --text: #e6ebff; --muted: #8f9bc4; --accent: #ff5fa2; --accent2: #5ee6ff;
+  --good: #4ade80; --warn: #fbbf24; --bad: #f87171; --gold: #ffd166;
+  --shadow: 0 8px 28px rgba(0,0,0,.35);
+  --mono: ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #f3f5fb; --panel: #ffffff; --panel2: #f0f3fb; --border: #d7ddf0;
+    --text: #12183a; --muted: #5a6592; --accent: #d6247d; --accent2: #0a85a3;
+    --good: #15803d; --warn: #b45309; --bad: #b91c1c; --gold: #b8860b;
+    --shadow: 0 6px 20px rgba(20,30,80,.10);
+  }
+}
+:root[data-theme="light"] {
+  --bg: #f3f5fb; --panel: #ffffff; --panel2: #f0f3fb; --border: #d7ddf0;
+  --text: #12183a; --muted: #5a6592; --accent: #d6247d; --accent2: #0a85a3;
+  --good: #15803d; --warn: #b45309; --bad: #b91c1c; --gold: #b8860b;
+  --shadow: 0 6px 20px rgba(20,30,80,.10);
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--text); }
+body { font: 14px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 0 16px 48px; }
+.wrap { max-width: 1480px; margin: 0 auto; }
+h1, h2, h3 { margin: 0; font-weight: 650; letter-spacing: .01em; }
+.mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+
+/* header */
+header { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 18px 0 14px; }
+.brand { display: flex; align-items: center; gap: 12px; }
+.logo { width: 34px; height: 34px; border-radius: 10px; background: linear-gradient(135deg, var(--accent), var(--accent2)); display: grid; place-items: center; color: #0b1020; font-weight: 800; box-shadow: var(--shadow); }
+.brand h1 { font-size: 18px; }
+.brand small { display: block; color: var(--muted); font-size: 12px; }
+.pill { display: inline-flex; align-items: center; gap: 7px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel); font-size: 12px; font-weight: 650; letter-spacing: .06em; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.pill.live .dot { background: var(--good); animation: pulse 1.4s ease-in-out infinite; }
+.pill.live { color: var(--good); } .pill.stale { color: var(--warn); } .pill.stale .dot { background: var(--warn); }
+.pill.done { color: var(--accent2); } .pill.done .dot { background: var(--accent2); }
+@keyframes pulse { 0%,100% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 60%, transparent); } 50% { box-shadow: 0 0 0 6px transparent; } }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-left: auto; }
+.chip { padding: 3px 9px; border-radius: 8px; background: var(--panel2); border: 1px solid var(--border); color: var(--muted); font-size: 12px; }
+.chip b { color: var(--text); font-weight: 600; }
+.runpick { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+.runpick select { background: var(--panel); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 8px; font: inherit; max-width: 230px; }
+#replayPane { display: none; }
+#replayPane img { max-width: 100%; max-height: 400px; width: auto; image-rendering: pixelated; border-radius: 8px; background: #000; display: block; margin: 0 auto; }
+.ctl { display: flex; align-items: center; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+.ctl button, .ctl select { background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 8px; padding: 5px 12px; cursor: pointer; font: inherit; }
+.ctl input[type=range] { flex: 1 1 220px; accent-color: var(--accent); }
+.ctl .lbl { font: 12px var(--mono); color: var(--muted); min-width: 150px; text-align: right; }
+.theme { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 5px 10px; cursor: pointer; font-size: 12px; }
+
+/* cards */
+.card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 14px 16px; box-shadow: var(--shadow); min-width: 0; }
+.card > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .09em; color: var(--muted); display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.card > h2 .sub { margin-left: auto; text-transform: none; letter-spacing: 0; font-weight: 500; font-size: 12px; }
+
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 12px; margin-bottom: 14px; }
+.kpi .label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .08em; }
+.kpi .value { font: 650 28px/1.15 var(--mono); margin-top: 2px; }
+.kpi .note { color: var(--muted); font-size: 12px; margin-top: 2px; min-height: 17px; }
+.kpi canvas { width: 100%; height: 34px; display: block; margin-top: 6px; }
+.bar { height: 8px; border-radius: 6px; background: var(--panel2); overflow: hidden; margin-top: 10px; position: relative; }
+.bar > i { position: absolute; inset: 0 auto 0 0; background: linear-gradient(90deg, var(--accent), var(--accent2)); border-radius: 6px; transition: width .6s ease; }
+.zones { height: 8px; border-radius: 6px; margin-top: 10px; position: relative; background: linear-gradient(90deg, var(--bad) 0 22%, var(--warn) 22% 44%, var(--good) 44% 100%); opacity: .8; }
+.zones i { position: absolute; top: -4px; width: 3px; height: 16px; background: var(--text); border-radius: 2px; transition: left .5s ease; }
+.up { color: var(--good); } .down { color: var(--bad); } .flat { color: var(--muted); }
+
+.grid2 { display: grid; grid-template-columns: 1fr; gap: 14px; margin-bottom: 14px; }
+.grid2 .stack { grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+.charts { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-bottom: 14px; }
+.chartbox { position: relative; }
+.chartbox canvas { width: 100%; height: 210px; display: block; }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend span::before { content: ""; display: inline-block; width: 10px; height: 3px; border-radius: 2px; background: var(--c); margin-right: 6px; vertical-align: middle; }
+#tip { position: fixed; z-index: 20; pointer-events: none; background: var(--panel2); border: 1px solid var(--border); border-radius: 8px; padding: 7px 10px; font-size: 12px; box-shadow: var(--shadow); display: none; white-space: nowrap; }
+#tip b { display: block; margin-bottom: 2px; }
+
+/* live agents */
+.envs { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.env { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px; cursor: pointer; transition: border-color .3s, transform .15s; }
+.env:hover { transform: translateY(-2px); border-color: var(--accent2); }
+.env.top { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
+.env.battle { border-color: var(--bad); }
+.screen { position: relative; aspect-ratio: 160 / 144; background: #000; border-radius: 6px; overflow: hidden; }
+.screen img { width: 100%; height: 100%; display: block; image-rendering: pixelated; }
+.screen .id { position: absolute; left: 5px; top: 5px; background: rgba(0,0,0,.65); color: #fff; font: 600 11px var(--mono); padding: 1px 6px; border-radius: 5px; }
+.screen .tag { position: absolute; right: 5px; top: 5px; background: var(--bad); color: #fff; font: 700 10px var(--mono); padding: 1px 6px; border-radius: 5px; letter-spacing: .08em; }
+.env .m1 { font-weight: 600; font-size: 12px; margin-top: 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.env .m2 { font: 11px var(--mono); color: var(--muted); display: flex; justify-content: space-between; gap: 6px; }
+.noimg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: 11px; }
+
+/* health + events */
+.stack { display: grid; gap: 14px; align-content: start; }
+.diag { display: grid; gap: 8px; }
+.diag div { display: flex; gap: 10px; align-items: flex-start; padding: 8px 10px; border-radius: 9px; background: var(--panel2); border-left: 4px solid var(--muted); font-size: 13px; }
+.diag .ic { font: 700 12px var(--mono); min-width: 38px; }
+.diag .ok { border-color: var(--good); } .diag .ok .ic { color: var(--good); }
+.diag .warn { border-color: var(--warn); } .diag .warn .ic { color: var(--warn); }
+.diag .bad { border-color: var(--bad); } .diag .bad .ic { color: var(--bad); }
+.diag .info { border-color: var(--accent2); } .diag .info .ic { color: var(--accent2); }
+.events { max-height: 250px; overflow: auto; display: grid; gap: 6px; }
+.events div { font-size: 13px; display: flex; gap: 8px; }
+.events time { color: var(--muted); font: 11px var(--mono); min-width: 52px; padding-top: 2px; }
+.events .k { font: 700 10px var(--mono); padding: 2px 6px; border-radius: 5px; background: var(--panel2); height: fit-content; letter-spacing: .06em; }
+.k.map { color: var(--accent2); } .k.badge { color: var(--gold); } .k.record { color: var(--accent); }
+
+/* reward components */
+.comp { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 28px; }
+.comp h3 { font-size: 12px; color: var(--muted); font-weight: 600; margin-bottom: 8px; letter-spacing: .04em; text-transform: uppercase; }
+.comp .crow { display: grid; grid-template-columns: 84px 1fr 70px; gap: 8px; align-items: center; margin-bottom: 7px; font: 12px var(--mono); }
+.comp .cbar { display: flex; height: 22px; border-radius: 6px; overflow: hidden; background: var(--panel2); gap: 1px; }
+.comp .cbar i { display: block; min-width: 1px; font: 600 10px/22px var(--mono); color: #0b1020; text-align: center; overflow: hidden; white-space: nowrap; cursor: default; }
+.comp .cbar i:hover { filter: brightness(1.25); }
+.msrow { display: grid; grid-template-columns: 112px 1fr 168px; gap: 8px; align-items: center; margin-bottom: 6px; font: 12px var(--mono); }
+.msrow .msbar { position: relative; height: 16px; border-radius: 5px; background: var(--panel2); overflow: hidden; }
+.msrow .msbar i { position: absolute; left: 0; top: 0; bottom: 0; display: block; }
+.msrow .msbar .cum { background: var(--accent2); opacity: .45; } .msrow .msbar .rec { background: var(--accent); height: 8px; top: 4px; }
+.msrow .msv { color: var(--muted); white-space: nowrap; }
+.splitTbl { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+.splitTbl th, .splitTbl td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--panel2); vertical-align: top; }
+.splitTbl th { color: var(--muted); font-weight: 500; } .splitTbl .num { text-align: right; white-space: nowrap; }
+@media (max-width: 640px) { .splitTbl { display: block; overflow-x: auto; } }
+.evalWrap { display: flex; flex-wrap: wrap; gap: 14px; align-items: flex-start; }
+.evalWrap svg { flex: 1 1 240px; min-width: 200px; max-width: 420px; height: 84px; background: var(--panel2); border-radius: 6px; }
+.evalWrap .splitTbl { flex: 1 1 260px; width: auto; }
+@media (max-width: 640px) { .msrow { grid-template-columns: 92px 1fr; } .msrow .msv { grid-column: 1 / -1; } }
+.comp .ctot { text-align: right; color: var(--muted); }
+.comp .none { color: var(--muted); font-size: 12px; }
+.clegend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--muted); margin-top: 10px; }
+.clegend span::before { content: ""; display: inline-block; width: 10px; height: 10px; border-radius: 3px; background: var(--c); margin-right: 6px; vertical-align: middle; }
+@media (max-width: 1000px) { .comp { grid-template-columns: 1fr; } }
+
+/* strip */
+.strip { display: flex; height: 16px; gap: 1px; margin-top: 10px; border-radius: 4px; overflow: hidden; background: var(--panel2); }
+.strip i { flex: 1 1 0; min-width: 0; }
+.strip i.resumed { box-shadow: inset 2px 0 0 var(--text); }
+.s-EXPLORING { background: #38bdf8; } .s-LEARNING { background: var(--good); } .s-ADVANCING { background: #a3e635; }
+.s-LOOPING { background: var(--warn); } .s-THRASHING { background: #fb923c; } .s-COLLAPSED { background: var(--bad); }
+.legend.status span::before { height: 8px; width: 8px; border-radius: 2px; }
+
+/* coverage */
+.cov { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(280px, 1fr); gap: 14px; }
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.tab { border: 1px solid var(--border); background: var(--panel2); color: var(--text); padding: 4px 10px; border-radius: 8px; cursor: pointer; font-size: 12px; }
+.tab[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #0b1020; font-weight: 650; }
+#heat { width: 100%; height: 600px; display: block; background: var(--panel2); border-radius: 10px; cursor: grab; touch-action: pan-y; user-select: none; }
+#heat.grab { cursor: grabbing; }
+#heat:focus-visible, .zbtns button:focus-visible { outline: 2px solid var(--accent2); outline-offset: 2px; }
+.zbtns { display: inline-flex; align-items: center; gap: 4px; text-transform: none; letter-spacing: 0; }
+.zbtns button { min-width: 28px; height: 26px; padding: 0 8px; background: var(--panel2); color: var(--text); border: 1px solid var(--border); border-radius: 7px; font: 600 13px var(--mono); cursor: pointer; }
+.zbtns button:hover { border-color: var(--accent2); }
+.zbtns .zl { min-width: 40px; text-align: center; font: 12px var(--mono); }
+.maphover { min-height: 20px; margin-top: 6px; font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.story { margin-bottom: 10px; }
+.goals { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.goal { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); background: var(--panel2); color: var(--muted); font-size: 12px; cursor: help; }
+.goal .gl { font-weight: 800; }
+.goal .gn { font: 700 10px var(--mono); width: 17px; height: 17px; border-radius: 50%; display: inline-grid; place-items: center; background: var(--gold); color: #0b1020; }
+.goal.reached { border-color: var(--good); color: var(--text); background: color-mix(in srgb, var(--good) 14%, var(--panel2)); }
+.goal.reached .gl { color: var(--good); }
+.goal.reached .gn { background: var(--good); }
+.goal .rw { font: 700 10px var(--mono); color: var(--gold); }
+.goal.reached .rw { color: var(--good); }
+.goals .arrow { color: var(--muted); font-size: 14px; }
+.furthest { margin-top: 8px; font-size: 12px; color: var(--muted); }
+.furthest b { color: var(--text); }
+@media (max-width: 520px) { #heat { height: 440px; } .goals { flex-direction: column; align-items: stretch; gap: 2px; } .goals .arrow { text-align: center; line-height: 1; transform: rotate(90deg); } .goal { border-radius: 10px; } }
+.ramp { height: 8px; border-radius: 4px; margin-top: 8px; background: linear-gradient(90deg, #1b1040, #5a1e8c, #c4366c, #fb8c3c, #ffe86b); }
+.ramp + div { display: flex; justify-content: space-between; color: var(--muted); font-size: 11px; }
+.act { display: grid; gap: 7px; }
+.act .row { display: grid; grid-template-columns: 52px 1fr 46px; gap: 8px; align-items: center; font: 12px var(--mono); }
+.act .track { height: 12px; background: var(--panel2); border-radius: 6px; position: relative; overflow: hidden; }
+.act .track i { position: absolute; inset: 0 auto 0 0; border-radius: 6px; transition: width .5s ease; }
+.act .track .tot { background: color-mix(in srgb, var(--accent2) 35%, transparent); }
+.act .track .rec { background: var(--accent); height: 6px; top: 3px; bottom: 3px; }
+table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+th { text-align: left; color: var(--muted); font-weight: 500; padding: 4px 6px; border-bottom: 1px solid var(--border); }
+td { padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--border) 50%, transparent); font-family: var(--mono); }
+td.num, th.num { text-align: right; }
+
+#empty { display: none; text-align: center; padding: 70px 20px; }
+#empty h2 { font-size: 20px; margin-bottom: 8px; }
+#empty code { background: var(--panel2); padding: 3px 8px; border-radius: 6px; font-family: var(--mono); }
+dialog { border: 1px solid var(--border); border-radius: 14px; background: var(--panel); color: var(--text); padding: 12px; box-shadow: var(--shadow); max-width: min(92vw, 760px); }
+dialog::backdrop { background: rgba(0,0,0,.6); }
+dialog img { width: 100%; image-rendering: pixelated; border-radius: 8px; display: block; background: #000; }
+dialog .row { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 8px; font-size: 13px; }
+dialog button { background: var(--panel2); border: 1px solid var(--border); color: var(--text); border-radius: 8px; padding: 4px 12px; cursor: pointer; }
+
+.dexhead { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin-bottom: 10px; }
+.dexhead .stat { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.dexhead .stat b { display: block; font-size: 20px; font-variant-numeric: tabular-nums; }
+.dexhead .stat span { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+.facts { margin: 0 0 10px; padding: 0; list-style: none; display: grid; gap: 4px; font-size: 13px; }
+.facts li::before { content: "\2605  "; color: var(--gold); }
+.dex { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+.mon { display: flex; align-items: center; gap: 8px; background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 8px; min-width: 0; }
+.mon.own { border-color: var(--good); }
+.mon .no { font-family: var(--mono); font-size: 11px; color: var(--muted); }
+.mon .nm { font-weight: 600; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mon .ct { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mon .ct i { font-style: normal; color: var(--good); }
+.mon > div { min-width: 0; }
+.mon.unk { border-style: dashed; }
+.spr { width: 56px; height: 56px; flex: none; image-rendering: pixelated; background: transparent; }
+.spr.sil { filter: brightness(0); opacity: .3; }
+:root[data-theme="dark"] .spr.sil { filter: brightness(0) invert(1); opacity: .22; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .spr.sil { filter: brightness(0) invert(1); opacity: .22; } }
+.spr.fb { display: flex; align-items: center; justify-content: center; font: 600 11px var(--mono); color: var(--muted); border: 1px dashed var(--border); border-radius: 8px; }
+.party { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-bottom: 12px; }
+.slot { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 6px 4px; text-align: center; min-width: 0; }
+.slot.empty { opacity: .35; border-style: dashed; }
+.slot .spr { display: block; margin: 0 auto; }
+.slot .nm { font-size: 12px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.slot .lv { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.slot .hp { height: 5px; border-radius: 3px; background: var(--border); margin: 4px 4px 0; overflow: hidden; }
+.slot .hp i { display: block; height: 100%; background: var(--good); }
+.slot .hp.mid i { background: var(--warn); } .slot .hp.low i { background: var(--bad); }
+.partyhd { font-size: 12px; color: var(--muted); margin: 0 0 6px; }
+@media (max-width: 640px) { .party { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 1000px) { .grid2, .cov, .grid2 .stack { grid-template-columns: 1fr; } .charts { grid-template-columns: 1fr; } }
+@media (max-width: 520px) { .kpi .value { font-size: 24px; } .envs { grid-template-columns: repeat(2, 1fr); } }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+
+/* learning checks, smoothing, PPO health */
+.checks { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.chk { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; font-size: 13px; }
+.chk b { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.chk span.t { color: var(--muted); display: block; margin-top: 3px; font-size: 12px; line-height: 1.35; }
+.dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; flex: none; background: var(--muted); }
+.lv-good .dot { background: var(--good); } .lv-warn .dot { background: var(--warn); } .lv-bad .dot { background: var(--bad); }
+.lv-good.chk { border-color: var(--good); } .lv-warn.chk { border-color: var(--warn); } .lv-bad.chk { border-color: var(--bad); }
+.smoothbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+.seg { display: inline-flex; gap: 4px; }
+.seg button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); cursor: pointer; }
+.seg button[aria-pressed=true] { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 700; }
+.cyc { color: var(--warn); border-bottom: 1px dotted var(--warn); cursor: help; }
+.verdict { margin-top: 8px; font-size: 14px; font-weight: 600; }
+.verdict.lv-good { color: var(--good); } .verdict.lv-warn { color: var(--warn); } .verdict.lv-bad { color: var(--bad); }
+.ppogrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 10px; }
+.ptile { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; min-width: 0; }
+.ptile .hd { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+.ptile .hd abbr { text-decoration: none; border-bottom: 1px dotted var(--muted); cursor: help; }
+.ptile .val { font: 650 20px/1.2 var(--mono); }
+.ptile canvas { width: 100%; height: 42px; display: block; margin: 4px 0; }
+.ptile .bd { display: inline-block; font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 10px; color: #0b1020; background: var(--muted); }
+.lv-good .bd { background: var(--good); } .lv-warn .bd { background: var(--warn); } .lv-bad .bd { background: var(--bad); }
+.ptile .ms { font-size: 12px; line-height: 1.35; margin-top: 4px; }
+.ptile .tg { font-size: 11px; color: var(--muted); margin-top: 2px; }
+
+/* event markers on charts, fastest-milestone records, toasts, "why did reward change" */
+.k.milestone { color: var(--gold); }
+.chartbox .evlayer { position: absolute; left: 0; top: 0; right: 0; bottom: 0; pointer-events: none; overflow: hidden; }
+.evm { position: absolute; pointer-events: auto; min-width: 12px; height: 12px; padding: 0 3px; margin: 0; border-radius: 7px; border: 1.5px solid var(--c, var(--accent)); background: color-mix(in srgb, var(--c, var(--accent)) 38%, var(--panel)); color: var(--text); font: 700 9px/9px var(--mono); cursor: pointer; transform: translateX(-50%); display: inline-flex; align-items: center; justify-content: center; }
+.evm.sq { border-radius: 3px; } .evm.dia { border-radius: 2px; transform: translateX(-50%) rotate(45deg); } .evm.dia > b { transform: rotate(-45deg); }
+.evm.faint { opacity: .55; }
+.evm:hover, .evm:focus-visible { outline: 2px solid var(--text); outline-offset: 1px; z-index: 3; opacity: 1; }
+.evm > b { font: inherit; }
+.evhair { position: absolute; top: 8px; bottom: 22px; width: 0; border-left: 1px dashed var(--muted); display: none; pointer-events: none; }
+.evbar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 2px 0 8px; font-size: 12px; color: var(--muted); }
+.evbar button { font: inherit; font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel2); color: var(--text); cursor: pointer; }
+.evbar button[aria-pressed=true] { background: var(--accent); color: #0b1020; border-color: var(--accent); font-weight: 700; }
+.evlegend { display: inline-flex; flex-wrap: wrap; gap: 3px 10px; }
+.evlegend span::before { content: ""; display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--c); background: color-mix(in srgb, var(--c) 38%, var(--panel)); margin-right: 5px; vertical-align: -1px; }
+#tip .lk { color: var(--warn); display: block; margin-top: 3px; white-space: normal; max-width: 280px; }
+#tip .ln { display: block; white-space: normal; max-width: 300px; }
+.why { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 8px 12px; margin-top: 8px; font-size: 13px; }
+.why h3 { font-size: 13px; margin-bottom: 4px; }
+.why .wr { display: grid; grid-template-columns: 96px minmax(0, 1fr) 150px; gap: 8px; align-items: center; font: 12px var(--mono); margin: 3px 0; }
+.why .wb { position: relative; height: 12px; background: var(--panel); border-radius: 4px; overflow: hidden; }
+.why .wb i { position: absolute; top: 0; bottom: 0; display: block; }
+.why .wb u { position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--muted); }
+.why .up2 { background: var(--good); } .why .dn2 { background: var(--bad); }
+.why .wn { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.rectab { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rectab th { text-align: left; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; font-weight: 600; padding: 4px 6px; }
+.rectab td { padding: 5px 6px; border-top: 1px solid var(--border); font-variant-numeric: tabular-nums; }
+.rectab td.num, .rectab th.num { text-align: right; }
+.rectab .none { color: var(--muted); }
+.rectab .imp { color: var(--good); font-weight: 600; }
+.recnote { font-size: 12px; color: var(--muted); margin-top: 6px; }
+#toasts { position: fixed; right: 12px; bottom: 12px; z-index: 30; display: grid; gap: 8px; width: min(360px, calc(100vw - 24px)); pointer-events: none; }
+.toast { pointer-events: auto; background: var(--panel); border: 1px solid var(--gold); border-left-width: 5px; border-radius: 10px; padding: 9px 12px; box-shadow: var(--shadow); font-size: 13px; display: flex; gap: 10px; align-items: flex-start; }
+.toast span { flex: 1; }
+.toast button { background: none; border: 0; color: var(--muted); cursor: pointer; font-size: 16px; line-height: 1; padding: 0 2px; }
+@media (max-width: 520px) { .why .wr { grid-template-columns: 70px minmax(0, 1fr); } .why .wr > :last-child { grid-column: 1 / -1; } .rectab .hide-s { display: none; } }
+@media (max-width: 700px) { .charts { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <div class="logo" aria-hidden="true">TM</div>
+      <div><h1>TensorMew Live Training</h1><small id="subtitle">connecting…</small></div>
+    </div>
+    <span id="status" class="pill"><span class="dot"></span><span id="statusText">WAITING</span></span>
+    <label class="runpick">Source <select id="runSel" aria-label="Choose live view or a saved run to replay"><option value="">Live</option></select></label>
+    <button class="theme" id="backLive" type="button" style="display:none">Back to live</button>
+    <div class="chips" id="chips"></div>
+    <button class="theme" id="themeBtn" type="button" aria-label="Toggle light and dark theme">Theme</button>
+  </header>
+
+  <div id="empty" class="card">
+    <h2>Waiting for a training run…</h2>
+    <p>Start one with <code>python -m tools.train_deep_ppo --updates 100</code> and this page fills in live.<br>
+    No GPU handy? Preview the dashboard with <code>python -m tools.dashboard --demo</code>.</p>
+  </div>
+
+  <main id="main">
+    <section class="card" id="learnCard" style="margin-bottom:14px" aria-labelledby="learnH">
+      <h2 id="learnH">Is it learning? <span class="sub" id="learnSub">quick checks from the training history</span></h2>
+      <div class="checks" id="learnChecks" aria-live="polite"></div>
+    </section>
+    <section class="kpis" aria-label="Key metrics">
+      <div class="card kpi"><div class="label">Progress</div><div class="value" id="kUpdate">–</div><div class="note" id="kEta"></div><div class="bar"><i id="kBar" style="width:0"></i></div></div>
+      <div class="card kpi"><div class="label">Reward (mean / rolling)</div><div class="value" id="kReward">–</div><div class="note" id="kRewardNote"></div><canvas id="spReward" aria-hidden="true"></canvas></div>
+      <div class="card kpi"><div class="label">Policy entropy</div><div class="value" id="kEntropy">–</div><div class="note" id="kEntropyNote"></div><div class="zones"><i id="kEntMark" style="left:0"></i></div></div>
+      <div class="card kpi"><div class="label">Maps discovered</div><div class="value" id="kMaps">–</div><div class="note" id="kMapsNote"></div><canvas id="spMaps" aria-hidden="true"></canvas></div>
+      <div class="card kpi"><div class="label">Approx KL / clip</div><div class="value" id="kKl">–</div><div class="note" id="kKlNote"></div><canvas id="spKl" aria-hidden="true"></canvas></div>
+      <div class="card kpi"><div class="label">Throughput</div><div class="value" id="kSps">–</div><div class="note" id="kSpsNote"></div><canvas id="spDur" aria-hidden="true"></canvas></div>
+    </section>
+
+    <section class="grid2">
+      <div class="card" id="staleBanner" style="display:none"></div>
+      <div class="card" id="replayCard" style="display:none">
+        <h2>Replay <span class="sub">scrub or press play: charts, map and milestones rewind together</span></h2>
+        <div id="replayPane" style="display:block">
+          <div class="ctl">
+            <button id="repPlay" type="button" aria-label="Play or pause replay">Play</button>
+            <input id="repSlider" type="range" min="0" max="0" value="0" aria-label="Replay position (update number)">
+            <select id="repSpeed" aria-label="Replay speed"><option value="1">1x</option><option value="3" selected>3x</option><option value="10">10x</option><option value="30">30x</option></select>
+            <span class="lbl" id="repLabel"></span>
+          </div>
+        </div>
+      </div>
+      <div class="stack">
+        <div class="card"><h2>Run health</h2><div class="diag" id="diag"></div></div>
+        <div class="card"><h2>Milestones <span class="sub" id="evSub"></span></h2><div class="events" id="events"></div></div>
+      </div>
+    </section>
+
+    <section class="charts">
+      <div class="card" id="rewardCard" style="grid-column:1/-1"><h2>Reward <span class="sub">y: mean reward per update · x: update number</span></h2>
+        <div class="smoothbar"><span id="smoothLbl">Smoothing window (updates):</span><div class="seg" id="smoothSeg" role="group" aria-labelledby="smoothLbl"></div>
+          <span class="cyc" id="cycleNote" hidden tabindex="0" title="The trainer's episodes are 2048 steps and each update collects 256, so every 8th update is the same point in the episode. When all environments reset together the reward rises and falls in an 8-update cycle that hides the real trend. A window of 8 averages it out.">8-update cycle detected: episodes reset together</span></div>
+        <div class="evbar"><button type="button" id="evToggle" aria-pressed="true" title="Show or hide the event markers on the charts">Event markers</button><span class="evlegend" id="evLegend" aria-label="Marker legend"></span><button type="button" id="whyBtn" aria-expanded="false" aria-controls="whyPanel" title="Break one update's reward down by component">Why did reward change?</button></div>
+        <div class="chartbox"><canvas id="chReward" role="img" aria-label="Reward over updates: faint raw line, bold smoothed trend, dashed long-term baseline. Event markers sit along the bottom; click the chart for a reward breakdown of that update."></canvas><div class="evlayer" id="evl_reward"></div></div>
+        <div class="why" id="whyPanel" hidden aria-live="polite"></div>
+        <div class="legend" id="rewardLegend"></div>
+        <div class="verdict" id="rewardVerdict" aria-live="polite">collecting data…</div></div>
+      <div class="card"><h2>Policy entropy <span class="sub">exploration vs collapse</span></h2><div class="chartbox"><canvas id="chEntropy" role="img" aria-label="Entropy over updates"></canvas><div class="evlayer" id="evl_entropy"></div></div><div class="legend"><span style="--c:var(--accent2)">entropy</span><span style="--c:var(--bad)">collapse &lt; 0.35</span><span style="--c:var(--good)">healthy &gt; 0.7</span></div></div>
+      <div class="card"><h2>PPO stability <span class="sub">KL &amp; clip fraction</span></h2><div class="chartbox"><canvas id="chKl" role="img" aria-label="KL and clip fraction"></canvas><div class="evlayer" id="evl_kl"></div></div><div class="legend"><span style="--c:var(--accent)">approx KL</span><span style="--c:var(--accent2)">clip fraction</span><span style="--c:var(--warn)">KL limit 0.08</span></div></div>
+      <div class="card"><h2>Critic loss <span class="sub">hover to see policy loss too</span></h2><div class="chartbox"><canvas id="chLoss" role="img" aria-label="Value loss over updates"></canvas><div class="evlayer" id="evl_loss"></div></div><div class="legend"><span style="--c:var(--accent)">value loss</span></div></div>
+    </section>
+
+    <section class="card" id="ppoCard" style="margin-bottom:14px" aria-labelledby="ppoH">
+      <h2 id="ppoH">PPO health <span class="sub">faint = each update, bold = smoothed (5 updates); badge = is the value in a healthy range?</span></h2>
+      <div class="ppogrid" id="ppoGrid"></div>
+    </section>
+
+    <section class="card" id="compCard" style="margin-bottom:14px">
+      <h2>Where the reward comes from <span class="sub" id="compSub"></span></h2>
+      <div class="comp" id="comp"></div>
+      <div class="clegend" id="compLegend"></div>
+    </section>
+
+    <section class="card" id="recCard" style="margin-bottom:14px" aria-labelledby="recH">
+      <h2 id="recH">Fastest to each milestone <span class="sub" id="recSub"></span></h2>
+      <div id="recBody"></div>
+    </section>
+
+    <section class="card" id="msCard" style="margin-bottom:14px" aria-labelledby="msH">
+      <h2 id="msH">Milestone reach rate <span class="sub" id="msSub"></span></h2>
+      <div id="msBody"></div>
+    </section>
+
+    <section class="card" id="splitCard" style="margin-bottom:14px" aria-labelledby="splitH">
+      <h2 id="splitH">Learned progress vs head start <span class="sub" id="splitSub"></span></h2>
+      <div id="splitBody"></div>
+    </section>
+
+    <section class="card" id="evalCard" style="margin-bottom:14px" aria-labelledby="evalH" hidden>
+      <h2 id="evalH">From-start evaluation <span class="sub" id="evalSub"></span></h2>
+      <div id="evalBody"></div>
+    </section>
+
+    <section class="card" style="margin-bottom:14px">
+      <h2>Training phase timeline <span class="sub" id="stripSub"></span></h2>
+      <div class="strip" id="strip"></div>
+      <div class="legend status" style="margin-top:8px">
+        <span style="--c:#38bdf8">exploring</span><span style="--c:var(--good)">learning</span><span style="--c:#a3e635">advancing</span>
+        <span style="--c:var(--warn)">looping</span><span style="--c:#fb923c">thrashing</span><span style="--c:var(--bad)">collapsed</span>
+      </div>
+    </section>
+
+    <section class="card" id="funCard" style="margin-bottom:14px">
+      <h2>Pok&eacute;mon &amp; fun facts <span class="sub" id="funSub"></span></h2>
+      <div id="funBody"></div>
+    </section>
+
+    <section class="cov">
+      <div class="card">
+        <h2>Exploration coverage
+          <span class="zbtns" role="group" aria-label="Map zoom">
+            <button id="zOut" type="button" aria-label="Zoom out">−</button><span id="zLevel" class="zl" aria-live="polite">1.0×</span><button id="zIn" type="button" aria-label="Zoom in">+</button><button id="zReset" type="button" aria-label="Reset map zoom">Reset</button>
+          </span>
+          <span class="sub" id="covSub"></span></h2>
+        <div id="story" class="story" role="region" aria-label="Story progress"></div>
+        <canvas id="heat" tabindex="0" role="img" aria-label="Heatmap of tiles visited by the agents, drawn on the whole route from New Bark to Violet City. Mouse wheel or plus and minus keys zoom, drag or arrow keys pan, double-click or 0 resets."></canvas>
+        <div id="mapHover" class="maphover mono" aria-live="off">Hover the map for tile details.</div>
+        <div class="ramp"></div><div><span>rarely visited</span><span>visited constantly</span></div>
+      </div>
+      <div class="stack">
+        <div class="card"><h2>Action mix <span class="sub">bar = all time, line = this update</span></h2><div class="act" id="actions"></div></div>
+        <div class="card"><h2>Recent episodes</h2>
+          <table><thead><tr><th>Env</th><th class="num">Return</th><th class="num">Steps</th><th class="num">Maps</th><th>Start</th></tr></thead><tbody id="eps"></tbody></table>
+        </div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="tip" role="tooltip"></div>
+<div id="toasts" aria-live="polite" aria-atomic="false" role="status"></div>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v, d = 2) => (v == null || !isFinite(v)) ? "–" : Number(v).toFixed(d);
+const sgn = (v, d = 1) => (v == null || !isFinite(v)) ? "–" : (v >= 0 ? "+" : "") + Number(v).toFixed(d);
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const dur = (s) => { s = Math.max(0, Math.round(s)); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60); return h ? `${h}h ${m}m` : m ? `${m}m ${s % 60}s` : `${s}s`; };
+
+let metrics = [];          // per-update records
+let live = null;           // latest LiveFeed snapshot
+let selectedMap = null;
+let lastLiveT = 0, lastFetchOk = 0;
+
+/* ---------- theme ---------- */
+const root = document.documentElement;
+try { const t = localStorage.getItem("tm-theme"); if (t) root.dataset.theme = t; } catch (e) {}
+$("themeBtn").onclick = () => {
+  const dark = (root.dataset.theme || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark")) === "dark";
+  root.dataset.theme = dark ? "light" : "dark";
+  try { localStorage.setItem("tm-theme", root.dataset.theme); } catch (e) {}
+  redrawAll();
+};
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", () => redrawAll());
+
+/* ---------- generic line chart ---------- */
+const tip = $("tip");
+function niceStep(range, ticks) {
+  const raw = range / Math.max(1, ticks), p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+  return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+}
+class Chart {
+  constructor(canvas, opts) { this.c = canvas; this.o = opts || {}; this.cfg = null; this.hover = -1; this.layer = this.o.layer ? $(this.o.layer) : null; this._sig = "";
+    canvas.addEventListener("mousemove", (e) => this.onMove(e));
+    if (this.o.onClick) canvas.addEventListener("click", (e) => { if (!this.cfg || this.cfg.xs.length < 2) return; const g = this.geom(), r = canvas.getBoundingClientRect(), n = this.cfg.xs.length;
+      this.o.onClick(this.cfg.xs[clamp(Math.round((e.clientX - r.left - g.l) / (g.w - g.l - g.r) * (n - 1)), 0, n - 1)]); });
+    canvas.addEventListener("mouseleave", () => { this.hover = -1; tip.style.display = "none"; this.draw(); });
+    new ResizeObserver(() => this.draw()).observe(canvas);
+  }
+  set(cfg) { this.cfg = cfg; this.draw(); }
+  geom() { const r = this.c.getBoundingClientRect(); return { w: r.width, h: r.height, l: 46, r: 12, t: 10, b: 22 }; }
+  onMove(e) {
+    if (!this.cfg || !this.cfg.xs.length) return;
+    const g = this.geom(), rect = this.c.getBoundingClientRect(), n = this.cfg.xs.length;
+    const px = e.clientX - rect.left;
+    const i = clamp(Math.round((px - g.l) / (g.w - g.l - g.r) * (n - 1)), 0, n - 1);
+    this.hover = i; this.draw();
+    const rows = this.cfg.series.filter(s => s.ys[i] != null).map(s => `<span style="color:${s.color}">●</span> ${s.label}: <b style="display:inline">${(s.fmt || fmt)(s.ys[i])}</b>`);
+    tip.innerHTML = `<b>update ${this.cfg.xs[i]}</b>${rows.join("<br>")}`;
+    tip.style.display = "block";
+    tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px";
+    tip.style.top = (e.clientY + 14) + "px";
+  }
+  draw() {
+    const cv = this.c, dpr = devicePixelRatio || 1, g = this.geom();
+    if (g.w < 10) return;
+    cv.width = Math.round(g.w * dpr); cv.height = Math.round(g.h * dpr);
+    const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, g.w, g.h);
+    const muted = css("--muted"), border = css("--border");
+    ctx.font = "11px " + css("--mono"); ctx.textBaseline = "middle";
+    const cfg = this.cfg;
+    if (!cfg || cfg.xs.length < 2) { ctx.fillStyle = muted; ctx.textAlign = "center"; ctx.fillText("collecting data…", g.w / 2, g.h / 2); if (this.layer) { this.layer.textContent = ""; this._sig = ""; } return; }
+    const n = cfg.xs.length; let lo = Infinity, hi = -Infinity;
+    for (const s of cfg.series) if (!s.hidden) for (const v of s.ys) if (v != null && isFinite(v)) { lo = Math.min(lo, v); hi = Math.max(hi, v); }
+    if (cfg.yMin != null) lo = Math.min(lo, cfg.yMin); if (cfg.yMax != null) hi = Math.max(hi, cfg.yMax);
+    if (cfg.floor != null) lo = cfg.floor;
+    if (!isFinite(lo) || lo === hi) { lo = (lo || 0) - 1; hi = (hi || 0) + 1; }
+    const pad = (hi - lo) * 0.06; if (cfg.floor == null) lo -= pad; hi += pad;
+    const step = niceStep(hi - lo, 4), y0 = Math.floor(lo / step) * step, y1 = Math.ceil(hi / step) * step;
+    const X = (i) => g.l + (i / (n - 1)) * (g.w - g.l - g.r), Y = (v) => g.t + (1 - (v - y0) / (y1 - y0)) * (g.h - g.t - g.b);
+    for (const b of (cfg.bands || [])) { ctx.fillStyle = b.color; ctx.globalAlpha = .13; const ya = Y(clamp(b.y1, y0, y1)), yb = Y(clamp(b.y0, y0, y1)); ctx.fillRect(g.l, ya, g.w - g.l - g.r, yb - ya); ctx.globalAlpha = 1; }
+    ctx.strokeStyle = border; ctx.lineWidth = 1; ctx.fillStyle = muted; ctx.textAlign = "right";
+    for (let v = y0; v <= y1 + step / 2; v += step) { const y = Math.round(Y(v)) + .5; ctx.globalAlpha = .6; ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.w - g.r, y); ctx.stroke(); ctx.globalAlpha = 1; ctx.fillText(step < 1 ? v.toFixed(2) : v.toFixed(step < 10 ? 1 : 0), g.l - 6, y); }
+    ctx.textAlign = "center";
+    const xstep = Math.max(1, niceStep(cfg.xs[n - 1] - cfg.xs[0], 6));
+    for (let v = Math.ceil(cfg.xs[0] / xstep) * xstep; v <= cfg.xs[n - 1]; v += xstep) { const i = cfg.xs.indexOf(v); if (i >= 0) ctx.fillText(v, X(i), g.h - 8); }
+    for (const l of (cfg.lines || [])) { if (l.y < y0 || l.y > y1) continue; ctx.strokeStyle = l.color; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.2; ctx.beginPath(); ctx.moveTo(g.l, Y(l.y)); ctx.lineTo(g.w - g.r, Y(l.y)); ctx.stroke(); ctx.setLineDash([]); }
+    for (const s of cfg.series) {
+      if (s.hidden) continue;
+      ctx.beginPath(); let started = false;
+      s.ys.forEach((v, i) => { if (v == null || !isFinite(v)) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); });
+      if (s.fill && started) { const last = s.ys.length - 1; ctx.save(); ctx.lineTo(X(last), Y(y0)); ctx.lineTo(X(0), Y(y0)); ctx.closePath(); ctx.globalAlpha = .12; ctx.fillStyle = s.color; ctx.fill(); ctx.restore(); ctx.beginPath(); started = false; s.ys.forEach((v, i) => { if (v == null) return; const x = X(i), y = Y(v); if (!started) { ctx.moveTo(x, y); started = true; } else ctx.lineTo(x, y); }); }
+      ctx.strokeStyle = s.color; ctx.lineWidth = s.w || 2; ctx.lineJoin = "round"; ctx.setLineDash(s.dash || []); ctx.globalAlpha = s.alpha || 1; ctx.stroke(); ctx.setLineDash([]); ctx.globalAlpha = 1;
+    }
+    for (const ri of (cfg.resumes || [])) {                 // a resumed run took over here
+      if (ri <= 0 || ri >= n) continue;
+      const rx = Math.round(X(ri)) + .5, t = "resumed from checkpoint"; ctx.save();
+      ctx.strokeStyle = muted; ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(rx, g.t); ctx.lineTo(rx, g.h - g.b); ctx.stroke(); ctx.setLineDash([]);
+      ctx.font = "10px " + css("--mono"); ctx.fillStyle = muted; ctx.textBaseline = "top";
+      const right = rx + 6 + ctx.measureText(t).width > g.w - g.r; ctx.textAlign = right ? "right" : "left"; ctx.fillText(t, right ? rx - 4 : rx + 4, g.t + 1); ctx.restore();
+    }
+    if (cfg.marker != null && cfg.marker >= 0 && cfg.marker < n) { const mx = X(cfg.marker); ctx.strokeStyle = css("--gold"); ctx.setLineDash([3, 3]); ctx.lineWidth = 1.5; ctx.beginPath(); ctx.moveTo(mx, g.t); ctx.lineTo(mx, g.h - g.b); ctx.stroke(); ctx.setLineDash([]); }
+    if (this.hover >= 0) { const x = X(this.hover); ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.h - g.b); ctx.stroke();
+      for (const s of cfg.series) { const v = s.ys[this.hover]; if (v == null || s.hidden) continue; ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(x, Y(v), 3.5, 0, 7); ctx.fill(); } }
+    if (this.layer) placeMarkers(this, g, X, n);
+  }
+}
+function spark(canvas, ys, color) {
+  const dpr = devicePixelRatio || 1, r = canvas.getBoundingClientRect(); if (r.width < 5) return;
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  const v = ys.filter(x => x != null && isFinite(x)); if (v.length < 2) return;
+  const lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
+  ctx.beginPath(); v.forEach((y, i) => { const px = i / (v.length - 1) * (r.width - 2) + 1, py = r.height - 3 - (y - lo) / span * (r.height - 6); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+  ctx.strokeStyle = color; ctx.lineWidth = 1.8; ctx.lineJoin = "round"; ctx.stroke();
+}
+
+/* ---------- event markers (derived server-side by tools/dashboard_events.py from history.jsonl) ---------- */
+const EVT = {   // type -> label, colour token, lane (row at the bottom of the plot), shape
+  ms: { l: "Milestone reached", c: "--good", lane: 0, s: "dia" }, rec: { l: "Fastest-to-milestone record", c: "--gold", lane: 0, s: "dia" },
+  path: { l: "New best path progress", c: "--accent2", lane: 0, s: "sq" }, map: { l: "New map", c: "--accent2", lane: 0, s: "" },
+  badge: { l: "Badge", c: "--gold", lane: 0, s: "dia" }, lvl: { l: "New top level", c: "--good", lane: 0, s: "sq" }, dex: { l: "New species", c: "--good", lane: 0, s: "" },
+  wo: { l: "White-outs", c: "--bad", lane: 1, s: "" }, spike: { l: "Spike / drop (outlier)", c: "--warn", lane: 1, s: "dia" },
+  abias: { l: "A-bias reached 0", c: "--accent", lane: 2, s: "sq" }, boost: { l: "Entropy boost on/off", c: "--accent", lane: 2, s: "sq" },
+  intr: { l: "Exploration bonus decay", c: "--accent", lane: 2, s: "sq" }, ecoef: { l: "Entropy coef floor", c: "--accent", lane: 2, s: "sq" }, rck: { l: "Route checkpoints", c: "--accent", lane: 2, s: "" },
+};
+let evData = { events: [], comps: [], run_id: null }, evVer = 0, evOn = true;
+try { evOn = localStorage.getItem("tm_ev_on") !== "0"; } catch (e) {}
+const evCur = () => mode === "replay" && live ? live.update : (metrics.length ? metrics[metrics.length - 1].update : Infinity);   // replay: only up to the slider
+const evVisible = () => { const cur = evCur(); return evData.events.filter(e => e.u <= cur); };
+const spikeOf = (k) => (e) => e.t !== "spike" || e.v.metric === k;
+const CHART_EV = {   // which events each chart shows
+  reward: (e) => e.t !== "spike" || e.v.metric === "mean_reward",
+  entropy: (e) => ["ms", "wo", "abias", "boost", "intr", "ecoef", "rck", "rec"].includes(e.t) ? (e.t !== "wo" || e.v.wave) : (e.t === "spike" && e.v.metric === "entropy"),
+  kl: (e) => ["ms", "abias", "boost", "intr", "ecoef", "rck", "rec"].includes(e.t),
+  loss: (e) => ["ms", "abias", "boost", "intr", "ecoef", "rck", "rec"].includes(e.t) || (e.t === "wo" && e.v.wave) || (e.t === "spike" && e.v.metric === "value_loss"),
+};
+function evTipHtml(group) {
+  const e0 = group[0], md = EVT[e0.t] || { l: e0.t };
+  const lines = group.slice(0, 4).map(e => `<span class="ln">${esc(e.x)}</span>`).join("") + (group.length > 4 ? `<span class="ln">and ${group.length - 4} more</span>` : "");
+  const us = group.length > 1 ? `updates ${group[0].u}–${group[group.length - 1].u}` : `update ${e0.u}`;
+  let extra = "";
+  const lk = group.find(e => e.lk); if (lk) extra += `<span class="lk">Possibly related (correlation, not proof): ${esc(lk.lk.join("; "))}</span>`;
+  const tp = group.find(e => e.top); if (tp) extra += `<span class="lk">Reward components vs previous 8 updates: ${tp.top.map(([k, d]) => `${esc(k)} ${sgn(d, 1)}`).join(", ")}</span>`;
+  return `<b>${md.l} · ${us}</b>${lines}${extra}`;
+}
+function evAria(group) {
+  const e0 = group[0], md = EVT[e0.t] || { l: e0.t };
+  return `${md.l}${group.length > 1 ? " x" + group.length : ""}, update ${e0.u}${group.length > 1 ? " to " + group[group.length - 1].u : ""}: ${group.slice(0, 3).map(e => e.x).join("; ")}` + (group.find(e => e.lk) ? `. Possibly related: ${group.find(e => e.lk).lk.join("; ")}` : "");
+}
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function showEvTip(el, group, pin) {
+  tip.innerHTML = evTipHtml(group); tip.style.display = "block"; tip.style.whiteSpace = "normal"; tip.style.left = "0px"; tip.style.top = "0px";
+  const r = el.getBoundingClientRect(), w = tip.offsetWidth;
+  tip.style.left = Math.max(6, Math.min(r.left + r.width / 2 - w / 2, innerWidth - w - 8)) + "px";
+  tip.style.top = Math.max(6, r.top - tip.offsetHeight - 8) + "px";
+  const hair = el.parentNode.querySelector(".evhair"); if (hair) { hair.style.left = el.style.left; hair.style.display = "block"; }
+}
+function hideEvTip() { tip.style.display = "none"; tip.style.whiteSpace = ""; document.querySelectorAll(".evhair").forEach(h => h.style.display = "none"); }
+function placeMarkers(ch, g, X, n) {
+  const layer = ch.layer, xs = ch.cfg.xs;
+  const sig = [Math.round(g.w), Math.round(g.h), n, xs[0], xs[n - 1], evVer, evOn ? 1 : 0, evCur()].join("|");
+  if (sig === ch._sig) return; ch._sig = sig;
+  layer.textContent = ""; if (!evOn) return;
+  const filt = ch.o.filter || (() => true), evs = evVisible().filter(filt), idx = new Map(); xs.forEach((u, i) => { if (!idx.has(u)) idx.set(u, i); });
+  const hair = document.createElement("div"); hair.className = "evhair"; hair.style.top = g.t + "px"; hair.style.bottom = g.b + "px"; layer.appendChild(hair);
+  const plotW = g.w - g.l - g.r, span = Math.max(1, xs[n - 1] - xs[0]), win = Math.max(2, Math.ceil(span / (plotW / 22)));   // merge events closer than ~22px (and within 3 updates)
+  const routineWo = evs.filter(e => e.t === "wo" && !e.v.wave).length, dropWo = routineWo > 40;   // dense routine white-outs would wallpaper the chart: only waves are marked then
+  const byType = {}; for (const e of evs) if (idx.has(e.u) && !(dropWo && e.t === "wo" && !e.v.wave)) (byType[e.t] || (byType[e.t] = [])).push(e);
+  const groups = [];
+  for (const [t, list] of Object.entries(byType)) { let cur = null; for (const e of list) { if (cur && e.u - cur[0].u <= win) cur.push(e); else groups.push(cur = [e]); } }
+  groups.sort((a, b) => a[0].u - b[0].u);
+  const taken = [[], [], []];
+  for (const grp of groups) {
+    const e0 = grp[0], md = EVT[e0.t] || { c: "--accent", lane: 2, s: "" };
+    let x = X(idx.get(e0.u));
+    while (taken[md.lane].some(tx => Math.abs(tx - x) < 14) && x < g.w - g.r) x += 12;
+    taken[md.lane].push(x);
+    const b = document.createElement("button"); b.type = "button";
+    b.className = "evm " + (md.s || "") + (e0.t === "wo" && !grp.some(e => e.v.wave) && grp.length < 3 ? " faint" : "");
+    b.style.left = x + "px"; b.style.top = (g.h - g.b - 16 - md.lane * 15) + "px"; b.style.setProperty("--c", `var(${md.c})`);
+    b.setAttribute("aria-label", evAria(grp)); if (grp.length > 1) b.innerHTML = `<b>${grp.length}</b>`;
+    b.addEventListener("mouseenter", () => showEvTip(b, grp)); b.addEventListener("focus", () => showEvTip(b, grp));
+    b.addEventListener("mouseleave", hideEvTip); b.addEventListener("blur", hideEvTip);
+    b.addEventListener("click", (ev) => { ev.stopPropagation(); showEvTip(b, grp); if (ch.o.why) openWhy(grp[0].u); });
+    layer.appendChild(b);
+  }
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") hideEvTip(); });
+const charts = {
+  reward: new Chart($("chReward"), { layer: "evl_reward", filter: CHART_EV.reward, why: true, onClick: (u) => openWhy(u) }),
+  entropy: new Chart($("chEntropy"), { layer: "evl_entropy", filter: CHART_EV.entropy }),
+  kl: new Chart($("chKl"), { layer: "evl_kl", filter: CHART_EV.kl }), loss: new Chart($("chLoss"), { layer: "evl_loss", filter: CHART_EV.loss }),
+};
+function redrawMarkers() { evVer++; for (const c of Object.values(charts)) c.draw(); renderEvLegend(); }
+function renderEvLegend() {
+  const t = $("evToggle"); t.setAttribute("aria-pressed", String(evOn));
+  const present = [...new Set(evVisible().map(e => e.t))].filter(k => EVT[k]);
+  $("evLegend").innerHTML = evOn ? (present.length ? present.map(k => `<span style="--c:var(${EVT[k].c})">${EVT[k].l}</span>`).join("") : `<span class="flat" style="--c:var(--muted)">no events yet</span>`) : "";
+}
+$("evToggle").onclick = () => { evOn = !evOn; try { localStorage.setItem("tm_ev_on", evOn ? "1" : "0"); } catch (e) {} hideEvTip(); redrawMarkers(); };
+let evFetchT = 0;
+async function fetchEvents(force) {
+  const now = Date.now(); if (!force && now - evFetchT < 6000) return; evFetchT = now;
+  const url = mode === "replay" && rep ? `/api/run/${encodeURIComponent(rep.id)}/events` : "/api/events", want = mode === "replay" && rep ? rep.id : "live";
+  try {
+    const r = await fetch(url, { cache: "no-store" }); if (!r.ok) return; const d = await r.json();
+    if ((mode === "replay" && rep ? rep.id : "live") !== want) return;
+    evData = { events: d.events || [], comps: d.comps || [], run_id: d.run_id }; redrawMarkers(); renderWhy();
+  } catch (e) {}
+}
+setInterval(() => { if (mode === "live") fetchEvents(); }, 15000);
+/* "Why did reward change?": one update's reward components vs the mean of the 8 updates before it */
+let whyU = null;
+function openWhy(u) { whyU = u; $("whyPanel").hidden = false; $("whyBtn").setAttribute("aria-expanded", "true"); renderWhy(); }
+$("whyBtn").onclick = () => { const p = $("whyPanel"); if (!p.hidden) { p.hidden = true; $("whyBtn").setAttribute("aria-expanded", "false"); return; } openWhy(whyU != null ? whyU : (metrics.length ? metrics[metrics.length - 1].update : null)); };
+function renderWhy() {
+  const p = $("whyPanel"); if (p.hidden) return;
+  const cur = evCur(), comps = evData.comps.filter(c => c[0] <= cur);
+  if (whyU == null || whyU > cur) whyU = comps.length ? comps[comps.length - 1][0] : null;
+  const i = comps.findIndex(c => c[0] === whyU);
+  if (i < 1) { p.innerHTML = `<h3>Why did reward change?</h3><div class="wn">${comps.length ? "Pick an update after the first one" : "Per-update reward components are not available for this run yet"} (click the reward chart or a marker).</div>`; return; }
+  const now = comps[i][1], prior = comps.slice(Math.max(0, i - 8), i).map(c => c[1]), keys = [...new Set([...Object.keys(now), ...prior.flatMap(o => Object.keys(o))])];
+  const rows = keys.map(k => { const a = prior.reduce((s, o) => s + (o[k] || 0), 0) / prior.length; return { k, v: now[k] || 0, a, d: (now[k] || 0) - a }; }).sort((x, y) => Math.abs(y.d) - Math.abs(x.d));
+  const top = rows.slice(0, 8), mx = Math.max(1e-9, ...top.map(r => Math.abs(r.d)));
+  const mm = metrics.find(m => m.update === whyU), pm = metrics.filter(m => m.update < whyU).slice(-8), pav = mean(pm.map(m => m.mean_reward).filter(okv));
+  const tot = rows.reduce((s, r) => s + r.d, 0), up = rows.filter(r => r.d > 0).sort((x, y) => y.d - x.d)[0], dn = rows.filter(r => r.d < 0).sort((x, y) => x.d - y.d)[0];
+  const evs = evVisible().filter(e => Math.abs(e.u - whyU) <= 1 && (e.t !== "wo" || e.v.wave)).map(e => e.x);
+  p.innerHTML = `<h3>Update ${whyU}: reward components vs the average of the previous ${prior.length} updates</h3>` +
+    (mm && mm.mean_reward != null ? `<div class="wn" style="margin:0 0 4px">Mean reward ${sgn(mm.mean_reward, 2)}${pav != null ? ` vs ${sgn(pav, 2)} before` : ""}. Summed component change ${sgn(tot, 1)} (per update, all envs).</div>` : "") +
+    top.map(r => `<div class="wr"><span>${esc(r.k)}</span><div class="wb" role="img" aria-label="${esc(r.k)} ${r.d >= 0 ? "rose" : "fell"} by ${Math.abs(r.d).toFixed(1)}"><u></u><i class="${r.d >= 0 ? "up2" : "dn2"}" style="${r.d >= 0 ? "left:50%" : "right:50%"};width:${Math.abs(r.d) / mx * 50}%"></i></div><span>${sgn(r.d, 1)} <span class="flat">(${fmt(r.v, 1)} vs ${fmt(r.a, 1)})</span></span></div>`).join("") +
+    `<div class="wn">${up ? `Biggest rise: <b>${esc(up.k)}</b> ${sgn(up.d, 1)}. ` : ""}${dn ? `Biggest fall: <b>${esc(dn.k)}</b> ${sgn(dn.d, 1)}.` : ""}${evs.length ? ` Events near this update: ${esc(evs.slice(0, 3).join("; "))} (correlation, not proof).` : ""}</div>`;
+}
+
+/* ---------- derived data ---------- */
+const col = (k) => metrics.map(m => m[k] ?? null);
+function slope(ys) {            // least-squares slope per update
+  const v = ys.map((y, i) => [i, y]).filter(p => p[1] != null); const n = v.length; if (n < 4) return 0;
+  const mx = v.reduce((a, p) => a + p[0], 0) / n, my = v.reduce((a, p) => a + p[1], 0) / n;
+  let num = 0, den = 0; for (const [x, y] of v) { num += (x - mx) * (y - my); den += (x - mx) ** 2; }
+  return den ? num / den : 0;
+}
+const median = (a) => { const s = a.filter(x => x != null).sort((x, y) => x - y); return s.length ? s[Math.floor(s.length / 2)] : 0; };
+
+function diagnostics() {
+  const out = [], n = metrics.length, last = metrics[n - 1];
+  const add = (cls, ic, text) => out.push(`<div class="${cls}"><span class="ic">${ic}</span><span>${text}</span></div>`);
+  if (!last) { add("info", "WAIT", "No updates logged yet. The first PPO update appears after the first rollout."); return out.join(""); }
+  const maxEnt = live && live.actions ? Math.log(live.actions.names.length) : Math.log(5);
+  const ent = col("entropy").slice(-3);
+  if (ent.length >= 3 && ent.every(e => e != null && e < 0.35)) add("bad", "STOP", `Policy collapse: entropy ${fmt(last.entropy)} for 3 updates (max ${fmt(maxEnt)}). Raise <b>entropy_coef</b>, lower LR, or restart.`);
+  else if (last.entropy < 0.7) add("warn", "LOW", `Entropy ${fmt(last.entropy)} is below 0.70, so exploration is narrowing.`);
+  else add("ok", "OK", `Entropy ${fmt(last.entropy)} is healthy (${Math.round(last.entropy / maxEnt * 100)}% of max).`);
+  if (last.approx_kl > 0.08) add("warn", "KL", `Approx KL ${fmt(last.approx_kl, 3)} exceeds 0.08, so updates are overwriting the policy. Consider a lower LR or fewer epochs.`);
+  if (last.clip_frac > 0.3) add("warn", "CLIP", `${(last.clip_frac * 100).toFixed(0)}% of samples are clipped, so updates are too aggressive.`);
+  const rw = col("mean_reward"), recent = rw.slice(-12);
+  if (n >= 8) { const s = slope(recent), scale = Math.max(1, Math.abs(median(recent)));
+    if (s > 0.02 * scale) add("ok", "UP", `Reward trending up (${sgn(s, 2)} per update over the last ${recent.length}).`);
+    else if (s < -0.02 * scale) add("warn", "DOWN", `Reward trending down (${sgn(s, 2)} per update over the last ${recent.length}).`);
+    else add("info", "FLAT", `Reward is flat over the last ${recent.length} updates (${sgn(median(recent))} median).`); }
+  const maps = col("maps_discovered"); let since = 0; for (let i = n - 1; i > 0 && maps[i] <= maps[i - 1]; i--) since++;
+  if (since >= 15) add("warn", "STUCK", `No new maps in ${since} updates. The agent may be looping; check the heatmap for dense hotspots.`);
+  else if (n > 1) add("ok", "MAPS", `${last.maps_discovered} map(s) discovered; last gain ${since} update(s) ago.`);
+  const vl = col("value_loss"); const med = median(vl.slice(-30, -1));
+  if (n > 10 && med > 0 && last.value_loss > 3 * med) add("warn", "VAL", `Value loss spiked to ${fmt(last.value_loss)} (median ${fmt(med)}); the critic may be unsettled by a reward or state change.`);
+  out.push(rewardDiagnostics());
+  if (live && !live.finished && Date.now() / 1000 - live.t > 20) add("bad", "STALE", `No telemetry for ${dur(Date.now() / 1000 - live.t)}. Training may have stopped or crashed.`);
+  return out.join("");
+}
+
+/* ---------- reward components ---------- */
+const COMP = {
+  step: ["step cost", "#94a3b8"], bump: ["wall bumps", "#f97316"], route: ["route progress", "#22c55e"], path: ["path progress (new best)", "#16a34a"],
+  tile: ["new tiles", "#38bdf8"], neighbor: ["unvisited neighbor", "#0ea5e9"], map: ["new maps", "#6366f1"], warp: ["new warps", "#a78bfa"],
+  interaction: ["talking", "#ec4899"], event: ["story events", "#eab308"], badge: ["badges", "#f59e0b"], catch: ["catches", "#14b8a6"],
+  level: ["level-ups", "#84cc16"], battle: ["battles won", "#ef4444"], damage: ["damage taken", "#be123c"], heal: ["healing", "#10b981"],
+  idle_press: ["no-effect A/B presses", "#fb7185"], dialogue_loop: ["dialogue-loop penalty", "#e11d48"], retreat: ["retreat (moving off the route)", "#ea580c"], stagnation: ["stagnation (no new best)", "#a16207"], dwell: ["dwell (same-spot) penalty", "#d97706"], loop: ["tile-revisit (loop) penalty", "#b45309"],
+  lowhp: ["low-HP exposure", "#f43f5e"], survive: ["battles won healthy", "#22d3ee"], potion: ["healing item used", "#34d399"],
+  whiteout: ["white-outs", "#c026d3"], behind_map: ["finished-map penalty", "#78716c"], other: ["other", "#64748b"],
+};
+const EXPLORE = ["tile", "neighbor", "map", "warp"];
+const cName = (k) => (COMP[k] || [k])[0], cColor = (k) => (COMP[k] || [0, "#64748b"])[1];
+const sumVals = (o) => Object.values(o || {}).reduce((a, v) => a + Math.abs(v), 0);
+function compBar(o, tag) {
+  const tot = sumVals(o);
+  if (tot <= 0) return `<div class="cbar"></div>`;
+  const items = Object.entries(o).filter(([, v]) => v !== 0).sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+  return `<div class="cbar">` + items.map(([k, v]) => {
+    const pct = Math.abs(v) / tot * 100;
+    return `<i style="width:${pct}%;background:${cColor(k)}" data-tip="<b>${cName(k)}</b>${sgn(v, 1)} (${pct.toFixed(1)}% of ${tag} reward)">${pct >= 9 ? Math.round(pct) + "%" : ""}</i>`;
+  }).join("") + `</div>`;
+}
+function renderComponents() {
+  const c = live && live.components, box = $("comp");
+  if (!c || !(sumVals(c.run?.pos) + sumVals(c.run?.neg))) {
+    box.innerHTML = `<div class="none">No per-component reward data yet. The trainer reports it once it passes <code>reward_components</code> to the live feed.</div>`;
+    $("compLegend").innerHTML = ""; $("compSub").textContent = ""; return;
+  }
+  const upd = (sumVals(c.last_update?.pos) + sumVals(c.last_update?.neg)) ? c.last_update : c.update;
+  const total = (o) => Object.values(o || {}).reduce((a, v) => a + v, 0);
+  const col = (side, tag) => `<div><h3>${side === "pos" ? "Positive reward" : "Negative reward"} (share by source)</h3>` +
+    `<div class="crow"><span>${mode === "replay" ? "this update" : "last update"}</span>${compBar(upd[side], tag)}<span class="ctot">${sgn(total(upd[side]), 0)}</span></div>` +
+    `<div class="crow"><span>run so far</span>${compBar(c.run[side], tag)}<span class="ctot">${sgn(total(c.run[side]), 0)}</span></div></div>`;
+  box.innerHTML = col("pos", "positive") + col("neg", "negative");
+  const keys = new Set([...Object.keys(c.run.pos || {}), ...Object.keys(c.run.neg || {}), ...Object.keys(upd.pos || {}), ...Object.keys(upd.neg || {})]);
+  const order = Object.keys(COMP).filter(k => keys.has(k)).concat([...keys].filter(k => !(k in COMP)));
+  $("compLegend").innerHTML = order.map(k => `<span style="--c:${cColor(k)}">${cName(k)}</span>`).join("");
+  $("compSub").textContent = "summed over all env steps; hover a segment for values";
+}
+$("compCard").addEventListener("mousemove", (e) => {
+  const t = e.target.closest("[data-tip]"); if (!t) { tip.style.display = "none"; return; }
+  tip.innerHTML = t.dataset.tip; tip.style.display = "block";
+  tip.style.left = Math.min(e.clientX + 14, innerWidth - tip.offsetWidth - 8) + "px"; tip.style.top = (e.clientY + 14) + "px";
+});
+$("compCard").addEventListener("mouseleave", () => { tip.style.display = "none"; });
+
+/* reward-mix and outlier diagnostics (HTML rows) */
+function rewardDiagnostics() {
+  const out = [], c = live && live.components;
+  const scopes = c ? [["run so far", c.run], ["the last update", (sumVals(c.last_update?.pos) ? c.last_update : null)]] : [];
+  const hot = [], exp = [];
+  let topInfo = null;
+  for (const [label, comp] of scopes) {
+    const pos = comp && comp.pos, tot = pos ? Object.values(pos).reduce((a, v) => a + v, 0) : 0;
+    if (!pos || tot < 20) continue;
+    const [k, v] = Object.entries(pos).sort((a, b) => b[1] - a[1])[0];
+    if (!topInfo) topInfo = `${cName(k)} is ${Math.round(v / tot * 100)}% of positive reward`;
+    if (v / tot > 0.6) hot.push(`${label}: ${cName(k)} is ${Math.round(v / tot * 100)}% of positive reward (${sgn(v, 0)} of ${sgn(tot, 0)})`);
+    const ex = EXPLORE.reduce((a, q) => a + (pos[q] || 0), 0);
+    if (ex / tot > 0.5) exp.push(`${label}: ${Math.round(ex / tot * 100)}% (${sgn(ex, 0)} of ${sgn(tot, 0)})`);
+  }
+  if (hot.length) out.push(["warn", "MIX", `One reward source dominates, so the agent may be chasing it instead of the goal. ${hot.join("; ")}.`]);
+  if (exp.length) out.push(["warn", "EXPL", `Most positive reward comes from exploration terms (new tiles, neighbors, maps, warps), not progress toward the goal. ${exp.join("; ")}. The agent can profit from wandering.`]);
+  if (c && !hot.length && !exp.length && topInfo) out.push(["ok", "MIX", `Reward mix looks balanced (${topInfo}).`]);
+  // outlier update: robust distance of the mean reward from the 30 updates before it
+  const rw = col("mean_reward"); let found = null;
+  for (let i = rw.length - 1; i >= Math.max(10, rw.length - 10); i--) {
+    if (rw[i] == null) continue;
+    const base = rw.slice(Math.max(0, i - 30), i).filter(v => v != null);
+    if (base.length < 10) continue;
+    const med = median(base), mad = median(base.map(v => Math.abs(v - med)));
+    const spread = Math.max(mad, 0.02 * Math.abs(med), 0.05);
+    if (Math.abs(rw[i] - med) > 6 * spread) { found = { u: metrics[i].update, v: rw[i], med, spread, k: Math.abs(rw[i] - med) / spread }; break; }
+  }
+  if (found) out.push(["warn", "SPIKE", `Update ${found.u} had mean reward ${sgn(found.v)} while the 30 updates before it had a median of ${sgn(found.med)} and a typical spread of ${fmt(found.spread, 1)}. That is ${found.k.toFixed(0)}x the usual spread, which points to a rare lucky event or a reward bug, and can distort learning.`]);
+  return out.map(([cls, ic, text]) => `<div class="${cls}"><span class="ic">${ic}</span><span>${text}</span></div>`).join("");
+}
+
+/* ---------- milestone reach rate (trainer fields ms_reach / ms_elig / ms_reach_cum / ms_envs_at; old runs have none) ---------- */
+const MS_BASE = ["Route 29", "Cherrygrove", "Route 30", "Route 31", "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"];
+const MS_EGG = ["Route 29", "Cherrygrove", "Route 30", "Mr. Pokemon's house", "Egg received", "Egg delivered", "Route 31", "Violet gate", "Violet City", "Violet Gym", "Falkner beaten"];
+const MS_NAMES = MS_BASE.slice();         // follows the selected run (syncProfile): 8 milestones, or 11 with the egg errand; edited in place
+/* Egg-errand runs (long_v8, run meta `egg_errand_route`): 11 milestones, a 695-step three-phase route. Older runs and the other presets keep the 8 / 309 layout. */
+const runIsEgg = (run) => !!(run && (run.egg_errand_route || (run.config && run.config.egg_errand_route)));
+const isEgg = () => runIsEgg(live && live.run);
+function syncProfile(run) {
+  const names = run && Array.isArray(run.milestone_labels) && run.milestone_labels.length ? run.milestone_labels : (runIsEgg(run) ? MS_EGG : MS_BASE);
+  if (names.length !== MS_NAMES.length || names.some((n, i) => n !== MS_NAMES[i])) { MS_NAMES.splice(0, MS_NAMES.length, ...names); storyKey = ""; }
+}
+const pathTotal = () => (live && live.run && live.run.path_total) || (isEgg() && world && world.egg ? world.egg.total : 309);
+function msAgg(from, to) {                // exact window aggregate: sum(rate * eligible) / sum(eligible) per milestone
+  const r = MS_NAMES.map(() => 0), e = MS_NAMES.map(() => 0);
+  for (let i = Math.max(0, from); i < Math.min(metrics.length, to); i++) {
+    const m = metrics[i], rr = m.ms_reach, el = m.ms_elig; if (!Array.isArray(rr) || !Array.isArray(el)) continue;
+    MS_NAMES.forEach((_, k) => { if (rr[k] != null && el[k] > 0) { r[k] += rr[k] * el[k]; e[k] += el[k]; } });
+  }
+  return { rate: r.map((v, k) => e[k] > 0 ? v / e[k] : null), n: e };
+}
+const msScore = (a) => a.rate.reduce((s, v) => s + (v || 0), 0);
+function renderMilestones() {
+  const body = $("msBody"), n = metrics.length;
+  let last = null; for (let i = n - 1; i >= 0; i--) if (Array.isArray(metrics[i].ms_reach_cum)) { last = metrics[i]; break; }
+  if (!last) { $("msSub").textContent = ""; body.innerHTML = `<div class="none">Not recorded in this run. Runs from <code>long_v4</code> on log the share of episodes that reach each story milestone.</div>`; return; }
+  const rec = msAgg(n - 32, n), cum = last.ms_reach_cum, at = last.ms_envs_at || [];
+  const pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
+  $("msSub").textContent = `bar = all episodes so far, thin line = last 32 updates, ${last.ms_eps_cum ?? 0} finished episodes` + (last.path_best_max_cum != null ? ` · best path progress ${last.path_best_max_cum}/${pathTotal()} tiles` : "");
+  body.innerHTML = MS_NAMES.map((nm, k) => {
+    const c = cum[k], r = rec.rate[k];
+    return `<div class="msrow" title="Share of finished episodes (that started before this milestone) that reached it"><span>${nm}</span><div class="msbar" role="img" aria-label="${nm}: ${pct(c)} of all episodes, ${pct(r)} recently"><i class="cum" style="width:${(c || 0) * 100}%"></i><i class="rec" style="width:${(r || 0) * 100}%"></i></div><span class="msv">${pct(c)} all · ${pct(r)} recent · ${pct(at[k])} of envs now</span></div>`;
+  }).join("") + (last.path_best_mean != null ? `<div class="note" style="color:var(--muted);margin-top:4px">Best path progress per finished episode, last update: mean ${last.path_best_mean}, max ${last.path_best_max} of ${pathTotal()} tiles.</div>` : "");
+}
+
+/* ---------- learned progress vs head start (trainer fields src_split / src_split_cum, long_v7; older runs have none) ---------- */
+const SPLIT_ROWS = [["base", "Base start", "from scratch: the honest learned measure"], ["route", "Route checkpoint", "starts partway along the route"],
+                    ["swarm", "Swarm archive", "starts at a map another agent reached"], ["battle", "Battle archive", "starts inside a battle"], ["other", "Other start", ""]];
+function splitAgg(from, to) {             // window aggregate of the per-update split: n, gain-weighted by n, reach weighted by eligible
+  const acc = {};
+  for (let i = Math.max(0, from); i < Math.min(metrics.length, to); i++) {
+    const s = metrics[i].src_split; if (!s || typeof s !== "object") continue;
+    for (const [k, v] of Object.entries(s)) {
+      const a = acc[k] || (acc[k] = { n: 0, g: 0, gn: 0, r: MS_NAMES.map(() => 0), e: MS_NAMES.map(() => 0) });
+      a.n += v.n || 0; if (v.gain != null) { a.g += v.gain * v.n; a.gn += v.n; }
+      MS_NAMES.forEach((_, j) => { const rr = (v.reach || [])[j], el = (v.elig || [])[j]; if (rr != null && el > 0) { a.r[j] += rr * el; a.e[j] += el; } });
+    }
+  }
+  return acc;
+}
+function renderSplit() {
+  const body = $("splitBody"), sub = $("splitSub"), n = metrics.length;
+  let last = null; for (let i = n - 1; i >= 0; i--) if (metrics[i].src_split_cum && typeof metrics[i].src_split_cum === "object") { last = metrics[i]; break; }
+  if (!last) { sub.textContent = ""; body.innerHTML = `<div class="none">Not recorded in this run. Runs launched with <code>long_v7</code> log, for each way an episode can start, how far it got beyond its starting point, so you can tell learned progress from a head start.</div>`; return; }
+  const cum = last.src_split_cum, rec = splitAgg(n - 32, n);
+  const pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
+  const reachTxt = (r, e) => { const out = []; MS_NAMES.slice(0, 4).forEach((nm, j) => { if (e[j] > 0) out.push(`${nm} ${pct(r[j] / e[j])}`); }); return out.length ? out.join(" · ") : "no eligible episodes"; };
+  sub.textContent = `gain = best path progress minus the progress the episode started at · all episodes so far, last 32 updates in brackets`;
+  const rows = SPLIT_ROWS.filter(([k]) => cum[k]).map(([k, label, hint]) => {
+    const c = cum[k], r = rec[k];
+    const e = c.elig || [], rr = (c.reach || []).map((v, j) => (v == null ? 0 : v * e[j]));
+    const gainRec = r && r.gn ? r.g / r.gn : null;
+    const bold = k === "base" ? ` style="font-weight:600"` : "";
+    return `<tr${bold} title="${hint}"><td>${label}</td><td class="num">${c.n}</td><td class="num">${c.gain == null ? "–" : c.gain.toFixed(1)}${gainRec == null ? "" : ` <span style="color:var(--muted)">(${gainRec.toFixed(1)})</span>`}</td><td>${reachTxt(rr, e)}</td></tr>`;
+  }).join("");
+  body.innerHTML = `<table class="splitTbl"><thead><tr><th>Episodes that started from</th><th class="num">episodes</th><th class="num">mean gain (tiles)</th><th>reached, among episodes that had not passed it at the start</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div class="note" style="color:var(--muted);margin-top:6px">The <b>Base start</b> row is the learned-from-scratch measure. If the other rows gain far more, the overall reach rate is mostly the head start from archived resets, not learning.</div>`;
+}
+
+/* ---------- from-start evaluation (trainer fields eval_*, long_v8, only on evaluation updates; the card stays hidden for older runs) ---------- */
+function renderEval() {
+  const card = $("evalCard"), body = $("evalBody"), sub = $("evalSub");
+  const evs = metrics.filter(m => m && m.eval_update != null && okv(m.eval_best_progress_mean));
+  const planned = !!(live && live.run && live.run.config && live.run.config.periodic_eval);
+  if (!evs.length && !planned) { card.hidden = true; return; }
+  card.hidden = false;
+  if (!evs.length) { sub.textContent = ""; body.innerHTML = `<div class="none">Waiting for the first evaluation (every ${(live.run.config.eval_every) || "N"} updates): the current policy plays a few episodes from the base start state, with no archive resets.</div>`; return; }
+  const last = evs[evs.length - 1], pct = (v) => v == null ? "–" : Math.round(v * 100) + "%";
+  sub.textContent = `update ${last.eval_update} · ${last.eval_episodes} episodes from the base start, sampled like training · ${evs.length} evaluation${evs.length > 1 ? "s" : ""}`;
+  const W = 300, H = 84, pad = 6, ymax = Math.max(1, ...evs.map(e => e.eval_best_progress_max ?? e.eval_best_progress_mean));
+  const x0 = evs[0].eval_update, xs = Math.max(1, last.eval_update - x0);
+  const X = (u) => pad + (evs.length > 1 ? (u - x0) / xs : 0.5) * (W - 2 * pad), Y = (v) => H - pad - (v / ymax) * (H - 2 * pad);
+  const line = (key) => evs.filter(e => okv(e[key])).map(e => `${X(e.eval_update).toFixed(1)},${Y(e[key]).toFixed(1)}`).join(" ");
+  const svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Best path progress in tiles at each from-start evaluation: mean (solid) and best episode (dashed). Latest mean ${fmt(last.eval_best_progress_mean, 1)}, max ${fmt(last.eval_best_progress_max, 1)} tiles."><polyline points="${line("eval_best_progress_max")}" fill="none" stroke="var(--muted)" stroke-width="1" stroke-dasharray="3 3"/><polyline points="${line("eval_best_progress_mean")}" fill="none" stroke="var(--accent)" stroke-width="2"/>${evs.map(e => `<circle cx="${X(e.eval_update).toFixed(1)}" cy="${Y(e.eval_best_progress_mean).toFixed(1)}" r="2.5" fill="var(--accent)"><title>update ${e.eval_update}: mean ${fmt(e.eval_best_progress_mean, 1)}, max ${fmt(e.eval_best_progress_max, 1)}</title></circle>`).join("")}<text x="${pad}" y="11" font-size="9" fill="var(--muted)">best path progress (tiles), max ${fmt(ymax, 0)}</text></svg>`;
+  const reach = last.eval_ms_reach || [], steps = last.eval_ms_steps || [];
+  const rows = MS_NAMES.map((nm, k) => reach[k] == null ? "" : `<tr><td>${nm}</td><td class="num">${pct(reach[k])}</td><td class="num">${steps[k] == null ? "–" : Math.round(steps[k])}</td></tr>`).join("");
+  body.innerHTML = `<div class="evalWrap">${svg}<table class="splitTbl"><thead><tr><th>Latest evaluation</th><th class="num">reached</th><th class="num">mean steps</th></tr></thead><tbody>` +
+    `<tr style="font-weight:600"><td>Best progress, mean / max</td><td class="num" colspan="2">${fmt(last.eval_best_progress_mean, 1)} / ${fmt(last.eval_best_progress_max, 1)} tiles</td></tr>` +
+    `<tr><td>White-outs</td><td class="num" colspan="2">${pct(last.eval_whiteout_frac)}</td></tr><tr><td>Mean return</td><td class="num" colspan="2">${fmt(last.eval_return_mean, 1)}</td></tr>${rows}</tbody></table></div>` +
+    `<div class="note" style="color:var(--muted);margin-top:6px">Unlike the training episodes, these start from the base start state only (no checkpoint, swarm or battle resets), so the line is the learned-from-scratch curve.</div>`;
+}
+
+/* ---------- smoothing, reward verdict, PPO health, "is it learning?" ---------- */
+let smoothW = null;                       // null = automatic default
+const SMOOTH_CHOICES = [1, 4, 8, 16, 32];
+const okv = (v) => v != null && isFinite(v);
+const nz = (ys) => ys.filter(okv);
+const mean = (a) => a.length ? a.reduce((x, y) => x + y, 0) / a.length : null;
+function movAvg(ys, W) {                  // trailing mean over the last W updates (missing values skipped)
+  return ys.map((_, i) => { const w = nz(ys.slice(Math.max(0, i - W + 1), i + 1)); return w.length ? mean(w) : null; });
+}
+const lastOf = (ys) => { for (let i = ys.length - 1; i >= 0; i--) if (okv(ys[i])) return ys[i]; return null; };
+function autocorr(ys, lag) {              // lag autocorrelation after removing a straight-line trend
+  const v = nz(ys); const n = v.length; if (n < lag * 4) return 0;
+  const mx = (n - 1) / 2, my = mean(v); let num = 0, den = 0;
+  for (let i = 0; i < n; i++) { num += (i - mx) * (v[i] - my); den += (i - mx) ** 2; }
+  const b = den ? num / den : 0, r = v.map((y, i) => y - my - b * (i - mx));
+  let c = 0, e = 0; for (let i = 0; i < n; i++) { e += r[i] * r[i]; if (i + lag < n) c += r[i] * r[i + lag]; }
+  return e ? c / e * (n / (n - lag)) : 0;
+}
+function cycleDetected(ys) {
+  const v = ys.slice(-160); if (nz(v).length < 40) return false;
+  const a8 = autocorr(v, 8); return a8 > 0.35 && a8 > autocorr(v, 7) && a8 > autocorr(v, 9);
+}
+function rewardVerdict(ys) {              // [level, text]
+  const v = nz(ys), n = v.length;
+  if (n < 16) return ["na", "Too early to call a trend: need at least 16 updates."];
+  let K = Math.min(32, Math.floor(n / 2)); if (K >= 8) K = Math.floor(K / 8) * 8;   // whole 8-update cycles cancel out
+  const cur = v.slice(-K), prev = v.slice(-2 * K, -K), d = mean(cur) - mean(prev);
+  const m = mean(prev), sd = Math.sqrt(mean(prev.map(x => (x - m) ** 2))), thr = Math.max(2 * sd * Math.sqrt(2 / K), 0.03 * Math.max(1, Math.abs(m)));
+  const txt = `Trend (last ${K} vs previous ${K} updates): ${sgn(d, 1)}`;
+  if (d > thr) return ["good", `${txt} — improving`];
+  if (d < -thr) return ["bad", `${txt} — declining`];
+  return ["warn", `${txt} — flat (change is within normal noise of ±${fmt(thr, 1)})`];
+}
+function renderSmoothButtons(W) {
+  const seg = $("smoothSeg");
+  seg.innerHTML = SMOOTH_CHOICES.map(w => `<button type="button" data-w="${w}" aria-pressed="${w === W}">${w === 1 ? "1 (raw)" : w}</button>`).join("");
+  seg.onclick = (e) => { const b = e.target.closest("button[data-w]"); if (!b) return; smoothW = Number(b.dataset.w); renderCharts(); renderLearning(); };
+}
+function renderRewardChart(xs, resumes) {
+  const raw = col("mean_reward"), n = raw.length;
+  const staggered = (lastOf(col("phase_spread")) ?? 0) > 0.15;
+  const W = smoothW ?? (staggered ? 4 : 8), L = Math.max(64, W * 4);
+  renderSmoothButtons(W);
+  const sm = movAvg(raw, W), base = movAvg(raw, L), cyc = cycleDetected(raw);
+  const series = [
+    { ys: raw, color: css("--accent2"), label: "raw per update", w: 1.1, alpha: .35, fmt: (v) => sgn(v, 2) },
+    { ys: sm, color: css("--accent"), label: `smoothed (${W}-update avg)`, w: 3, fmt: (v) => sgn(v, 2), hidden: W === 1 },
+    { ys: base, color: css("--gold"), label: `baseline (${L}-update avg)`, w: 1.6, dash: [6, 4], fmt: (v) => sgn(v, 2), hidden: n < L / 2 }];
+  if (cyc && n > 8) series.push({ ys: raw.map((v, i) => (i % 8 === (n - 1) % 8) ? v : null), color: css("--good"), label: "same phase (every 8th)", w: 1.8, dash: [2, 3], fmt: (v) => sgn(v, 2) });
+  charts.reward.set({ xs, resumes, series });
+  $("cycleNote").hidden = !cyc;
+  $("rewardLegend").innerHTML = series.filter(s => !s.hidden).map(s => `<span style="--c:${s.color}">${s.label}</span>`).join("");
+  const [lv, txt] = rewardVerdict(raw), el = $("rewardVerdict");
+  el.className = "verdict" + (lv === "na" ? "" : " lv-" + lv); el.textContent = txt;
+  return lv;
+}
+
+const PPO_TILES = [
+  { key: "entropy", name: "Entropy", tip: "How random the policy still is. High = still exploring; near 0 = it always picks the same button.", target: "falls slowly; below 0.3 = collapsed",
+    eval(sm, raw) { const c = lastOf(sm), s0 = nz(raw)[0];
+      if (c < 0.3) return ["bad", "Collapsed", "Policy has become almost deterministic. It stopped exploring."];
+      if (nz(raw).length >= 30 && s0 && Math.abs(c - s0) < 0.03 * s0) return ["warn", "Not moving", "Still at its start value, so the policy has not changed yet."];
+      const p = lastOf(sm.slice(0, -30)); if (p && c < 0.5 * p) return ["warn", "Falling fast", "Entropy halved in 30 updates; it may collapse soon."];
+      return ["good", "Healthy", "Exploration is shrinking slowly as the agent learns."]; }, f: 3 },
+  { key: "explained_variance", name: "Explained variance", tip: "How well the value network (critic) predicts future reward. 1 = perfectly, 0 = no better than guessing the average, negative = worse.", target: "above 0.5 good; about 0 = critic learned nothing",
+    eval(sm) { const c = lastOf(sm);
+      if (c > 0.5) return ["good", "Good", "The critic predicts returns well, so learning signals are clean."];
+      if (c > 0.2) return ["warn", "Fair", "The critic is partly predicting returns; still improving or noisy."];
+      return ["bad", "Poor", "The critic predicts almost nothing, so policy updates are mostly noise."]; }, f: 2 },
+  { key: "approx_kl", name: "Approx KL", tip: "How far each update moves the policy (KL divergence between old and new). Small steady steps are good.", target: "0.005 to 0.02 healthy; above 0.05 steps too big",
+    eval(sm) { const c = lastOf(sm);
+      if (c > 0.05) return ["bad", "Too big", "Updates overwrite the policy; lower the learning rate."];
+      if (c > 0.03) return ["warn", "High", "Steps are getting large."];
+      if (c < 0.003) return ["warn", "Tiny", "Updates barely change the policy; learning is slow."];
+      return ["good", "Healthy", "Policy changes by a safe amount each update."]; }, f: 4 },
+  { key: "clip_frac", name: "Clip fraction", tip: "Share of samples where PPO limited the update because it moved too far.", target: "0.05 to 0.3 healthy; about 0 too small, above 0.4 too big",
+    eval(sm) { const c = lastOf(sm);
+      if (c > 0.4) return ["bad", "Too big", "Most samples hit the clip limit, so updates are too aggressive."];
+      if (c < 0.01) return ["bad", "Near zero", "Nothing is being clipped: updates are too small to matter."];
+      if (c > 0.3 || c < 0.05) return ["warn", "Edge", "Slightly outside the usual range."];
+      return ["good", "Healthy", "A normal share of samples is being clipped."]; }, f: 3 },
+  { key: "value_loss", name: "Value loss", tip: "Error of the critic's reward predictions. It naturally rises when rewards change; spikes mean something shifted.", target: "stable or falling; spikes over 3x typical are bad",
+    eval(sm, raw) { const c = lastOf(sm), med = median(nz(raw).slice(-50));
+      if (!med) return ["na", "n/a", "Not enough data."];
+      if (c > 3 * med) return ["bad", "Spiking", "Critic error jumped well above its usual level."];
+      if (c > 1.5 * med) return ["warn", "Rising", "Critic error is above its usual level."];
+      return ["good", "Stable", "Critic error is steady or falling."]; }, f: 3 },
+  { key: "grad_norm", name: "Gradient norm", tip: "Size of the weight update before clipping. Sudden spikes mean unstable training.", target: "steady; spikes over 3x typical are bad",
+    eval(sm, raw) { const c = lastOf(sm), med = median(nz(raw).slice(-50));
+      if (!med) return ["na", "n/a", "Not enough data."];
+      if (c > 5 * med) return ["bad", "Spiking", "Gradients are far larger than usual, a sign of instability."];
+      if (c > 2.5 * med) return ["warn", "Elevated", "Gradients are larger than usual."];
+      return ["good", "Steady", "Gradient size is in its usual range."]; }, f: 2 },
+  { key: "lr", name: "Learning rate", tip: "How big a step the optimizer takes. Often decays on a schedule.", target: "follows the schedule",
+    eval(sm, raw) { const a = nz(raw), c = a[a.length - 1], s0 = a[0];
+      return ["good", s0 && c < 0.98 * s0 ? "Decaying" : "Constant", s0 && c < 0.98 * s0 ? "Following its decay schedule." : "Using a fixed learning rate."]; }, f: 6, exp: true },
+];
+function sparkPair(canvas, raw, sm, color) {
+  const dpr = devicePixelRatio || 1, r = canvas.getBoundingClientRect(); if (r.width < 5) return;
+  canvas.width = r.width * dpr; canvas.height = r.height * dpr;
+  const ctx = canvas.getContext("2d"); ctx.scale(dpr, dpr);
+  const all = nz(raw).concat(nz(sm)); if (all.length < 2) return;
+  const lo = Math.min(...all), hi = Math.max(...all), span = hi - lo || 1, n = raw.length;
+  const draw = (ys, w, a) => { ctx.beginPath(); let st = false; ys.forEach((y, i) => { if (!okv(y)) return; const px = i / (n - 1) * (r.width - 2) + 1, py = r.height - 3 - (y - lo) / span * (r.height - 6); st ? ctx.lineTo(px, py) : ctx.moveTo(px, py); st = true; }); ctx.strokeStyle = color; ctx.lineWidth = w; ctx.globalAlpha = a; ctx.lineJoin = "round"; ctx.stroke(); ctx.globalAlpha = 1; };
+  draw(raw, 1, .3); draw(sm, 2.4, 1);
+}
+let ppoEval = {};
+function renderPpo() {
+  const grid = $("ppoGrid"); ppoEval = {};
+  grid.innerHTML = PPO_TILES.map((t, i) => {
+    const raw = col(t.key), has = nz(raw).length > 0;
+    if (!has) return `<div class="ptile"><div class="hd"><abbr title="${t.tip}">${t.name}</abbr></div><div class="val">–</div><div class="ms">Not recorded in this run.</div></div>`;
+    const sm = movAvg(raw, 5), [lv, badge, msg] = nz(raw).length < 3 ? ["na", "Too early", "Waiting for more updates."] : t.eval(sm, raw);
+    ppoEval[t.key] = [lv, badge, msg, lastOf(sm)];
+    const v = lastOf(raw), vs = t.exp ? Number(v).toExponential(1) : fmt(v, t.f);
+    return `<div class="ptile${lv === "na" ? "" : " lv-" + lv}" data-i="${i}"><div class="hd"><abbr title="${t.tip}" tabindex="0">${t.name}</abbr><span class="bd">${badge}</span></div><div class="val">${vs}</div><canvas role="img" aria-label="${t.name} history, latest ${vs}, ${badge}"></canvas><div class="ms">${msg}</div><div class="tg">Target: ${t.target}</div></div>`;
+  }).join("");
+  grid.querySelectorAll(".ptile[data-i]").forEach(el => { const t = PPO_TILES[el.dataset.i], raw = col(t.key); sparkPair(el.querySelector("canvas"), raw, movAvg(raw, 5), css(el.classList.contains("lv-bad") ? "--bad" : el.classList.contains("lv-warn") ? "--warn" : "--good")); });
+}
+function renderLearning() {
+  const box = $("learnChecks"), n = metrics.length, checks = [];
+  const add = (lv, name, text, tip) => checks.push(`<div class="chk${lv === "na" ? "" : " lv-" + lv}" title="${tip}"><b><i class="dot"></i>${name}: ${({ good: "OK", warn: "Check", bad: "Problem", na: "Too early" })[lv]}</b><span class="t">${text}</span></div>`);
+  if (n < 2) { box.innerHTML = `<div class="chk"><b><i class="dot"></i>Waiting for data</b><span class="t">Checks appear after the first few updates.</span></div>`; return; }
+  const [rl, rt] = rewardVerdict(col("mean_reward"));
+  add(rl, "Reward trend", rt.replace(/^Trend /, "Smoothed trend "), "Reward is the score the agent is trained to maximise. Comparing recent averages with earlier ones ignores update-to-update noise.");
+  const e = ppoEval.entropy; if (e) add(e[0], "Policy changing", e[2], "Entropy measures how random the agent's choices are. It should shrink slowly as the agent learns what works.");
+  const x = ppoEval.explained_variance; if (x) add(x[0], "Critic learning", x[2], "The critic (value network) predicts future reward. Explained variance near 0 means it has learned nothing yet.");
+  const rp = nz(col("route_progress")), useRoute = rp.some(v => v > 0), pg = useRoute ? col("route_progress") : col("maps_discovered"), pv = nz(pg);
+  if (pv.length >= 8) { const K = Math.min(32, Math.floor(pv.length / 2)), a = mean(pv.slice(-4)), b = mean(pv.slice(-K - 4, -K));
+    const up = a > b * 1.02 + 1e-9, nm = useRoute ? "Route progress" : "Maps discovered";
+    add(up ? "good" : "warn", "Progress", up ? `${nm} is higher than ${K} updates ago (${fmt(b, useRoute ? 2 : 1)} to ${fmt(a, useRoute ? 2 : 1)}).` : `${nm} has not grown in ${K} updates (${fmt(a, useRoute ? 2 : 1)}).`, "Route progress and maps discovered show whether the agent is getting further through the game, not just collecting reward."); }
+  const msRows = metrics.filter(m => Array.isArray(m.ms_elig)).length;   // only runs that log milestone reach rates
+  if (msRows >= 16) { const a = msAgg(n - 32, n), b = msAgg(n - 64, n - 32), sa = msScore(a), sb = msScore(b), far = (x) => { let f = -1; x.rate.forEach((v, k) => { if (v != null && v >= 0.05) f = k; }); return f < 0 ? "none" : MS_NAMES[f]; };
+    const have = b.n.some(v => v > 0), up = sa > sb + 0.02;
+    add(!have ? "na" : up ? "good" : "warn", "Reaching further milestones?", have ? `Furthest milestone reached by at least 5% of episodes: ${far(a)} (before: ${far(b)}). Reach-rate total ${fmt(sa, 2)} vs ${fmt(sb, 2)} in the 32 updates before.` : `Furthest milestone reached by at least 5% of episodes: ${far(a)}.`, "The share of episodes that reach Route 29, Cherrygrove, Route 30, ... Falkner. Unlike the mean reward it only goes up when the agent gets further along the story."); }
+  const wo = metrics.map(m => m._wo ?? null);
+  if (nz(wo).length >= 16) { const a = mean(nz(wo).slice(-16).map(Math.abs)), b = mean(nz(wo).slice(-32, -16).map(Math.abs));
+    add(a <= b || a < 1 ? "good" : "warn", "White-outs", `White-out penalty per update: ${fmt(a, 1)} (previous 16: ${fmt(b, 1)}).`, "A white-out is when all of the party faints and the agent is sent back to a Pokemon Center. Fewer is better."); }
+  box.innerHTML = checks.join("");
+}
+
+/* ---------- renderers ---------- */
+function renderKpis() {
+  const n = metrics.length, last = metrics[n - 1];
+  const total = live?.run?.total_updates || null;
+  if (last) {
+    $("kUpdate").textContent = total ? `${last.update + 1} / ${total}` : `${last.update + 1}`;
+    if (total) { $("kBar").style.width = clamp((last.update + 1) / total * 100, 0, 100) + "%";
+      const per = median(metrics.slice(-10).map(m => m.duration_sec)); $("kEta").textContent = per ? `~${dur((total - last.update - 1) * per)} remaining` : ""; }
+    $("kReward").textContent = sgn(last.mean_reward);
+    const best = Math.max(...col("mean_reward").filter(v => v != null));
+    $("kRewardNote").innerHTML = `rolling ${sgn(last.rolling_reward)} · best ${sgn(best)}`;
+    $("kEntropy").textContent = fmt(last.entropy);
+    const maxEnt = live?.actions ? Math.log(live.actions.names.length) : Math.log(5);
+    $("kEntropyNote").textContent = `${Math.round(last.entropy / maxEnt * 100)}% of max ${fmt(maxEnt)}`;
+    $("kEntMark").style.left = `calc(${clamp(last.entropy / maxEnt, 0, 1) * 100}% - 1px)`;
+    $("kMaps").textContent = last.maps_discovered;
+    $("kMapsNote").textContent = `${last.badges || 0} badge(s)` + (live ? ` · ${live.maps_seen} seen overall` : "");
+    $("kKl").textContent = fmt(last.approx_kl, 4);
+    $("kKlNote").textContent = `clip ${(last.clip_frac * 100).toFixed(1)}% · lr ${Number(last.lr).toExponential(1)}`;
+    const dEl = $("kSps"); $("kSpsNote").textContent = `${fmt(last.duration_sec, 1)}s per update`;
+    dEl.textContent = live ? `${Math.round(live.steps_per_sec)} st/s` : `${fmt(last.samples / Math.max(last.duration_sec, .01), 0)} st/s`;
+    spark($("spReward"), col("mean_reward"), css("--accent2"));
+    spark($("spMaps"), col("maps_discovered"), css("--good"));
+    spark($("spKl"), col("approx_kl"), css("--accent"));
+    spark($("spDur"), col("duration_sec"), css("--gold"));
+  }
+}
+function renderCharts() {
+  const xs = metrics.map(m => m.update);
+  const resumes = metrics.map((m, i) => m.resumed ? i : -1).filter(i => i > 0);
+  renderRewardChart(xs, resumes);
+  const maxEnt = live?.actions ? Math.log(live.actions.names.length) : Math.log(5);
+  charts.entropy.set({ xs, resumes, floor: 0, yMax: maxEnt, series: [{ ys: col("entropy"), color: css("--accent2"), label: "entropy", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) }],
+    bands: [{ y0: 0, y1: .35, color: css("--bad") }, { y0: .7, y1: maxEnt, color: css("--good") }] });
+  charts.kl.set({ xs, resumes, floor: 0, series: [
+    { ys: col("approx_kl"), color: css("--accent"), label: "KL", w: 2.2, fmt: (v) => fmt(v, 4) },
+    { ys: col("clip_frac"), color: css("--accent2"), label: "clip", w: 1.8, fmt: (v) => fmt(v, 3) }],
+    lines: [{ y: .08, color: css("--warn") }] });
+  charts.loss.set({ xs, resumes, series: [
+    { ys: col("value_loss"), color: css("--accent"), label: "value", w: 2.4, fill: true, fmt: (v) => fmt(v, 3) },
+    { ys: col("policy_loss"), color: css("--accent2"), label: "policy", hidden: true, fmt: (v) => fmt(v, 4) }], floor: 0 });
+  const strip = $("strip"), all = metrics, stride = Math.max(1, Math.ceil(all.length / 400));   // whole history, thinned to at most ~400 cells
+  const recent = all.filter((m, i) => i % stride === 0 || m.resumed);
+  strip.innerHTML = recent.map(m => `<i class="s-${m.status || "LEARNING"}${m.resumed ? " resumed" : ""}" title="update ${m.update}: ${m.status}${m.resumed ? " (resumed from checkpoint)" : ""}"></i>`).join("");
+  const counts = {}; all.forEach(m => counts[m.status] = (counts[m.status] || 0) + 1);
+  const top = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+  $("stripSub").textContent = top ? `updates ${all[0].update}–${all[all.length - 1].update} · mostly ${top[0].toLowerCase()}${all.some(m => m.resumed) ? " · white tick = resumed" : ""}` : "";
+}
+
+const envEls = [];
+function ensureEnvs(n) {
+  const box = $("envs");
+  while (envEls.length < n) {
+    const i = envEls.length, d = document.createElement("div");
+    d.className = "env"; d.tabIndex = 0; d.setAttribute("role", "button");
+    d.innerHTML = `<div class="screen"><img alt="Agent ${i} game view"><span class="id">E${i}</span><span class="tag" hidden>BATTLE</span><div class="noimg">no frame yet</div></div><div class="m1"></div><div class="m2"><span></span><span></span></div>`;
+    d.onclick = () => openZoom(i); d.onkeydown = (e) => { if (e.key === "Enter") openZoom(i); };
+    box.appendChild(d);
+    envEls.push({ d, img: d.querySelector("img"), noimg: d.querySelector(".noimg"), tag: d.querySelector(".tag"), m1: d.querySelector(".m1"), a: d.querySelectorAll(".m2 span")[0], b: d.querySelectorAll(".m2 span")[1] });
+  }
+}
+function renderEnvs() {
+  return;  // the per-agent screen grid was removed: frames were mostly blank or the start frame
+  if (!live || mode === "replay") return;
+  ensureEnvs(live.num_envs);
+  const rets = live.envs.map(e => e.ep_return), topRet = Math.max(...rets);
+  live.envs.forEach((e, i) => {
+    const el = envEls[i]; loadFrame(el.img, i, el.noimg);
+    el.m1.textContent = e.map_name || "…"; el.m1.title = e.state ? `started from ${e.state}` : "";
+    el.a.textContent = `(${e.x},${e.y})`;
+    el.b.textContent = `${sgn(e.ep_return, 1)} · ${e.ep_steps}`;
+    el.tag.hidden = !e.battle; el.d.classList.toggle("battle", !!e.battle);
+    el.d.classList.toggle("top", e.ep_return === topRet && topRet > 0);
+  });
+  $("envSub").textContent = `${live.num_envs} parallel emulators · gold = best return this episode`;
+}
+function renderEvents() {
+  if (!live) return;
+  const evs = live.events.slice(-30).reverse(), start = live.started;
+  $("events").innerHTML = evs.length ? evs.map(e => `<div><time>+${dur(e.t - start)}</time><span class="k ${e.kind}">${e.kind.toUpperCase()}</span><span>${e.text}</span></div>`).join("") : `<div><span class="flat">Nothing yet. Milestones appear as the agents find new maps, badges and records.</span></div>`;
+  $("evSub").textContent = `${live.events.length} total`;
+}
+function renderActions() {
+  if (!live) return;
+  const a = live.actions, tot = a.total.reduce((x, y) => x + y, 0) || 1, rec = a.recent.reduce((x, y) => x + y, 0) || 1;
+  $("actions").innerHTML = a.names.map((nm, i) => {
+    const pt = a.total[i] / tot * 100, pr = a.recent[i] / rec * 100;
+    return `<div class="row"><span>${nm}</span><div class="track"><i class="tot" style="width:${pt}%"></i><i class="rec" style="width:${pr}%"></i></div><span>${pt.toFixed(0)}%</span></div>`;
+  }).join("");
+  $("eps").innerHTML = live.episodes.slice(-10).reverse().map(e => `<tr><td>E${e.env}</td><td class="num ${e.return >= 0 ? "up" : "down"}">${sgn(e.return)}</td><td class="num">${e.steps}</td><td class="num">${e.maps}</td><td>${e.state}</td></tr>`).join("") || `<tr><td colspan="5" class="flat">No finished episodes yet.</td></tr>`;
+}
+
+/* heatmap */
+const RAMP = [[27, 16, 64], [90, 30, 140], [196, 54, 108], [251, 140, 60], [255, 232, 107]];
+function ramp(t) { const p = clamp(t, 0, 1) * (RAMP.length - 1), i = Math.min(RAMP.length - 2, Math.floor(p)), f = p - i; return RAMP[i].map((v, k) => Math.round(v + (RAMP[i + 1][k] - v) * f)); }
+function renderHeat() {
+  const cv = $("heat"), dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  const ctx = cv.getContext("2d"); cv.width = r.width * dpr; cv.height = r.height * dpr; ctx.scale(dpr, dpr);
+  ctx.clearRect(0, 0, r.width, r.height);
+  if (!live || !live.heat.length) { ctx.fillStyle = css("--muted"); ctx.font = "13px system-ui"; ctx.textAlign = "center"; ctx.fillText("Tile visits appear here once agents start moving.", r.width / 2, r.height / 2); $("mapTabs").innerHTML = ""; return; }
+  if (!live.heat.find(h => h.map === selectedMap)) selectedMap = live.heat[0].map;
+  $("mapTabs").innerHTML = live.heat.map(h => `<button class="tab" type="button" data-m="${h.map}" aria-pressed="${h.map === selectedMap}">${h.name} · ${h.visits.toLocaleString()}</button>`).join("");
+  const h = live.heat.find(x => x.map === selectedMap), cells = h.cells;
+  let x0 = 1e9, x1 = -1e9, y0 = 1e9, y1 = -1e9, mx = 1;
+  for (const [x, y, c] of cells) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); mx = Math.max(mx, c); }
+  x0 -= 2; y0 -= 2; x1 += 2; y1 += 2;
+  const gw = x1 - x0 + 1, gh = y1 - y0 + 1, cell = Math.max(2, Math.min(r.width / gw, r.height / gh)), ox = (r.width - gw * cell) / 2, oy = (r.height - gh * cell) / 2;
+  ctx.fillStyle = "rgba(255,255,255,.04)"; ctx.fillRect(ox, oy, gw * cell, gh * cell);
+  const lmx = Math.log(1 + mx);
+  for (const [x, y, c] of cells) { const [R, G, B] = ramp(Math.log(1 + c) / lmx); ctx.fillStyle = `rgb(${R},${G},${B})`; ctx.fillRect(ox + (x - x0) * cell, oy + (y - y0) * cell, Math.ceil(cell), Math.ceil(cell)); }
+  live.trails.forEach((tr, i) => {
+    const pts = tr.filter(p => p[0] === selectedMap); if (pts.length < 1) return;
+    const hue = (i * 47) % 360; ctx.strokeStyle = `hsla(${hue},90%,70%,.85)`; ctx.lineWidth = 1.6; ctx.beginPath();
+    pts.forEach((p, k) => { const px = ox + (p[1] - x0 + .5) * cell, py = oy + (p[2] - y0 + .5) * cell; k ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); ctx.stroke();
+    const p = pts[pts.length - 1], px = ox + (p[1] - x0 + .5) * cell, py = oy + (p[2] - y0 + .5) * cell;
+    ctx.fillStyle = `hsl(${hue},90%,62%)`; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, Math.max(4, cell * .6), 0, 7); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = "#0b1020"; ctx.font = `700 ${Math.max(8, Math.min(11, cell * .7))}px ${css("--mono")}`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(i, px, py + .5);
+  });
+  $("covSub").textContent = `${h.name} · ${cells.length} unique tiles · peak ${mx.toLocaleString()} visits`;
+}
+
+
+/* header */
+function renderStale() {
+  const el = $("staleBanner"), age = live && mode !== "replay" ? Date.now() / 1000 - live.t : 0;
+  if (mode !== "replay" && live && age > 120) {
+    el.textContent = `Live feed stopped \u2014 showing last data from ${live.run_id || "unknown run"} at ${new Date(live.t * 1000).toLocaleTimeString()}`;
+    el.style.display = "block";
+  } else el.style.display = "none";
+}
+function renderHeader() {
+  renderStale();
+  const el = $("status"), age = live ? Date.now() / 1000 - live.t : Infinity;
+  let cls = "", txt = "WAITING";
+  if (mode === "replay") { cls = "done"; txt = "REPLAY"; }
+  else if (live && live.finished) { cls = "done"; txt = "FINISHED"; }
+  else if (live && age < 8) { cls = "live"; txt = "LIVE"; }
+  else if (live) { cls = "stale"; txt = "STALE " + dur(age); }
+  else if (metrics.length) { cls = "stale"; txt = "METRICS ONLY"; }
+  el.className = "pill " + cls; $("statusText").textContent = txt;
+  const run = live?.run || {};
+  const chips = [];
+  if (run.device) chips.push(`device <b>${run.device}</b>`);
+  if (live) chips.push(`envs <b>${live.num_envs}</b>`);
+  if (run.recurrent != null) chips.push(run.recurrent ? "<b>GRU</b>" : "<b>feed-forward</b>");
+  if (run.resume != null) chips.push(run.resume ? "<b>warm-start</b>" : "<b>from scratch</b>");
+  if (run.lr) chips.push(`lr <b>${Number(run.lr).toExponential(0)}</b>`);
+  if (live) chips.push(`<b>${live.steps.toLocaleString()}</b> env-steps`);
+  $("chips").innerHTML = chips.map(c => `<span class="chip">${c}</span>`).join("");
+  $("subtitle").textContent = live ? `running ${dur((live.finished ? live.t : Date.now() / 1000) - live.started)} · ${live.samples.toLocaleString()} samples trained` : "no live feed";
+}
+const escH = (t) => String(t).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+function funFacts(f, nm) {
+  const out = [], top = (o) => Object.entries(o || {}).sort((a, b) => b[1] - a[1]);
+  const enc = top(f.enc), got = top(f.got), name = (id) => escH(nm[id] || "Pokémon #" + id);
+  if (enc.length) out.push(`Most-met Pokémon: <b>${name(enc[0][0])}</b>, battled ${enc[0][1].toLocaleString()} times.`);
+  if (got.length) out.push(`Favourite catch: <b>${name(got[0][0])}</b> (${got[0][1].toLocaleString()} times); ${got.length} different species obtained.`);
+  const battles = (f.wild || 0) + (f.trn || 0);
+  if (battles) out.push(`${(f.wild || 0).toLocaleString()} wild and ${(f.trn || 0).toLocaleString()} trainer battles; ${f.wo || 0} white-out${f.wo === 1 ? "" : "s"} (${(100 * (f.wo || 0) / battles).toFixed(1)}% of fights).`);
+  if (f.lvl) out.push(`Strongest Pokémon so far: level <b>${f.lvl}</b>.`);
+  const fr = f.first || []; if (fr.length) { const l = fr[fr.length - 1]; out.push(`Newest place found: <b>${escH(l[0])}</b> at step ${Number(l[1]).toLocaleString()}.`); }
+  if (f.money) out.push(`Richest agent ever held $${Number(f.money).toLocaleString()}.`);
+  return out.slice(0, 5);
+}
+function spr(id, name, sil) {
+  const alt = sil ? "Unobtained " + name : name;
+  return `<img class="spr${sil ? " sil" : ""}" src="/sprites/${id}.png" width="56" height="56" loading="lazy" alt="${escH(alt)}" onerror="this.outerHTML='<span class=&quot;spr fb&quot; role=&quot;img&quot; aria-label=&quot;${escH(alt)}&quot;>#${id}</span>'">`;
+}
+function partyHtml(f, nm) {
+  const p = f.party; if (!Array.isArray(p) || !p.length) return "";
+  const slots = [];
+  for (let k = 0; k < 6; k++) {
+    const r = p[k];
+    if (!r) { slots.push(`<div class="slot empty" aria-label="Empty slot"><span class="spr" style="display:block;margin:0 auto"></span><div class="nm">&nbsp;</div><div class="lv">&nbsp;</div></div>`); continue; }
+    const name = nm[r[0]] || "Pokémon #" + r[0];
+    let hp = "";
+    if (r.length >= 4 && r[3] > 0) { const q = clamp(r[2] / r[3], 0, 1); hp = `<div class="hp${q < .2 ? " low" : q < .5 ? " mid" : ""}" role="img" aria-label="HP ${r[2]} of ${r[3]}" title="HP ${r[2]}/${r[3]}"><i style="width:${(q * 100).toFixed(0)}%"></i></div>`; }
+    slots.push(`<div class="slot" title="${escH(name)} (#${r[0]})">${spr(r[0], name)}<div class="nm">${escH(name)}</div><div class="lv">${r[1] ? "Lv " + r[1] : "&nbsp;"}</div>${hp}</div>`);
+  }
+  return `<div class="partyhd">Party of the most advanced agent (env ${f.pe || 0}, highest top level)</div><div class="party">${slots.join("")}</div>`;
+}
+function renderFun() {
+  const f = live && live.fun, body = $("funBody");
+  if (!f) { $("funSub").textContent = ""; body.innerHTML = `<div class="note" style="color:var(--muted)">No Pokémon data yet. Older runs and fresh starts do not record it.</div>`; return; }
+  const nm = live.species_names || {}, ids = new Set([...Object.keys(f.enc || {}), ...Object.keys(f.got || {})]), unowned = new Set(f.unowned || []);
+  const rows = [...ids].map((id) => ({ id: Number(id), e: (f.enc || {})[id] || 0, g: (f.got || {})[id] || 0 })).sort((a, b) => (b.e + b.g * 3) - (a.e + a.g * 3) || a.id - b.id);
+  const st = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+  const cap = 48;
+  $("funSub").textContent = `${rows.length} species met`;
+  body.innerHTML = partyHtml(f, nm) + `<div class="dexhead">${st(f.seen || 0, "Dex seen")}${st(f.own || 0, "Dex owned")}${st(((f.wild || 0) + (f.trn || 0)).toLocaleString(), "Battles")}${st(Object.values(f.got || {}).reduce((a, b) => a + b, 0).toLocaleString(), "Catches")}${st(f.wo || 0, "White-outs")}${st(f.lvl || 0, "Top level")}</div>`
+    + `<ul class="facts">${funFacts(f, nm).map((t) => `<li>${t}</li>`).join("")}</ul>`
+    + (rows.length ? `<div class="dex">${rows.slice(0, cap).map((r) => `<div class="mon${r.g ? " own" : unowned.has(r.id) ? " unk" : ""}" title="#${r.id}${r.g || !unowned.has(r.id) ? "" : " (seen, not caught)"}">${spr(r.id, nm[r.id] || "Pokémon #" + r.id, !r.g && unowned.has(r.id))}<div><div class="nm">${escH(nm[r.id] || "#" + r.id)}</div><div class="ct"><span class="no">#${r.id}</span> &middot; battled ${r.e.toLocaleString()}${r.g ? ` &middot; <i>caught ${r.g.toLocaleString()}</i>` : ""}</div></div></div>`).join("")}</div>${rows.length > cap ? `<div class="note" style="color:var(--muted);margin-top:6px">+${rows.length - cap} more</div>` : ""}` : "");
+}
+/* ---------- fastest to each milestone (trainer field state.records / history record.records; only runs launched with the tracking) ---------- */
+function renderRecords() {
+  const body = $("recBody"), sub = $("recSub"), r = live && live.records, flagged = live && live.run && live.run.ms_records;
+  if (!r && !flagged) { sub.textContent = ""; body.innerHTML = `<div class="none" style="color:var(--muted)">Not recorded for this run. Runs launched after the fastest-record tracking was added log the fewest steps each milestone took.</div>`; return; }
+  const st = (r && r.start) || [], an = (r && r.any) || [], none = `<span class="none">not reached yet</span>`;
+  const got = st.filter(Boolean).length;
+  sub.textContent = `${got} of ${MS_NAMES.length} reached from the start state · steps = environment steps since the episode began`;
+  const rows = MS_NAMES.map((nm, k) => {
+    const a = st[k], b = an[k];
+    const vs = !a ? "" : a.prev == null ? `first arrival` : `<span class="imp">${a.delta} steps</span> <span class="none">(was ${a.prev})</span>`;
+    return `<tr><td>${nm}</td><td class="num">${a ? `<b>${a.steps}</b> steps` : none}</td><td>${a ? `update ${a.update}${a.env != null && a.env >= 0 ? ` · env ${a.env}` : ""}` : ""}</td><td>${vs}</td><td class="num hide-s">${b ? b.steps : "–"}</td></tr>`;
+  }).join("");
+  const latest = ((r && r.log) || []).filter(e => e.scope === "start").slice(-3).reverse().map(e => esc(e.first ? `First time reaching ${e.name}: ${e.steps} steps` : `New record: ${e.name} in ${e.steps} steps (was ${e.prev}, ${e.steps - e.prev})`)).join(" · ");
+  body.innerHTML = `<table class="rectab"><thead><tr><th>Milestone</th><th class="num">Fastest from start</th><th>Reached at</th><th>vs previous record</th><th class="num hide-s" title="Fewest steps in any full episode, whatever its start state (archive starts are closer to the goal)">Any start</th></tr></thead><tbody>${rows}</tbody></table>` +
+    `<div class="recnote">Counted only for episodes from the New Bark start state (not swarm / battle / route-checkpoint resets, not staggered partial episodes). &ldquo;Any start&rdquo; counts every full episode, so it can be faster.${latest ? `<br>Latest: ${latest}` : ""}</div>`;
+}
+function recordsAt(idx) {      // replay: records as of the selected update, from the per-update `records` lists
+  const start = MS_NAMES.map(() => null), anyT = MS_NAMES.map(() => null); let seen = false;
+  for (let i = 0; i <= idx; i++) for (const e of rep.records[i].records || []) {
+    seen = true; const t = e.scope === "start" ? start : anyT, c = t[e.m];
+    if (!c || e.steps < c.steps) t[e.m] = { steps: e.steps, update: e.u, env: e.env, prev: e.prev, delta: e.prev == null ? null : e.steps - e.prev };
+  }
+  return seen || (rep.meta.run && rep.meta.run.ms_records) ? { start, any: anyT, log: [] } : null;
+}
+/* toasts for new fastest-milestone records seen in the live feed: at most 3 on screen, auto-dismiss, announced politely */
+let toastSeenT = null, toastRun = null;
+function showToast(text) {
+  const box = $("toasts"); while (box.children.length >= 3) box.removeChild(box.firstChild);
+  const d = document.createElement("div"); d.className = "toast";
+  const s = document.createElement("span"); s.textContent = text; const b = document.createElement("button"); b.type = "button"; b.setAttribute("aria-label", "Dismiss"); b.textContent = "×";
+  const kill = () => { if (d.parentNode) d.parentNode.removeChild(d); }; b.onclick = kill; d.append(s, b); box.appendChild(d); setTimeout(kill, 10000);
+}
+function toastNew(s) {
+  if (!s || !Array.isArray(s.events)) return;
+  const ms = s.events.filter(e => e.kind === "milestone"), top = ms.reduce((m, e) => Math.max(m, e.t), 0);
+  if (toastSeenT === null || toastRun !== s.run_id) { toastSeenT = top; toastRun = s.run_id; return; }   // history on page load / new run: no toast
+  const fresh = ms.filter(e => e.t > toastSeenT).sort((a, b) => a.t - b.t); toastSeenT = Math.max(toastSeenT, top);
+  fresh.slice(-3).forEach(e => showToast(e.text));
+}
+function renderAll() {
+  syncProfile(live && live.run);
+  const has = metrics.length || live;
+  $("empty").style.display = has ? "none" : "block"; $("main").style.display = has ? "block" : "none";
+  renderHeader(); if (!has) return;
+  renderKpis(); renderCharts(); renderPpo(); renderLearning(); $("diag").innerHTML = diagnostics();
+  renderEvents(); renderActions(); renderWorld(); renderComponents(); renderMilestones(); renderSplit(); renderEval(); renderRecords(); renderFun(); renderEvLegend(); renderWhy();
+}
+/* ---------- exploration coverage: the whole route on one map, same heat ramp ---------- */
+let world = null;
+fetch("/api/world").then((r) => r.json()).then((w) => { world = w; renderWorld(); }).catch(() => {});
+const TERRAIN = { a: "rgba(70,130,220,.30)", g: "rgba(70,170,90,.22)", l: "rgba(205,170,90,.22)", t: "rgba(120,210,130,.30)", d: "rgba(255,255,255,.38)", f: "rgba(255,255,255,.08)", p: "rgba(0,0,0,.35)" };
+const FURTHEST = [["24,4", "New Bark Town"], ["24,3", "Route 29"], ["26,3", "Cherrygrove City"], ["26,1", "Route 30"], ["26,10", "Mr. Pokemon's house"], ["26,2", "Route 31"], ["26,11", "Violet gate"], ["10,5", "Violet City"], ["10,7", "Violet Gym"]];
+const ZMAX = 14, GRID_AT = 12;
+const view = { k: 1, tx: 0, ty: 0 };      // zoom and pan on top of the fit-to-view layout (CSS pixels)
+let WL = null;                            // last drawn layout, used by the hover readout
+let worldRaf = 0;
+const scheduleWorld = () => { if (!worldRaf) worldRaf = requestAnimationFrame(() => { worldRaf = 0; renderWorld(); }); };
+
+/* Story milestones (src/story_path.py). Arrival milestones are reached once any agent has visited that map; the last one
+   (beat Falkner) once an agent stood within 1 tile of the tile in front of him. Judged from the visit heat of the run
+   (live: the current run; replay: the selected run up to the slider). */
+/* The story route of the run: the base 8-star / 309-step layout, or world.egg (11 stars, three phase legs) for egg-errand runs. */
+const wStars = () => world ? ((isEgg() && world.egg ? world.egg.stars : world.stars) || []) : [];
+const wLegs = () => world ? ((isEgg() && world.egg ? world.egg.legs : world.legs) || []) : [];
+function msReachedCum() { for (let i = metrics.length - 1; i >= 0; i--) if (Array.isArray(metrics[i].ms_reach_cum)) return metrics[i].ms_reach_cum; return null; }
+function goalState() {
+  const heat = {}; for (const h of (live ? live.heat : [])) heat[h.map] = h.cells;
+  const got = {}, cum = msReachedCum();
+  for (const s of wStars()) {
+    const cells = heat[String(s.map).replace("_", ",")] || [];
+    const byHeat = s.event ? false : s.arrival ? cells.length > 0 : cells.some(([x, y]) => Math.abs(x - s.x) <= 1 && Math.abs(y - s.y) <= 1);
+    got[s.n] = byHeat || !!(cum && (cum[s.n - 1] || 0) > 0);   // event milestones (egg received / delivered) only show in the reach rates
+  }
+  return got;
+}
+let storyKey = "";
+function renderStory(got, furthest) {
+  const stars = wStars(), done = stars.filter((s) => got[s.n]).length;
+  const key = JSON.stringify([isEgg(), stars.map((s) => got[s.n]), furthest]);
+  if (key === storyKey) return; storyKey = key;
+  const chips = stars.map((s) => {
+    const ok = !!got[s.n], nm = `${s.label || s.name} <span class="rw">+${s.reward}</span>`;
+    return `<li class="goal ${ok ? "reached" : ""}" title="${String(s.desc || "").replace(/"/g, "&quot;")}"><span class="gl" aria-hidden="true">${ok ? "✓" : "○"}</span><span class="gn">${s.n}</span> ${nm}<span class="sr"> – ${ok ? "reached" : "not reached"}</span></li>`;
+  });
+  $("story").innerHTML = `<ol class="goals" aria-label="Story milestones in order">${chips.join(`<li class="arrow" aria-hidden="true">→</li>`)}</ol>` +
+    `<div class="furthest">Furthest place reached: <b>${furthest}</b> · ${done} of ${stars.length} milestones reached</div>`;
+}
+
+function clampView(r) {
+  view.k = clamp(view.k, 1, ZMAX);
+  view.tx = clamp(view.tx, r.width * (1 - view.k), 0); view.ty = clamp(view.ty, r.height * (1 - view.k), 0);
+  $("heat").style.touchAction = view.k > 1 ? "none" : "pan-y";
+  $("zLevel").textContent = view.k.toFixed(view.k < 10 ? 1 : 0) + "×";
+}
+function zoomAt(f, cx, cy) {
+  const r = $("heat").getBoundingClientRect(); if (cx == null) { cx = r.width / 2; cy = r.height / 2; }
+  const k2 = clamp(view.k * f, 1, ZMAX), q = k2 / view.k;
+  view.tx = cx - (cx - view.tx) * q; view.ty = cy - (cy - view.ty) * q; view.k = k2; clampView(r); scheduleWorld();
+}
+function resetView() { view.k = 1; view.tx = 0; view.ty = 0; clampView($("heat").getBoundingClientRect()); scheduleWorld(); }
+function hoverAt(e) {
+  const out = $("mapHover"); if (!WL) return;
+  const r = $("heat").getBoundingClientRect(), px = e.clientX - r.left, py = e.clientY - r.top;
+  for (const q of WL.rects) {
+    if (px < q.bx || py < q.by || px >= q.bx + q.m.w * WL.s || py >= q.by + q.m.h * WL.s) continue;
+    const x = Math.floor((px - q.bx) / WL.s), y = Math.floor((py - q.by) / WL.s), n = (WL.heat[q.m.id] || new Map()).get(x + "," + y) || 0;
+    const pc = (world.heals || []).some((h) => String(h.map).replace("_", ",") === q.m.id && h.x === x && h.y === y);
+    out.textContent = `${q.m.name} · tile (${x}, ${y}) · ${n.toLocaleString()} visit${n === 1 ? "" : "s"}${pc ? " · Pokécenter" : ""}`; return;
+  }
+  out.textContent = "Hover the map for tile details.";
+}
+(function wireMap() {
+  const cv = $("heat"); let drag = null;
+  cv.addEventListener("wheel", (e) => { e.preventDefault(); const r = cv.getBoundingClientRect(); zoomAt(Math.exp(-e.deltaY * (e.deltaMode ? 0.05 : 0.0015)), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  cv.addEventListener("pointerdown", (e) => { if (e.button) return; drag = { x: e.clientX, y: e.clientY }; try { cv.setPointerCapture(e.pointerId); } catch (_) {} cv.classList.add("grab"); });
+  cv.addEventListener("pointermove", (e) => {
+    if (drag && view.k > 1) { view.tx += e.clientX - drag.x; view.ty += e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY; clampView(cv.getBoundingClientRect()); scheduleWorld(); }
+    hoverAt(e);
+  });
+  const up = () => { drag = null; cv.classList.remove("grab"); };
+  cv.addEventListener("pointerup", up); cv.addEventListener("pointercancel", up);
+  cv.addEventListener("dblclick", resetView);
+  cv.addEventListener("keydown", (e) => {
+    const step = 40, K = { "+": () => zoomAt(1.5), "=": () => zoomAt(1.5), "-": () => zoomAt(1 / 1.5), "0": resetView,
+      ArrowLeft: () => { view.tx += step; }, ArrowRight: () => { view.tx -= step; }, ArrowUp: () => { view.ty += step; }, ArrowDown: () => { view.ty -= step; } };
+    if (!K[e.key]) return; e.preventDefault(); K[e.key](); clampView(cv.getBoundingClientRect()); scheduleWorld();
+  });
+  $("zIn").onclick = () => zoomAt(1.5); $("zOut").onclick = () => zoomAt(1 / 1.5); $("zReset").onclick = resetView;
+})();
+
+function renderWorld() {
+  const cv = $("heat"), dpr = devicePixelRatio || 1, r = cv.getBoundingClientRect();
+  if (r.width < 10) return;
+  cv.width = r.width * dpr; cv.height = r.height * dpr;
+  const ctx = cv.getContext("2d"); ctx.scale(dpr, dpr); ctx.clearRect(0, 0, r.width, r.height);
+  ctx.textBaseline = "alphabetic";
+  if (!world) { ctx.fillStyle = css("--muted"); ctx.font = "13px system-ui"; ctx.textAlign = "center"; ctx.fillText("loading map…", r.width / 2, r.height / 2); return; }
+  clampView(r);
+  const outdoor = world.maps.filter((m) => m.outdoor), inside = world.maps.filter((m) => !m.outdoor);
+  let x0 = 1e9, y0 = 1e9, x1 = -1e9, y1 = -1e9;
+  for (const m of outdoor) { x0 = Math.min(x0, m.ox); y0 = Math.min(y0, m.oy); x1 = Math.max(x1, m.ox + m.w); y1 = Math.max(y1, m.oy + m.h); }
+  let cx = x0, rowH = 0; const sy = y1 + 7;               // interiors sit in a strip under the overworld
+  for (const m of inside) { if (cx + m.w > x1) { cx = x0; } m.px = cx; m.py = sy; cx += m.w + 4; rowH = Math.max(rowH, m.h); }
+  const W = x1 - x0, H = sy + rowH - y0, pad = 8, sc = Math.min((r.width - 2 * pad) / W, (r.height - 2 * pad) / H);
+  const ax = (r.width - W * sc) / 2, ay = (r.height - H * sc) / 2, k = view.k, s = sc * k;
+  const P = (m, x, y) => { const wx = m.outdoor ? m.ox + x : m.px + x, wy = m.outdoor ? m.oy + y : m.py + y; return [(ax + (wx - x0) * sc) * k + view.tx, (ay + (wy - y0) * sc) * k + view.ty]; };
+  const byId = Object.fromEntries(world.maps.map((m) => [m.id, m]));
+  const edge = css("--border"), tileW = Math.ceil(s);
+  const rects = []; WL = { rects, s, heat: {} };
+  const visible = (bx, by, m) => bx + m.w * s >= 0 && by + m.h * s >= 0 && bx <= r.width && by <= r.height;
+  for (const m of world.maps) {                             // terrain, then outline
+    const [bx, by] = P(m, 0, 0); rects.push({ m, bx, by });
+    if (!visible(bx, by, m)) continue;
+    ctx.fillStyle = "rgba(255,255,255,.035)"; ctx.fillRect(bx, by, m.w * s, m.h * s);
+    m.rows.forEach((row, y) => { const py = by + y * s; if (py + s < 0 || py > r.height) return;
+      for (let x = 0; x < row.length; x++) { const c = TERRAIN[row[x]], px = bx + x * s; if (c && px + s >= 0 && px <= r.width) { ctx.fillStyle = c; ctx.fillRect(px, py, tileW, tileW); } } });
+  }
+  let mx = 1, tiles = 0; const seenMaps = new Set();
+  for (const h of (live ? live.heat : [])) { for (const c of h.cells) mx = Math.max(mx, c[2]); }
+  const lmx = Math.log(1 + mx);
+  for (const h of (live ? live.heat : [])) {                // visit heat on top, same colour ramp as before
+    const m = byId[h.map]; if (!m) continue;
+    seenMaps.add(h.map); tiles += h.cells.length;
+    const [bx, by] = P(m, 0, 0), idx = (WL.heat[h.map] = new Map());
+    for (const [x, y, c] of h.cells) {
+      idx.set(x + "," + y, c); const px = bx + x * s, py = by + y * s; if (px + s < 0 || py + s < 0 || px > r.width || py > r.height) continue;
+      const [R, G, B] = ramp(Math.log(1 + c) / lmx); ctx.fillStyle = `rgb(${R},${G},${B})`; ctx.fillRect(px, py, tileW, tileW);
+    }
+  }
+  if (s >= GRID_AT) {                                       // tile grid, only when zoomed in far enough to be useful
+    ctx.save(); ctx.strokeStyle = css("--text"); ctx.globalAlpha = .13; ctx.lineWidth = 1; ctx.beginPath();
+    for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue;
+      for (let x = 0; x <= m.w; x++) { const px = Math.round(bx + x * s) + .5; if (px < 0 || px > r.width) continue; ctx.moveTo(px, Math.max(by, 0)); ctx.lineTo(px, Math.min(by + m.h * s, r.height)); }
+      for (let y = 0; y <= m.h; y++) { const py = Math.round(by + y * s) + .5; if (py < 0 || py > r.height) continue; ctx.moveTo(Math.max(bx, 0), py); ctx.lineTo(Math.min(bx + m.w * s, r.width), py); } }
+    ctx.stroke(); ctx.restore();
+  }
+  for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue; ctx.strokeStyle = edge; ctx.lineWidth = 1; ctx.strokeRect(bx + .5, by + .5, m.w * s, m.h * s); }
+  /* the ideal story route: a faint dashed line over the overworld legs */
+  /* egg-errand runs draw three phase legs (distinct colour, dash and a small offset, because phases 2 and 3 retrace phase 1) */
+  const LEG_STYLE = [{ c: "--gold", d: [6, 4], o: -2.5 }, { c: "#38bdf8", d: [2, 4], o: 0 }, { c: "#c084fc", d: [10, 3], o: 2.5 }];
+  const legs = wLegs();
+  ctx.save(); ctx.globalAlpha = .6; ctx.lineWidth = 1.6; ctx.lineJoin = "round";
+  const drawn = new Set();
+  for (const leg of legs) {
+    const st = leg.phase != null ? LEG_STYLE[leg.phase % 3] : { c: "--gold", d: [6, 4], o: 0 };
+    ctx.strokeStyle = st.c.startsWith("--") ? css(st.c) : st.c; ctx.setLineDash(st.d);
+    for (const sg of leg.segments) {
+      const key = leg.phase + sg.map + JSON.stringify(sg.pts), m = byId[sg.map.replace("_", ",")]; if (!m || drawn.has(key)) continue; drawn.add(key);
+      ctx.beginPath(); sg.pts.forEach((p, i) => { const [px, py] = P(m, p[0] + .5, p[1] + .5); i ? ctx.lineTo(px + st.o, py + st.o) : ctx.moveTo(px + st.o, py + st.o); }); ctx.stroke();
+    }
+  }
+  ctx.restore();
+  if (legs.length > 1 || (legs[0] && legs[0].phase != null)) {   // phase legend, bottom left
+    ctx.save(); ctx.font = "600 11px system-ui"; ctx.textAlign = "left";
+    legs.forEach((leg, i) => { const st = LEG_STYLE[(leg.phase || 0) % 3], y = r.height - 10 - (legs.length - 1 - i) * 16, t = `${leg.label} (${leg.steps} steps)`, w = ctx.measureText(t).width + 38;
+      ctx.fillStyle = "rgba(11,16,32,.78)"; ctx.fillRect(6, y - 11, w, 15);
+      ctx.strokeStyle = st.c.startsWith("--") ? css(st.c) : st.c; ctx.lineWidth = 2; ctx.setLineDash(st.d); ctx.beginPath(); ctx.moveTo(10, y - 3); ctx.lineTo(32, y - 3); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = "#e6ebff"; ctx.fillText(t, 38, y); });
+    ctx.restore();
+  }
+  ctx.font = "600 11px system-ui"; ctx.textAlign = "left";   // map names: constant size, kept inside their map while it is partly off-screen
+  for (const { m, bx, by } of rects) { if (!visible(bx, by, m)) continue; const w = ctx.measureText(m.name).width + 8, mw = m.w * s;
+    const lx = clamp(bx + 2, 2, Math.max(2, bx + mw - w - 2)), ly = by - 15 < 0 ? Math.max(by + 2, 2) : by - 15;
+    ctx.fillStyle = "rgba(11,16,32,.72)"; ctx.fillRect(lx, ly, w, 14); ctx.fillStyle = "#e6ebff"; ctx.fillText(m.name, lx + 4, ly + 11); }
+  for (const h of (world.heals || [])) {                    // Pokécenters
+    const m = byId[String(h.map).replace("_", ",")]; if (!m) continue; const [px, py] = P(m, h.x + .5, h.y + .5);
+    if (px < -10 || py < -10 || px > r.width + 10 || py > r.height + 10) continue;
+    ctx.fillStyle = "#fff"; ctx.strokeStyle = "#e11d48"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.roundRect(px - 5, py - 5, 10, 10, 2); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = "#e11d48"; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(px - 2.5, py); ctx.lineTo(px + 2.5, py); ctx.moveTo(px, py - 2.5); ctx.lineTo(px, py + 2.5); ctx.stroke();
+    if (k >= 3) { ctx.font = "600 10px system-ui"; ctx.textAlign = "left"; ctx.fillStyle = "rgba(11,16,32,.8)"; const t = h.name.replace(/Pok.center/, "Pokécenter"), w = ctx.measureText(t).width + 6; ctx.fillRect(px + 8, py - 7, w, 13); ctx.fillStyle = "#fff"; ctx.fillText(t, px + 11, py + 3); }
+  }
+  const got = goalState(), slot = {};                       // numbered story goals: gold until reached, then green with a check
+  for (const g of wStars()) {
+    const m = byId[String(g.wmap).replace("_", ",")]; if (!m) continue;
+    const key = g.wmap + g.wx + "," + g.wy, i = (slot[key] = (slot[key] ?? -1) + 1);   // goals sharing a door stack downwards
+    const [px0, py0] = P(m, g.wx + .5, g.wy + .5), px = px0, py = py0 + i * 20, ok = !!got[g.n];
+    ctx.fillStyle = ok ? css("--good") : css("--gold"); ctx.strokeStyle = "#0b1020"; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(px, py, 8, 0, 7); ctx.stroke(); ctx.fill();
+    ctx.fillStyle = "#0b1020"; ctx.font = "700 10px system-ui"; ctx.textAlign = "center"; ctx.fillText(ok ? "✓" : g.n, px, py + 3.5);
+    const t = (ok ? "✓ " : "") + g.n + " " + (g.label || g.name) + " +" + g.reward; ctx.font = "700 11px system-ui"; ctx.textAlign = "left";
+    const w = ctx.measureText(t).width + 8, lx = px + 11 + w > r.width ? px - 11 - w : px + 11;   // flip to the left near the right edge
+    ctx.fillStyle = "rgba(11,16,32,.82)"; ctx.fillRect(lx, py - 8, w, 16);
+    ctx.fillStyle = ok ? "#6ee7a0" : "#ffd166"; ctx.fillText(t, lx + 4, py + 4);
+  }
+  if (live) live.trails.forEach((tr, i) => {                // where each agent is right now
+    const p = tr[tr.length - 1]; if (!p) return; const m = byId[p[0]]; if (!m) return; const [px, py] = P(m, p[1] + .5, p[2] + .5);
+    ctx.fillStyle = `hsl(${(i * 47) % 360},90%,62%)`; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(px, py, 4, 0, 7); ctx.fill(); ctx.stroke();
+  });
+  let furthest = "nowhere yet"; for (const [id, name] of FURTHEST) if (seenMaps.has(id)) furthest = name;
+  renderStory(got, furthest);
+  $("covSub").textContent = live ? `${tiles.toLocaleString()} tiles visited · peak ${mx.toLocaleString()} visits` : "";
+}
+function redrawAll() { renderCharts(); renderPpo(); renderLearning(); renderKpis(); renderWorld(); renderComponents(); }
+
+/* ---------- replay of a saved run ---------- */
+let mode = "live";
+let rep = null;                 // { id, meta, records, metricsAll, frames, idx, playing, timer, cum: Map }
+const CUM_EVERY = 20;
+const mapName = (key) => { const f = (rep && rep.names && rep.names[key]); return f || `Map (${key.replace(",", ", ")})`; };
+
+function heatAt(idx) {          // cumulative per-map visit counts after record idx
+  let start = -1, base = null;
+  for (let k = Math.floor(idx / CUM_EVERY) * CUM_EVERY - 1; k >= 0; k -= CUM_EVERY) if (rep.cum.has(k)) { start = k; base = rep.cum.get(k); break; }
+  const heat = {}; if (base) for (const [m, cells] of Object.entries(base)) heat[m] = new Map(cells);
+  for (let i = start + 1; i <= idx; i++) {
+    for (const [m, cells] of Object.entries(rep.records[i].heat || {})) {
+      const t = heat[m] || (heat[m] = new Map());
+      for (const [x, y, c] of cells) { const k = x + "," + y; t.set(k, (t.get(k) || 0) + c); }
+    }
+    if ((i + 1) % CUM_EVERY === 0 && !rep.cum.has(i)) { const snap = {}; for (const [m, cells] of Object.entries(heat)) snap[m] = new Map(cells); rep.cum.set(i, snap); }
+  }
+  return heat;
+}
+function componentsAt(idx) {    // per-update components from history; older runs have none
+  const run = { pos: {}, neg: {} };
+  for (let i = 0; i <= idx; i++) { const c = rep.records[i].components; if (!c) continue;
+    for (const side of ["pos", "neg"]) for (const [k, v] of Object.entries(c[side] || {})) run[side][k] = (run[side][k] || 0) + v; }
+  const cur = rep.records[idx].components || { pos: {}, neg: {} };
+  return { update: cur, last_update: cur, run };
+}
+function snapshotAt(idx) {      // rebuild a LiveFeed-shaped snapshot from history so every panel renders unchanged
+  const recs = rep.records, r = recs[idx], meta = rep.meta, names = meta.action_names || ["up", "down", "left", "right", "a"];
+  syncProfile(meta.run);
+  const heat = heatAt(idx), total = names.map(() => 0);
+  const episodes = [], events = []; let maps = new Set();
+  for (let i = 0; i <= idx; i++) { recs[i].actions.forEach((c, k) => total[k] += c); if (episodes.length < 400) episodes.push(...recs[i].episodes); events.push(...recs[i].events); }
+  for (const m of Object.keys(heat)) maps.add(m);
+  const heatList = Object.entries(heat).map(([m, cells]) => { let v = 0; const arr = []; for (const [k, c] of cells) { const [x, y] = k.split(",").map(Number); arr.push([x, y, c]); v += c; } return { map: m, name: mapName(m), visits: v, cells: arr }; }).sort((a, b) => b.visits - a.visits).slice(0, 40);
+  const envs = r.envs.map(([m, x, y, ret, st, bt], i) => ({ id: i, map: m, map_name: m ? mapName(m) : "", x, y, state: "", battle: !!bt, ep_return: ret, ep_steps: st, last_action: "", last_reward: 0 }));
+  const mm = r.metrics || {};
+  return { t: r.t, started: meta.started, finished: true, update: r.update, steps: r.steps, samples: mm.samples ? recs.slice(0, idx + 1).reduce((a, q) => a + ((q.metrics || {}).samples || 0), 0) : 0,
+    steps_per_sec: mm.samples && mm.duration_sec ? mm.samples / mm.duration_sec : 0, num_envs: meta.num_envs, run: meta.run || {}, run_id: rep.id, maps_seen: maps.size,
+    records: recordsAt(idx), fun: r.fun || null, species_names: meta.species_names || {}, components: componentsAt(idx), actions: { names, total, recent: r.actions }, envs, trails: envs.map(e => e.map ? [[e.map, e.x, e.y]] : []), heat: heatList, episodes, events };
+}
+function nearestFrame(update) { let lo = 0, hi = rep.frames.length - 1, best = -1; while (lo <= hi) { const mid = (lo + hi) >> 1; if (rep.frames[mid] <= update) { best = mid; lo = mid + 1; } else hi = mid - 1; } return best < 0 ? null : rep.frames[best]; }
+function replayRender() {
+  const idx = rep.idx;
+  metrics = rep.prior.concat(rep.metricsAll.slice(0, idx + 1));   // earlier runs this one was resumed from, then the selected run up to the slider
+  live = snapshotAt(idx);
+  const fu = nearestFrame(live.update);
+  $("repSlider").value = idx;
+  $("repLabel").textContent = `update ${live.update} / ${rep.records[rep.records.length - 1].update}` + (fu != null && fu !== live.update ? ` · frame @${fu}` : "");
+  renderAll();
+}
+function replayStop() { if (rep && rep.timer) { clearInterval(rep.timer); rep.timer = null; } if (rep) rep.playing = false; $("repPlay").textContent = "Play"; }
+function replayPlay() {
+  if (!rep) return; if (rep.playing) return replayStop();
+  if (rep.idx >= rep.records.length - 1) rep.idx = 0;
+  rep.playing = true; $("repPlay").textContent = "Pause";
+  const speed = Number($("repSpeed").value);
+  rep.timer = setInterval(() => { rep.idx = Math.min(rep.records.length - 1, rep.idx + 1); replayRender(); if (rep.idx >= rep.records.length - 1) replayStop(); }, Math.max(40, 1000 / speed));
+}
+const LS_KEY = "tm_dash_run";
+const lsGet = () => { try { return localStorage.getItem(LS_KEY) || ""; } catch (e) { return ""; } };
+const lsSet = (v) => { try { v ? localStorage.setItem(LS_KEY, v) : localStorage.removeItem(LS_KEY); } catch (e) {} };
+let runsInfo = [];
+async function enterReplay(id) {
+  const info = runsInfo.find(r => r.id === id);
+  if (info && info.status === "live") { if (mode === "replay") exitReplay(); lsSet(""); $("runSel").value = id; return; }   // live run: follow, don't freeze
+  lsSet(id);
+  $("subtitle").textContent = "loading saved run…";
+  const r = await fetch(`/api/run/${encodeURIComponent(id)}/history`, { cache: "no-store" }); if (!r.ok) { $("subtitle").textContent = "could not load that run"; $("runSel").value = ""; return; }
+  const h = await r.json(); if (!h.records.length) { $("subtitle").textContent = "that run has no saved updates yet"; $("runSel").value = ""; return; }
+  replayStop(); mode = "replay"; selectedMap = null; $("runSel").value = id;
+  rep = { id, meta: h.meta, records: h.records, frames: h.frames, prior: h.prior || [], metricsAll: h.records.map(x => ({ ...(x.metrics || {}), _wo: (x.components && x.components.neg) ? (x.components.neg.whiteout ?? 0) : null })).filter(m => m.update != null), idx: h.records.length - 1, playing: false, timer: null, cum: new Map(), names: h.meta.map_names || {} };
+  if (rep.prior.length && rep.metricsAll.length) rep.metricsAll[0] = { ...rep.metricsAll[0], resumed: true };
+  $("replayCard").style.display = "block"; $("backLive").style.display = "";
+  $("repSlider").max = rep.records.length - 1;
+  evData = { events: [], comps: [], run_id: null }; whyU = null; hideEvTip();
+  replayRender(); fetchEvents(true);
+}
+function exitReplay() {
+  replayStop(); mode = "live"; rep = null; metrics = []; live = null; lastLiveT = 0; selectedMap = null;
+  evData = { events: [], comps: [], run_id: null }; whyU = null; hideEvTip(); fetchEvents(true);
+  $("replayCard").style.display = "none"; $("backLive").style.display = "none"; lsSet("");
+  const liveR = runsInfo.find(r => r.status === "live"); $("runSel").value = liveR ? liveR.id : "";
+  pollMetrics(); pollLive();
+}
+$("runSel").addEventListener("change", (e) => e.target.value ? enterReplay(e.target.value) : exitReplay());
+$("backLive").onclick = () => { exitReplay(); $("runSel").value = ""; };
+$("repPlay").onclick = replayPlay;
+$("repSlider").addEventListener("input", (e) => { replayStop(); rep.idx = Number(e.target.value); replayRender(); });
+$("repSpeed").addEventListener("change", () => { if (rep && rep.playing) { replayStop(); replayPlay(); } });
+let restored = false;
+async function refreshRuns() {
+  try {
+    const runs = await (await fetch("/api/runs", { cache: "no-store" })).json(), sel = $("runSel"), cur = mode === "replay" && rep ? rep.id : "";
+    runsInfo = runs;
+    const lbl = (r) => r.status === "live" ? `LIVE \u2022 ${r.id} (${r.updates} upd)` : `${r.id} (${r.updates} upd, ${r.status === "finished" ? "finished" : "stopped"})`;
+    sel.innerHTML = `<option value="">Live view</option>` + runs.map(r => `<option value="${r.id}">${lbl(r)}</option>`).join("");
+    sel.value = runs.some(r => r.id === cur) ? cur : "";
+    if (!restored) {
+      restored = true;
+      const saved = lsGet(), sr = runs.find(r => r.id === saved);
+      if (sr && sr.status !== "live" && mode === "live") enterReplay(saved); else if (saved) lsSet("");
+    }
+  } catch (e) {}
+}
+refreshRuns(); setInterval(refreshRuns, 20000);
+
+/* polling */
+async function pollMetrics() {
+  if (mode === "replay") return;
+  try {
+    const since = metrics.length ? metrics[metrics.length - 1].update : -1;
+    const r = await fetch(`/api/metrics?since=${since}`, { cache: "no-store" }); const fresh = await r.json();
+    if (mode === "replay") return;   // a replay was entered while this request was in flight: do not overwrite its metrics
+    if (since >= 0 && fresh.length === 0) return;
+    if (since >= 0 && fresh.length && fresh[0].update <= since) { metrics = []; return pollMetrics(); }   // new run: refetch everything (with its lineage)
+    metrics = metrics.concat(fresh); fetchEvents();
+    if (metrics.length > 6000) metrics = metrics.slice(-6000);
+    // a restarted run begins again at update 0: drop stale history
+    for (let i = 1; i < metrics.length; i++) if (metrics[i].update < metrics[i - 1].update) { metrics = metrics.slice(i); break; }
+    renderAll();
+  } catch (e) { $("subtitle").textContent = "dashboard server unreachable…"; }
+}
+async function pollLive() {
+  if (mode === "replay") return;
+  try {
+    const r = await fetch("/api/live", { cache: "no-store" }); const s = await r.json();
+    if (s && live && (s.started !== live.started || s.run_id !== live.run_id)) { metrics = []; selectedMap = null; pollMetrics(); }   // new run began
+    if (s && s.t !== lastLiveT) { live = s; lastLiveT = s.t; toastNew(s); renderAll(); } else renderHeader();
+  } catch (e) {}
+}
+pollMetrics(); pollLive();
+setInterval(pollMetrics, 2000); setInterval(pollLive, 1000);
+</script>
+</body>
+</html>

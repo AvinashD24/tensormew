@@ -1,0 +1,468 @@
+"""Live training dashboard: game screens, charts, coverage heatmaps and run health.
+
+Usage:
+    python -m tools.dashboard                 # watch logs/ from a running (or finished) training run
+    python -m tools.dashboard --demo          # preview the UI with a synthetic run, no training needed
+    python -m tools.dashboard --port 9000 --live-dir logs/live --metrics logs/training_metrics.jsonl
+
+Serves a single page on http://127.0.0.1:8765 using only the standard library. Training
+writes telemetry through ``src.live_feed.LiveFeed``; this server only reads those files.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import gzip
+import io
+import json
+import math
+import random
+import re
+import sys
+import tempfile
+import threading
+import time
+import webbrowser
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+from urllib.parse import parse_qs, urlparse
+
+try:
+    from tools.dashboard_events import run_events
+except ImportError:  # run as a plain script
+    from dashboard_events import run_events  # type: ignore
+
+STATIC_DIR = Path(__file__).resolve().parent / "dashboard_static"
+METRICS_TAIL_BYTES = 8 * 1024 * 1024
+
+
+def read_metrics(path: Path, since: int = -1) -> list[dict]:
+    """Per-update records from the metrics JSONL (skips per-step records, bounded tail read)."""
+    if not path.is_file():
+        return []
+    size = path.stat().st_size
+    with open(path, "rb") as fh:
+        if size > METRICS_TAIL_BYTES:
+            fh.seek(size - METRICS_TAIL_BYTES)
+            fh.readline()  # drop the partial first line
+        raw = fh.read().decode("utf-8", errors="replace")
+    out: list[dict] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            rec = json.loads(line)
+        except ValueError:
+            continue
+        if "update" in rec and "type" not in rec and rec["update"] > since:
+            out.append(rec)
+    return out
+
+
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9_.-]{1,80}$")
+FRAME_RE = re.compile(r"^u\d{6}\.jpg$")
+
+
+LIVE_FRESH_SEC = 180.0
+
+
+def _last_update_time(d: Path) -> float:
+    """When a run last wrote anything: history.jsonl mtime (falls back to meta.json)."""
+    for name in ("history.jsonl", "meta.json"):
+        try:
+            return (d / name).stat().st_mtime
+        except OSError:
+            continue
+    return 0.0
+
+
+def classify_run(finished: bool, last_update: float, is_live_id: bool, now: float) -> str:
+    """'live' only if it is the live run AND recently written; else 'finished' or 'stopped'."""
+    if finished:
+        return "finished"
+    if is_live_id and now - last_update <= LIVE_FRESH_SEC:
+        return "live"
+    return "stopped"
+
+
+def list_runs(runs_dir: Path, live_run_id: str | None = None, now: float | None = None) -> list[dict]:
+    """Saved training runs: the live one first, then by last update (newest first)."""
+    now = time.time() if now is None else now
+    out: list[dict] = []
+    if not runs_dir.is_dir():
+        return out
+    for d in runs_dir.iterdir():
+        meta_path = d / "meta.json"
+        if not (d.is_dir() and meta_path.is_file()):
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except ValueError:
+            continue
+        last = _last_update_time(d)
+        finished = bool(meta.get("finished", False))
+        out.append(
+            {
+                "id": d.name,
+                "started": meta.get("started"),
+                "finished": finished,
+                "updates": meta.get("updates_logged", 0),
+                "num_envs": meta.get("num_envs"),
+                "last_update": last,
+                "status": classify_run(finished, last, d.name == live_run_id, now),
+            }
+        )
+    return sorted(out, key=lambda r: (r["status"] != "live", -(r["last_update"] or 0)))
+
+
+def read_history(run_dir: Path) -> dict:
+    """Whole saved run: meta, per-update records and which updates have a frame montage."""
+    meta_path = run_dir / "meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8")) if meta_path.is_file() else {}
+    records: list[dict] = []
+    hist = run_dir / "history.jsonl"
+    if hist.is_file():
+        for line in hist.read_text(encoding="utf-8", errors="replace").splitlines():
+            try:
+                records.append(json.loads(line))
+            except ValueError:
+                continue  # a partial last line while the run is still writing
+    frames = sorted(int(p.stem[1:]) for p in (run_dir / "frames").glob("u??????.jpg")) if (run_dir / "frames").is_dir() else []
+    return {"meta": meta, "records": records, "frames": frames}
+
+
+def _run_span(run_dir: Path) -> tuple[float, int, int, list[dict]] | None:
+    """(started, first_update, last_update, metric records) of a saved run, or None if unusable."""
+    try:
+        meta = json.loads((run_dir / "meta.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recs = [r["metrics"] for r in read_history(run_dir)["records"] if isinstance(r.get("metrics"), dict) and r["metrics"].get("update") is not None]
+    if not recs:
+        return None
+    ups = [m["update"] for m in recs]
+    return float(meta.get("started") or 0), min(ups), max(ups), recs
+
+
+def lineage_prior(runs_dir: Path, run_id: str | None) -> list[dict]:
+    """Metric records of the runs this one was resumed from, oldest first.
+
+    A run P precedes R when P started earlier, P.first_update < R.first_update <= P.last_update + 1
+    (R picked up where P left off). The latest-started such P wins and the search recurses. Only
+    P's records with update < R.first_update are kept: later ones were replaced by R."""
+    if not run_id or not RUN_ID_RE.match(run_id) or not runs_dir.is_dir():
+        return []
+    spans = {d.name: s for d in runs_dir.iterdir() if d.is_dir() and (s := _run_span(d)) is not None}
+    if run_id not in spans:
+        return []
+    chain: list[list[dict]] = []
+    cur, seen = run_id, {run_id}
+    while True:
+        started, first, _, _ = spans[cur]
+        cands = [(s[0], name) for name, s in spans.items()
+                 if name not in seen and s[0] < started and s[1] < first <= s[2] + 1]
+        if not cands:
+            break
+        _, parent = max(cands)
+        seen.add(parent)
+        chain.append([m for m in spans[parent][3] if m["update"] < first])
+        cur = parent
+    out: list[dict] = []
+    for part in reversed(chain):
+        if out and part:  # mark where a resumed run took over, so the charts can draw a divider there
+            part = [{**part[0], "resumed": True}] + part[1:]
+        out.extend(part)
+    return out
+
+
+def make_handler(live_dir: Path, metrics_path: Path, runs_dir: Path | None = None):
+    runs_dir = runs_dir or live_dir.parent / "runs"
+
+    class Handler(BaseHTTPRequestHandler):
+        server_version = "TensorMewDashboard/1.0"
+
+        def log_message(self, *args):  # keep the training terminal quiet
+            pass
+
+        def _send(self, code: int, body: bytes, ctype: str, cache: str = "no-store") -> None:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            if ctype.startswith("application/json") and len(body) > 4096 and "gzip" in self.headers.get("Accept-Encoding", ""):
+                body = gzip.compress(body, compresslevel=5)
+                self.send_header("Content-Encoding", "gzip")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", cache)
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self):  # noqa: N802
+            url = urlparse(self.path)
+            route = url.path
+            try:
+                if route in ("/", "/index.html"):
+                    page = (STATIC_DIR / "index.html").read_bytes()
+                    return self._send(200, page, "text/html; charset=utf-8")
+                if route == "/api/metrics":
+                    since = int(parse_qs(url.query).get("since", ["-1"])[0])
+                    recs = read_metrics(metrics_path, since)
+                    if since < 0:  # full fetch: prepend the runs this live run was resumed from
+                        run_id = None
+                        with contextlib.suppress(OSError, ValueError):
+                            run_id = json.loads((live_dir / "state.json").read_text(encoding="utf-8")).get("run_id")
+                        if run_id and recs:
+                            first = min(r["update"] for r in recs)
+                            prior = [r for r in lineage_prior(runs_dir, run_id) if r["update"] < first]
+                            if prior:
+                                recs = prior + [{**recs[0], "resumed": True}] + recs[1:]
+                    return self._send(200, json.dumps(recs).encode(), "application/json")
+                if route == "/api/live":
+                    state = live_dir / "state.json"
+                    if not state.is_file():
+                        return self._send(200, b"null", "application/json")
+                    return self._send(200, state.read_bytes(), "application/json")
+                if route == "/api/events":  # chart event markers of the live run (derived from its history.jsonl)
+                    live_id = None
+                    with contextlib.suppress(OSError, ValueError, AttributeError):
+                        live_id = json.loads((live_dir / "state.json").read_text(encoding="utf-8")).get("run_id")
+                    out = run_events(runs_dir / live_id) if live_id and RUN_ID_RE.match(live_id) else {"events": [], "comps": [], "n": 0}
+                    return self._send(200, json.dumps({**out, "run_id": live_id}, separators=(",", ":")).encode(), "application/json")
+                if route == "/api/world":  # ROM-derived stitched route map (tools/build_route_map.py) for the coverage view
+                    return self._send(200, (STATIC_DIR / "world_layout.json").read_bytes(), "application/json", cache="no-cache")
+                if route == "/api/runs":
+                    live_id = None
+                    with contextlib.suppress(OSError, ValueError, AttributeError):
+                        live_id = json.loads((live_dir / "state.json").read_text(encoding="utf-8")).get("run_id")
+                    return self._send(200, json.dumps(list_runs(runs_dir, live_id)).encode(), "application/json")
+                m = re.fullmatch(r"/sprites/(\d{1,3})\.png", route)
+                if m:  # Gen 2 front sprites (PokeAPI/sprites); id is digits only, so no path traversal
+                    sprite = STATIC_DIR / "sprites" / f"{int(m.group(1))}.png"
+                    if not sprite.is_file():
+                        return self._send(404, b"", "image/png")
+                    return self._send(200, sprite.read_bytes(), "image/png", cache="max-age=86400")
+                parts = route.strip("/").split("/")
+                if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "events" and RUN_ID_RE.match(parts[2]):
+                    run_dir = runs_dir / parts[2]
+                    if not run_dir.is_dir():
+                        return self._send(404, b"no such run", "text/plain")
+                    return self._send(200, json.dumps({**run_events(run_dir), "run_id": parts[2]}, separators=(",", ":")).encode(), "application/json")
+                if len(parts) == 4 and parts[:2] == ["api", "run"] and parts[3] == "history" and RUN_ID_RE.match(parts[2]):
+                    run_dir = runs_dir / parts[2]
+                    if not run_dir.is_dir():
+                        return self._send(404, b"no such run", "text/plain")
+                    hist = read_history(run_dir)
+                    hist["prior"] = lineage_prior(runs_dir, parts[2])
+                    return self._send(200, json.dumps(hist, separators=(",", ":")).encode(), "application/json")
+                if len(parts) == 3 and parts[0] == "runframes" and RUN_ID_RE.match(parts[1]) and FRAME_RE.match(parts[2]):
+                    frame = runs_dir / parts[1] / "frames" / parts[2]
+                    if not frame.is_file():
+                        return self._send(404, b"", "image/jpeg")
+                    return self._send(200, frame.read_bytes(), "image/jpeg", cache="max-age=3600")
+            except (ConnectionError, OSError):
+                return
+            except Exception as exc:  # pragma: no cover
+                return self._send(500, str(exc).encode(), "text/plain")
+            self._send(404, b"not found", "text/plain")
+
+    return Handler
+
+
+# --------------------------------------------------------------------------- demo
+def _demo_frame(env: int, map_idx: int, x: int, y: int, battle: bool, t: float):
+    """Procedural 160x144 'screen' so the demo grid looks alive."""
+    import numpy as np
+
+    palettes = [(120, 180, 90), (90, 140, 200), (200, 170, 100), (150, 110, 170), (110, 170, 150)]
+    base = np.array(palettes[map_idx % len(palettes)], dtype=np.uint8)
+    img = np.empty((144, 160, 3), dtype=np.uint8)
+    img[:] = base
+    gy, gx = np.mgrid[0:144, 0:160]
+    checker = ((gx // 16 + gy // 16) % 2).astype(np.uint8) * 14
+    img = np.clip(img.astype(np.int16) + checker[..., None] - 7, 0, 255).astype(np.uint8)
+    if battle:
+        img[:] = (img * 0.55 + np.array([120, 30, 30]) * 0.45).astype(np.uint8)
+        img[100:144, :, :] = 245
+    px = int((x * 7 + 80 + 12 * math.sin(t + env)) % 144) + 8
+    py = int((y * 5 + 72) % 112) + 8
+    img[py : py + 14, px : px + 10] = (230, 60, 60)
+    img[py : py + 5, px : px + 10] = (250, 250, 250)
+    return img
+
+
+def _demo_components(rng: random.Random, act: int, progress: float) -> dict:
+    """Plausible per-step reward terms: exploration dominates early, route progress later."""
+    c = {"step": -0.01}
+    if act < 4 and rng.random() < 0.18:
+        c["bump"] = -0.05 * rng.randint(1, 3)
+    elif act < 4 and rng.random() < 0.8:
+        c["route"] = 0.08 * rng.randint(1, 2) * (0.3 + progress)
+    if act < 4 and rng.random() < 0.3 * (1 - 0.8 * progress):
+        c["tile"] = 0.5 * (1 - 0.8 * progress)
+    if act < 4 and rng.random() < 0.15 * (1 - 0.8 * progress):
+        c["neighbor"] = 0.2
+    if rng.random() < 0.0015:
+        c["warp"] = 1.0
+    if act == 4 and rng.random() < 0.1:
+        c["interaction"] = 0.5
+    if rng.random() < 0.0008 + 0.0008 * progress:
+        c["event"] = rng.choice((10.0, 15.0, 20.0))
+    if rng.random() < 0.002:
+        c["damage"] = -2.0 * rng.random()
+    if rng.random() < 0.0015:
+        c["battle"] = 3.0
+    if rng.random() < 0.0004:
+        c["heal"] = 15.0
+    return c
+
+
+def run_demo(live_dir: Path, metrics_path: Path, stop: threading.Event, runs_dir: Path | None = None) -> None:
+    """Drive the real LiveFeed + TerminalMonitor with a synthetic training run."""
+    import numpy as np
+
+    from src.live_feed import LiveFeed
+    from src.terminal_monitor import TerminalMonitor
+
+    rng = random.Random(7)
+    n_envs = 12
+    actions = ("up", "down", "left", "right", "a")
+    feed = LiveFeed(
+        live_dir,
+        num_envs=n_envs,
+        action_names=actions,
+        history_dir=(runs_dir / "demo-run") if runs_dir else None,
+        frame_every=3,
+        run_info={
+            "total_updates": 400,
+            "rollout_steps": 128,
+            "num_envs": n_envs,
+            "lr": 3e-4,
+            "entropy_coef": 0.02,
+            "recurrent": True,
+            "resume": False,
+            "curriculum_states": ["route29_entry", "new_bark_outside", "post_rival_cherrygrove"],
+            "device": "demo",
+        },
+    )
+    monitor = TerminalMonitor(total_updates=400, jsonl_path=metrics_path)
+    maps = [(24, 4), (24, 3), (26, 1), (26, 3), (24, 5)]
+    pos = [[rng.randint(3, 20), rng.randint(3, 16)] for _ in range(n_envs)]
+    midx = [rng.randint(0, 2) for _ in range(n_envs)]
+    ep_steps = [0] * n_envs
+    update = 0
+    steps_in_update = 0
+    t0 = time.time()
+    seen = 1
+    while not stop.is_set():
+        acts = np.array([rng.choices(range(5), weights=[3, 3, 3, 3, 1])[0] for _ in range(n_envs)])
+        prog = 1 - math.exp(-update / 90)
+        comps = [_demo_components(rng, int(acts[i]), prog) for i in range(n_envs)]
+        rews = np.array([sum(c.values()) for c in comps], dtype=np.float32)
+        dones = np.zeros(n_envs, dtype=bool)
+        infos = []
+        screens = []
+        for i in range(n_envs):
+            dx, dy = ((0, -1), (0, 1), (-1, 0), (1, 0), (0, 0))[int(acts[i])]
+            pos[i][0] = max(0, min(30, pos[i][0] + dx))
+            pos[i][1] = max(0, min(24, pos[i][1] + dy))
+            ep_steps[i] += 1
+            if rng.random() < 0.004 and midx[i] < len(maps) - 1:
+                midx[i] += 1
+                pos[i] = [rng.randint(3, 20), rng.randint(3, 16)]
+                rews[i] += 6.0
+                comps[i]["map"] = comps[i].get("map", 0.0) + 6.0
+            if ep_steps[i] >= 300:
+                dones[i] = True
+            battle = rng.random() < 0.02
+            infos.append(
+                {
+                    "map": list(maps[midx[i]]),
+                    "x": pos[i][0],
+                    "y": pos[i][1],
+                    "state": "route29_entry",
+                    "battle": battle,
+                    "badges": 0,
+                    "ended_maps": midx[i] + 1,
+                    "ended_state": "route29_entry",
+                    "reward_components": comps[i],
+                }
+            )
+            screens.append(_demo_frame(i, midx[i], pos[i][0], pos[i][1], battle, time.time() - t0))
+            if dones[i]:
+                ep_steps[i] = 0
+                midx[i] = rng.randint(0, 1)
+        feed.observe(infos=infos, actions=acts, rewards=rews, dones=dones, screens=np.stack(screens))
+        steps_in_update += 1
+        if steps_in_update >= 40:
+            steps_in_update = 0
+            x = update
+            progress = 1 - math.exp(-x / 90)
+            reward = -8 + 70 * progress + rng.gauss(0, 6) + (35 if x in (120, 121, 122) else 0)
+            collapse = 170 <= x <= 185
+            entropy = max(0.18, 1.55 * math.exp(-x / 260) + rng.gauss(0, 0.04) - (0.9 if collapse else 0))
+            kl = abs(rng.gauss(0.012, 0.008)) + (0.09 if x in (60, 61) else 0)
+            seen = max(seen, 1 + int(progress * 4.2))
+            fields = dict(
+                update=update,
+                mean_reward=reward,
+                entropy=entropy,
+                value_loss=max(0.2, 40 * math.exp(-x / 70) + rng.gauss(0, 2)),
+                policy_loss=rng.gauss(0, 0.02),
+                approx_kl=kl,
+                clip_frac=min(0.5, kl * 4 + rng.random() * 0.03),
+                lr=3e-4,
+                maps_discovered=seen,
+                badges=0,
+                duration_sec=2.0 + rng.random(),
+                samples=40 * n_envs,
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                monitor.log_update(**fields)
+            fields["rolling_reward"] = round(float(monitor.last_rolling_avg or reward), 3)
+            fields["status"] = monitor.last_status
+            feed.on_update(update, 40 * n_envs, metrics=fields)
+            update += 1
+        time.sleep(0.04)
+    feed.finish()
+
+
+# ------------------------------------------------------------------------- main
+def main(argv=None) -> int:
+    parser = argparse.ArgumentParser(description="Live training dashboard")
+    parser.add_argument("--host", default="127.0.0.1")
+    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--live-dir", default="logs/live")
+    parser.add_argument("--metrics", default="logs/training_metrics.jsonl")
+    parser.add_argument("--runs-dir", default="logs/runs", help="saved run histories for replay")
+    parser.add_argument("--demo", action="store_true", help="drive the UI with a synthetic training run")
+    parser.add_argument("--no-open", action="store_true", help="do not open a browser tab")
+    args = parser.parse_args(argv)
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+
+    stop = threading.Event()
+    live_dir, metrics_path, runs_dir = Path(args.live_dir), Path(args.metrics), Path(args.runs_dir)
+    if args.demo:
+        tmp = Path(tempfile.mkdtemp(prefix="tensormew_demo_"))
+        live_dir, metrics_path, runs_dir = tmp / "live", tmp / "metrics.jsonl", tmp / "runs"
+        threading.Thread(target=run_demo, args=(live_dir, metrics_path, stop, runs_dir), daemon=True).start()
+        print(f"Demo mode: synthetic run in {tmp}")
+
+    server = ThreadingHTTPServer((args.host, args.port), make_handler(live_dir, metrics_path, runs_dir))
+    url = f"http://{args.host}:{args.port}/"
+    print(f"Dashboard: {url}   (Ctrl+C to stop)")
+    if not args.no_open:
+        threading.Timer(0.6, lambda: webbrowser.open(url)).start()
+    try:
+        server.serve_forever()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        stop.set()
+        server.server_close()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
