@@ -1,0 +1,202 @@
+export const CHECKPOINTS_STREAM = [
+  {
+    checkpointId: "new_bark",
+    name: "New Bark Town",
+    step: 18,
+    mapName: "New Bark Town (24, 4)",
+    coords: [14, 9],
+    actor: "PPO Spatial Vision Policy",
+    actorType: "rl",
+    trigger: "Overworld Frontier Step",
+    tool: "step_east",
+    reason: "Stepping onto unvisited tile (15, 9). Frontier exploration potential: +1.0.",
+    badges: 0,
+    party: [
+      { name: "Cyndaquil", level: 5, hp: 19, maxHp: 19, moves: ["Tackle", "Leer"] }
+    ],
+    lastReward: 1.0,
+    cumulativeReturn: 14.2,
+    entropy: 1.48,
+    screenImage: "/screenshots/01_start.png",
+    dpad: "right",
+    buttons: null
+  },
+  {
+    checkpointId: "route_29_catch",
+    name: "Route 29 Wild Encounter",
+    step: 54,
+    mapName: "Route 29 Tall Grass (24, 3)",
+    coords: [8, 5],
+    actor: "Tactical Battle Engine",
+    actorType: "tactical",
+    trigger: "Wild Battle Ambush (Pidgey Lv 3)",
+    tool: "choose_move(Tackle)",
+    reason: "Wild Pidgey detected. Lead has type advantage. Queued move slot 1 (Tackle, 35 PP).",
+    badges: 0,
+    party: [
+      { name: "Cyndaquil", level: 5, hp: 18, maxHp: 19, moves: ["Tackle", "Leer"] }
+    ],
+    lastReward: 0.8,
+    cumulativeReturn: 38.5,
+    entropy: 1.39,
+    screenImage: "/screenshots/03_first_catch.png",
+    dpad: null,
+    buttons: "A"
+  },
+  {
+    checkpointId: "cherrygrove",
+    name: "Cherrygrove City Arrival",
+    step: 620,
+    mapName: "Cherrygrove City (26, 1)",
+    coords: [29, 4],
+    actor: "PPO Spatial Vision Policy",
+    actorType: "rl",
+    trigger: "New Map Warp Entry",
+    tool: "step_west",
+    reason: "Reached Cherrygrove City. Triggered +10.0 new map discovery bonus.",
+    badges: 0,
+    party: [
+      { name: "Cyndaquil", level: 5, hp: 12, maxHp: 19, moves: ["Tackle", "Leer"] }
+    ],
+    lastReward: 10.0,
+    cumulativeReturn: 112.4,
+    entropy: 1.42,
+    screenImage: "/screenshots/04_cherrygrove.png",
+    dpad: "left",
+    buttons: null
+  },
+  {
+    checkpointId: "mr_pokemon",
+    name: "Mr. Pokémon / Mystery Egg",
+    step: 796,
+    mapName: "Route 30 House Interior",
+    coords: [3, 2],
+    actor: "Strategic Supervisor",
+    actorType: "supervisor",
+    trigger: "Script Key Item Dialog",
+    tool: "mash_text",
+    reason: "Key dialog active: Acquired Mystery Egg and Pokédex. Bit flag EVENT_GOT_MYSTERY_EGG set.",
+    badges: 0,
+    party: [
+      { name: "Cyndaquil", level: 6, hp: 21, maxHp: 21, moves: ["Tackle", "Leer"] }
+    ],
+    lastReward: 25.0,
+    cumulativeReturn: 188.0,
+    entropy: 1.25,
+    screenImage: "/screenshots/08_got_egg.png",
+    dpad: null,
+    buttons: "A"
+  },
+  {
+    checkpointId: "rival_fight",
+    name: "Cherrygrove Rival Battle",
+    step: 929,
+    mapName: "Route 29 West Border",
+    coords: [33, 7],
+    actor: "Tactical Battle Engine",
+    actorType: "tactical",
+    trigger: "Trainer Battle: Rival (Totodile Lv 5)",
+    tool: "choose_move(Leer -> Tackle)",
+    reason: "Rival Totodile has Water gun threat. Strategy: 1x Leer defense reduction, then chain Tackle.",
+    badges: 0,
+    party: [
+      { name: "Cyndaquil", level: 6, hp: 21, maxHp: 21, moves: ["Tackle", "Leer"] }
+    ],
+    lastReward: 15.0,
+    cumulativeReturn: 245.8,
+    entropy: 1.34,
+    screenImage: "/screenshots/08_rival_fight.png",
+    dpad: null,
+    buttons: "A"
+  },
+  {
+    checkpointId: "farming_xp",
+    name: "Route 30 Curriculum Grinding",
+    step: 2011,
+    lead: "Cyndaquil Lv.12",
+    mapName: "Route 30 Tall Grass",
+    coords: [11, 26],
+    actor: "Heuristic Gym Prep",
+    actorType: "macro",
+    trigger: "Level Grinding Target: Ember (Lv 12)",
+    tool: "patrol_grass",
+    reason: "Farmed 480 XP. Cyndaquil learned Ember! STAB Fire move active. Prepping for Violet City.",
+    badges: 0,
+    party: [
+      { name: "Cyndaquil", level: 12, hp: 35, maxHp: 35, moves: ["Ember", "Tackle", "Leer", "SmokeScreen"] }
+    ],
+    lastReward: 5.0,
+    cumulativeReturn: 412.3,
+    entropy: 1.55,
+    screenImage: "/screenshots/13_lead_lv12.png",
+    dpad: "up",
+    buttons: null
+  },
+  {
+    checkpointId: "violet_city",
+    name: "Violet City Infiltration",
+    step: 2820,
+    mapName: "Violet City (3, 1)",
+    coords: [21, 27],
+    actor: "PPO Spatial Vision Policy",
+    actorType: "rl",
+    trigger: "City Gate Warp Exit",
+    tool: "step_north",
+    reason: "Arrived at Violet City. Team ready: Quilava Lv 15 evolved, traded Rocky the Onix (Lv 10).",
+    badges: 0,
+    party: [
+      { name: "Quilava", level: 15, hp: 44, maxHp: 44, moves: ["Ember", "Tackle", "SmokeScreen", "Leer"] },
+      { name: "Onix", level: 10, hp: 32, maxHp: 32, moves: ["Rock Throw", "Screech", "Tackle"] }
+    ],
+    lastReward: 10.0,
+    cumulativeReturn: 580.6,
+    entropy: 1.44,
+    screenImage: "/screenshots/16_violet_city.png",
+    dpad: "up",
+    buttons: null
+  },
+  {
+    checkpointId: "falkner_boss",
+    name: "Falkner Gym Leader Boss Fight",
+    step: 2875,
+    mapName: "Violet Gym Arena",
+    coords: [4, 2],
+    actor: "Tactical Battle Engine",
+    actorType: "tactical",
+    trigger: "Gym Leader Boss Battle: Falkner (Pidgeotto Lv 9)",
+    tool: "choose_move(Ember)",
+    reason: "Target Pidgeotto in Mud-Slap phase. Quilava has 44 HP. Queued Ember STAB. High KO probability.",
+    badges: 0,
+    party: [
+      { name: "Quilava", level: 15, hp: 38, maxHp: 44, moves: ["Ember", "Tackle", "SmokeScreen", "Leer"] }
+    ],
+    lastReward: 50.0,
+    cumulativeReturn: 742.0,
+    entropy: 1.28,
+    screenImage: "/screenshots/18_falkner_fight.png",
+    dpad: null,
+    buttons: "A"
+  },
+  {
+    checkpointId: "zephyr_victory",
+    name: "Zephyr Badge Conquered!",
+    step: 3152,
+    mapName: "Violet Gym Arena",
+    coords: [4, 3],
+    actor: "Strategic Supervisor",
+    actorType: "supervisor",
+    trigger: "wJohtoBadges Byte Update: 0x01",
+    tool: "register_badge",
+    reason: "VICTORY! Falkner defeated. Zephyr Badge earned. TM31 Mud-Slap received. First Johto badge locked.",
+    badges: 1,
+    party: [
+      { name: "Quilava", level: 16, hp: 46, maxHp: 46, moves: ["Ember", "Tackle", "SmokeScreen", "Leer"] }
+    ],
+    lastReward: 100.0,
+    cumulativeReturn: 984.5,
+    entropy: 1.58,
+    screenImage: "/screenshots/21_badge.png",
+    dpad: null,
+    buttons: "A"
+  }
+];
