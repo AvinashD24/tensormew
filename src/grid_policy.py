@@ -65,6 +65,19 @@ if TORCH_AVAILABLE:
         """Grid + RAM-vector policy; see the module docstring. Defaults are the small configuration."""
 
         VISION_OUT_DIM = GridTrunk.OUT_DIM
+        VISUAL_KIND = "grid"
+        VISUAL_SHAPE = (GRID_CHANNELS, GRID_SIZE, GRID_SIZE)
+        # float32, not uint8: ppo_update rescales every uint8 screen by 1/255, which would destroy the class ids.
+        VISUAL_STORE_DTYPE = torch.float32
+
+        @staticmethod
+        def visual_batch(arr: np.ndarray, device) -> torch.Tensor:
+            """Numpy batch ``(n, 7, 15, 15)`` uint8 -> float class ids on ``device`` (no rescaling)."""
+            return torch.from_numpy(np.ascontiguousarray(arr)).to(device).float()
+
+        @staticmethod
+        def visual_store(arr: np.ndarray) -> torch.Tensor:
+            return torch.from_numpy(np.ascontiguousarray(arr)).float()
 
         def __init__(self, obs_dim: int = 80, num_actions: int = 6, ram_hidden_dim: int = 128, fusion_dim: int = 256,
                      use_gru: bool = False, gru_hidden_dim: int = 256, aux_heads: bool = False):
@@ -99,6 +112,10 @@ if TORCH_AVAILABLE:
                 raise CheckpointIncompatibleError(
                     f"{p}: grid schema {schema!r} != {GRID_SCHEMA!r}; not a SpatialGridPolicy checkpoint for this grid layout.")
             return super().load(p, device=device, **kwargs)
+
+    def policy_class(visual: str):
+        """The policy class for a ``TrainConfig.visual`` value."""
+        return SpatialGridPolicy if visual == "grid" else SpatialVisionPolicy
 
 else:
 

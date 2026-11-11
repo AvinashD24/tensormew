@@ -68,6 +68,7 @@ from src.periodic_eval import EVAL_STATE, aggregate, episode_record, is_eval_upd
 from src.battle_mask import N_ACTIONS as MASK_N_ACTIONS
 from src.battle_mask import all_true as mask_all_true, battle_action_mask, pack_mask, unpack_mask
 from src.deep_policy import BATTLE_FLAG_INDEX, CheckpointIncompatibleError, SpatialVisionPolicy
+from src.grid_policy import policy_class
 from src.dialogue_loop import DialogueLoopTracker
 from src.stagnation import StagnationTracker
 from src.dwell import DwellTracker
@@ -89,6 +90,7 @@ from src.ppo_update import (  # noqa: F401
     EntropySchedule, PPOHParams, RolloutBatch, RunningReturnScaler, compute_gae, ppo_update,
 )
 from src.ram_parser import RamParser, dialogue_open
+from src.spatial_grid import GridExtractor
 from src.rl_env import (
     ACTIONS,
     BUTTON_ACTIONS,
@@ -545,6 +547,9 @@ class EnvWorker:
         self.reader = RamParser(self.emu)
         self.stepper = TileStepper(self.emu, self.reader)
         self.macros = Macros(self.emu, self.reader)
+        # Visual input: "pixels" (the screen) or "grid" (src.spatial_grid, read from WRAM / ROM; no rendering needed).
+        self.visual = str(cfg.get("visual", "pixels"))
+        self.grid = GridExtractor(self.emu) if self.visual == "grid" else None
 
         names = list(start_states)
         stages = self._stage_of_states(sorted(set(names))) if cfg.get("stage_balanced") else None
@@ -687,7 +692,11 @@ class EnvWorker:
         return data
 
     # -- observation
-    def _screen(self) -> np.ndarray:
+    def _screen(self, st=None) -> np.ndarray:
+        """The policy's visual observation of the current frame: the RGB screen, or the semantic grid (``st`` = parsed state)."""
+        if self.grid is not None:
+            st = st if st is not None else self.reader.parse(self.emu.frame)
+            return self.grid.extract(visited=self.visited, menu_open=bool(st.battle_mode) or dialogue_open(st))
         return self.emu._pb.screen.ndarray[:, :, :3].copy()
 
     def get_obs(self):
@@ -700,11 +709,11 @@ class EnvWorker:
         ram_vec = observe(st, self.visited, deep=True, seen_maps=self.seen_maps, time_frac=self._time_frac())
         if self.action_mask:
             self.last_mask = battle_action_mask(self.emu, st)   # only reads the tilemap while battle_mode != 0
-        return self._screen(), ram_vec, st
+        return self._screen(st), ram_vec, st
 
     def _peek_obs(self, st):
         """Observation of ``st`` without touching the visit bookkeeping (the final obs of a truncated episode)."""
-        return self._screen(), observe(st, self.visited, deep=True, seen_maps=self.seen_maps, time_frac=self._time_frac())
+        return self._screen(st), observe(st, self.visited, deep=True, seen_maps=self.seen_maps, time_frac=self._time_frac())
 
     def _time_frac(self) -> float | None:
         """Elapsed fraction of the running episode's step limit (the long_v9 observation scalar), or None when the feature is off."""
@@ -1371,7 +1380,7 @@ def policy_values(policy, screens_u8: np.ndarray, rams: np.ndarray, hx, device) 
     ``hx`` is the matching ``(1, n, H)`` hidden state (or None).  Used for the last observation of a rollout and for
     the final observation of time-limit-truncated episodes.  Returns a CPU tensor ``(n,)``.
     """
-    s = torch.from_numpy(np.ascontiguousarray(screens_u8)).to(device).permute(0, 3, 1, 2).float().div_(255.0)
+    s = policy.visual_batch(screens_u8, device)
     r = torch.from_numpy(np.asarray(rams)).float().to(device)
     if policy.use_gru:
         _, val, _ = policy.forward_recurrent(s, r, hx)
@@ -1398,7 +1407,7 @@ def warmup_scaler(policy, vec_env, scaler, screens, rams, hx, rollouts: int, rol
     policy.eval()
     total, steps = 0.0, int(rollouts) * int(rollout_steps)
     for _ in range(steps):
-        s = torch.from_numpy(screens).to(device).permute(0, 3, 1, 2).contiguous().float().div_(255.0)
+        s = policy.visual_batch(screens, device)
         r = torch.from_numpy(rams).float().to(device)
         mkw = {"action_mask": torch.from_numpy(vec_env.last_masks).to(device)} if getattr(vec_env, "use_mask", False) else {}
         if policy.use_gru:
@@ -1470,7 +1479,7 @@ class PeriodicEvaluator:
                 hx = torch.zeros(1, 1, policy.gru_hidden_dim, device=self.device) if policy.use_gru else None
                 ret, ms_steps, n_steps = 0.0, {}, 0
                 while True:
-                    s = torch.from_numpy(np.ascontiguousarray(screen)).to(self.device).permute(2, 0, 1).unsqueeze(0).float().div_(255.0)
+                    s = policy.visual_batch(np.asarray(screen)[None], self.device)
                     r = torch.from_numpy(np.asarray(ram)).float().to(self.device).unsqueeze(0)
                     mkw = {"action_mask": torch.from_numpy(w.last_mask.copy()).to(self.device).unsqueeze(0)} if w.action_mask else {}
                     if policy.use_gru:
@@ -1676,6 +1685,7 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "milestone_scale": cfg.milestone_reward_scale,
         "milestone_speed_bonus": cfg.milestone_speed_bonus,
         "time_feature": cfg.time_feature,
+        "visual": cfg.visual,
     }
 
 
@@ -1704,18 +1714,19 @@ def train(
         check_resume(save_path)  # raises before any worker is spawned
     torch.manual_seed(cfg.seed)
     np.random.seed(cfg.seed)
-    print(f"Initializing SpatialVisionPolicy training on {device} (recurrent={use_gru}, config={cfg.name})...")
+    Policy = policy_class(cfg.visual)
+    print(f"Initializing {Policy.__name__} training on {device} (recurrent={use_gru}, config={cfg.name}, visual={cfg.visual})...")
 
     use_aux = bool(cfg.aux_loss and use_gru)
-    policy = SpatialVisionPolicy(obs_dim=obs_dim, num_actions=N_ACTIONS, use_gru=use_gru, gru_hidden_dim=512,
-                                 aux_heads=use_aux)
+    policy_kwargs = {"gru_hidden_dim": 512} if cfg.visual == "pixels" else {}   # the grid policy has its own small defaults
+    policy = Policy(obs_dim=obs_dim, num_actions=N_ACTIONS, use_gru=use_gru, aux_heads=use_aux, **policy_kwargs)
     resumed = False
     sidecar = None
     if resume:
         try:
-            policy = SpatialVisionPolicy.load(save_path, device=device, override_use_gru=use_gru,
-                                              override_obs_dim=obs_dim, check_schema=True,
-                                              override_aux_heads=use_aux)
+            policy = Policy.load(save_path, device=device, override_use_gru=use_gru,
+                                 override_obs_dim=obs_dim, check_schema=True,
+                                 override_aux_heads=use_aux)
         except CheckpointIncompatibleError as e:
             raise RuntimeError(f"--resume: {e}") from e
         except Exception as e:
@@ -1743,7 +1754,8 @@ def train(
     if not policy.use_gru and batch_size:  # feed-forward minibatches are samples, sized by --batch-size
         hp.num_minibatches = max(1, math.ceil(num_envs * rollout_steps / int(batch_size)))
     explicit_mb = minibatches_typed or bool(batch_size and not policy.use_gru)
-    vram = torch.cuda.get_device_properties(0).total_memory if device.type == "cuda" else None
+    # the VRAM cap models ResNet-18 activations (13 MiB / frame); the grid trunk is ~1000x smaller, so no cap there
+    vram = torch.cuda.get_device_properties(0).total_memory if (device.type == "cuda" and cfg.visual == "pixels") else None
     units, per_unit = (num_envs, rollout_steps) if policy.use_gru else (num_envs * rollout_steps, 1)
     hp.num_minibatches, mb_msg = plan_minibatches(units, per_unit, hp.num_minibatches, vram, explicit_mb)
     print(f"[memory] {mb_msg}", flush=True)
@@ -1905,8 +1917,9 @@ def train(
             print(f"Run history (replay later) -> {history_dir}", flush=True)
 
     B, T = num_envs, rollout_steps
-    # Rollout buffers live on the CPU; screens stay uint8 (4x smaller than float32) and ppo_update moves minibatches.
-    buf_screens = torch.empty((B, T, *SCREEN_SHAPE), dtype=torch.uint8)
+    # Rollout buffers live on the CPU; pixel screens stay uint8 (4x smaller than float32) and ppo_update moves minibatches.
+    # The grid policy stores its (tiny) class-id planes as float32 so ppo_update does not rescale them as pixels.
+    buf_screens = torch.empty((B, T, *policy.VISUAL_SHAPE), dtype=policy.VISUAL_STORE_DTYPE)
     buf_rams = torch.empty((B, T, obs_dim), dtype=torch.float32)
     buf_actions = torch.empty((B, T), dtype=torch.long)
     buf_logps = torch.empty((B, T), dtype=torch.float32)
@@ -1974,9 +1987,7 @@ def train(
             _pc = time.perf_counter
             for step in range(T):
                 _t = _pc()
-                screens_t = (
-                    torch.from_numpy(screens_cur).to(device).permute(0, 3, 1, 2).contiguous().float().div_(255.0)
-                )
+                screens_t = policy.visual_batch(screens_cur, device)
                 rams_t = torch.from_numpy(rams_cur).float().to(device)
 
                 # Valid-action mask of THIS observation (set by the previous step()/reset()); copied because step() overwrites it.
@@ -2001,7 +2012,9 @@ def train(
                 _t3 = _pc()
                 phase["env"] += _t3 - _t2
                 if feed is not None:
-                    feed.observe(infos=infos, actions=actions_np, rewards=rews, dones=dones, screens=screens_next)
+                    # the dashboard's frame montage needs pixels; the grid policy's observation is not an image
+                    feed.observe(infos=infos, actions=actions_np, rewards=rews, dones=dones,
+                                 screens=screens_next if policy.VISUAL_KIND == "pixels" else None)
                 _t4 = _pc()
                 phase["feed"] += _t4 - _t3
 
@@ -2049,7 +2062,7 @@ def train(
                         next_hx[:, done_mask, :] = 0.0
                     hx = next_hx
 
-                buf_screens[:, step] = torch.from_numpy(screens_cur).permute(0, 3, 1, 2)
+                buf_screens[:, step] = policy.visual_store(screens_cur)
                 buf_rams[:, step] = rams_t.cpu()
                 buf_actions[:, step] = actions_t.cpu()
                 buf_logps[:, step] = logp_t.cpu()
@@ -2279,6 +2292,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--recurrent", action="store_const", const=True, default=None, dest="recurrent",
                         help="recurrent GRU temporal memory")
     parser.add_argument("--no-recurrent", action="store_const", const=False, dest="recurrent")
+    parser.add_argument("--visual", choices=("pixels", "grid"), default=None,
+                        help="policy input: the 144x160 screen through ResNet-18 (pixels) or the 15x15x7 semantic grid read from RAM (grid)")
     parser.add_argument("--save", default=None, help="checkpoint path (default: config save_path)")
     parser.add_argument("--resume", action="store_true", default=False, help="warm-start from --save if it exists (and restore its optimizer sidecar)")
     parser.add_argument("--push-weights", action="store_true", default=False, help="commit and push updated weights to the current branch on completion (off by default)")
@@ -2302,6 +2317,7 @@ def build_config(args: argparse.Namespace) -> TrainConfig:
         "envs": args.envs,
         "lr": args.lr,
         "recurrent": args.recurrent,
+        "visual": args.visual,
         "save_path": args.save,
         "run_id": args.run_id,
         "sticky_prob": args.sticky_prob,

@@ -117,6 +117,21 @@ if TORCH_AVAILABLE:
         """
 
         VISION_OUT_DIM = 512
+        # How the trainer feeds this policy's visual input (the grid policy overrides all four): the per-sample shape in the
+        # rollout buffer, its dtype, and the numpy-batch -> device-tensor / buffer-tensor conversions.
+        VISUAL_KIND = "pixels"
+        VISUAL_SHAPE = (3, 144, 160)
+        VISUAL_STORE_DTYPE = torch.uint8
+
+        @staticmethod
+        def visual_batch(arr: np.ndarray, device) -> "torch.Tensor":
+            """Numpy batch ``(n, 144, 160, 3)`` uint8 -> ``(n, 3, 144, 160)`` float in [0, 1] on ``device``."""
+            return torch.from_numpy(np.ascontiguousarray(arr)).to(device).permute(0, 3, 1, 2).contiguous().float().div_(255.0)
+
+        @staticmethod
+        def visual_store(arr: np.ndarray) -> "torch.Tensor":
+            """Numpy batch -> the rollout-buffer layout ``(n, 3, 144, 160)`` uint8 (the PPO update rescales it)."""
+            return torch.from_numpy(np.ascontiguousarray(arr)).permute(0, 3, 1, 2)
 
         def _build_vision_trunk(self) -> "nn.Module":
             return ResNet18VisionTrunk(in_channels=3)

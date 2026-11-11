@@ -287,11 +287,16 @@ class TrainConfig:
     # at the end of the deep vector (80 -> 81 inputs with the egg route).  Not a direction or distance hint.  Old checkpoints no
     # longer load.
     time_feature: bool = False
+    # Visual input of the policy: "pixels" = the 144x160 screen through the ResNet-18 trunk (SpatialVisionPolicy);
+    # "grid" = the 15x15x7 semantic grid read from WRAM / ROM through a small conv trunk (src.spatial_grid, src.grid_policy).
+    visual: str = "pixels"
     # output
     save_path: str = "logs/deep_policy.pt"
 
     def validate(self) -> "TrainConfig":
         errs: list[str] = []
+        if self.visual not in ("pixels", "grid"):
+            errs.append(f"visual must be 'pixels' or 'grid' (got {self.visual!r})")
         for key in ("envs", "rollout_steps", "updates", "max_steps"):
             if getattr(self, key) < 1:
                 errs.append(f"{key} must be >= 1 (got {getattr(self, key)})")
