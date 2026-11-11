@@ -440,6 +440,34 @@ if TORCH_AVAILABLE:
                 return log_probs, entropy, values, self.aux_head(out).reshape(B, T, -1)
             return log_probs, entropy, values
 
+        def sequence_outputs(self, screens, ram_obs, hx=None, dones=None, action_mask=None):
+            """Full action logits ``(B, T, A)`` (battle bias and ``action_mask`` applied) and values ``(B, T)`` over a trajectory
+            chunk. Same GRU / ``dones`` handling as ``evaluate_actions_sequence``; used by distillation, which needs the whole
+            distribution rather than one action's log-prob."""
+            B, T = screens.shape[:2]
+            ram_flat = ram_obs.reshape(B * T, -1)
+            vis_feat = self.vision_trunk(screens.reshape(B * T, *screens.shape[2:]))
+            fused = self.fusion(torch.cat([vis_feat, self.ram_trunk(ram_flat)], dim=-1)).reshape(B, T, -1)
+            if self.use_gru and self.gru is not None:
+                if dones is None:
+                    out, _ = self.gru(fused, hx)
+                else:
+                    dones = dones.to(fused.device).bool()
+                    cuts = [t + 1 for t in range(T - 1) if bool(dones[:, t].any())]
+                    outs, h, start = [], hx, 0
+                    for end in cuts + [T]:
+                        chunk, h = self.gru(fused[:, start:end], h)
+                        outs.append(chunk)
+                        if end < T:
+                            h = h * (~dones[:, end - 1]).to(h.dtype).view(1, B, 1)
+                        start = end
+                    out = torch.cat(outs, dim=1)
+                out = out.reshape(B * T, -1)
+            else:
+                out = fused.reshape(B * T, -1)
+            logits = self._bias_logits(self.actor(out), ram_flat).reshape(B, T, self.num_actions)
+            return self._mask_logits(logits, action_mask), self.critic(out).squeeze(-1).reshape(B, T)
+
         def save(self, path: str | Path) -> None:
             Path(path).parent.mkdir(parents=True, exist_ok=True)
             blob = {
