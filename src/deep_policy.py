@@ -110,7 +110,25 @@ if TORCH_AVAILABLE:
             return torch.flatten(x, 1)  # (B, 512)
 
     class SpatialVisionPolicy(nn.Module):
-        """Combined ResNet-18 Vision + RAM State policy (~11.64M parameters)."""
+        """Combined ResNet-18 Vision + RAM State policy (~11.64M parameters).
+
+        The visual input is pluggable: subclasses (``src.grid_policy.SpatialGridPolicy``) override ``VISION_OUT_DIM``,
+        ``_build_vision_trunk`` and ``_screen_tensor`` and inherit every rollout / PPO / checkpoint path unchanged.
+        """
+
+        VISION_OUT_DIM = 512
+
+        def _build_vision_trunk(self) -> "nn.Module":
+            return ResNet18VisionTrunk(in_channels=3)
+
+        @staticmethod
+        def _screen_tensor(screen_np: np.ndarray, device: str = "cpu") -> "torch.Tensor":
+            """Numpy screen (144, 160, 3|1) -> (1, 3, H, W) float in [0, 1]."""
+            if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
+                rgb = screen_np[:, :, :3]
+            else:
+                rgb = np.repeat(screen_np[:, :, None], 3, axis=2)
+            return torch.from_numpy(rgb.transpose(2, 0, 1)).unsqueeze(0).float().to(device).div_(255.0)
 
         def __init__(
             self,
@@ -134,7 +152,8 @@ if TORCH_AVAILABLE:
             self.battle_a_bias = 0.0
 
             # 1. Visual Backbone (~11.17M params)
-            self.vision_trunk = ResNet18VisionTrunk(in_channels=3)
+            self.vision_out_dim = self.VISION_OUT_DIM
+            self.vision_trunk = self._build_vision_trunk()
 
             # 2. RAM State Trunk (~70k params)
             self.ram_trunk = nn.Sequential(
@@ -146,7 +165,7 @@ if TORCH_AVAILABLE:
 
             # 3. Multimodal Fusion Layer (~393k params)
             self.fusion = nn.Sequential(
-                nn.Linear(512 + ram_hidden_dim, fusion_dim),
+                nn.Linear(self.vision_out_dim + ram_hidden_dim, fusion_dim),
                 nn.LayerNorm(fusion_dim),
                 nn.ReLU(inplace=True),
             )
@@ -231,7 +250,7 @@ if TORCH_AVAILABLE:
             action_mask=None,
         ) -> Tuple[torch.Tensor, torch.Tensor]:
             """Forward pass returning (action_logits, value). ``action_mask`` (bool, True = allowed) masks the logits."""
-            vis_feat = self.vision_trunk(screen)
+            vis_feat = self.vision_trunk(screen)  # (B, vision_out_dim)
             ram_feat = self.ram_trunk(ram_obs)
             fused = self.fusion(torch.cat([vis_feat, ram_feat], dim=-1))
 
@@ -287,18 +306,7 @@ if TORCH_AVAILABLE:
             """Take numpy screen (144, 160, 3) and the RAM vector (obs_dim,) and return (action, logp, value).
             ``action_mask`` (bool (num_actions,), True = allowed) restricts sampling / argmax and the returned log-prob."""
             self.eval()
-            # Format screen: (H, W, C) -> (1, C, H, W) normalized to [0, 1]
-            if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
-                rgb = screen_np[:, :, :3]
-            else:
-                rgb = np.repeat(screen_np[:, :, None], 3, axis=2)
-            screen_t = (
-                torch.from_numpy(rgb.transpose(2, 0, 1))
-                .unsqueeze(0)
-                .float()
-                .to(device)
-                .div_(255.0)
-            )
+            screen_t = self._screen_tensor(screen_np, device)
             ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
 
             logits, value = self.forward(screen_t, ram_t, action_mask=action_mask)
@@ -319,17 +327,7 @@ if TORCH_AVAILABLE:
         ) -> np.ndarray:
             """Compute action probability distribution from raw screen and RAM vector."""
             self.eval()
-            if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
-                rgb = screen_np[:, :, :3]
-            else:
-                rgb = np.repeat(screen_np[:, :, None], 3, axis=2)
-            screen_t = (
-                torch.from_numpy(rgb.transpose(2, 0, 1))
-                .unsqueeze(0)
-                .float()
-                .to(device)
-                .div_(255.0)
-            )
+            screen_t = self._screen_tensor(screen_np, device)
             ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
             logits, _ = self.forward(screen_t, ram_t)
             p = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
@@ -346,17 +344,7 @@ if TORCH_AVAILABLE:
         ) -> Tuple[np.ndarray, torch.Tensor | None]:
             """Compute action probabilities and next hidden state for recurrent models."""
             self.eval()
-            if screen_np.ndim == 3 and screen_np.shape[2] >= 3:
-                rgb = screen_np[:, :, :3]
-            else:
-                rgb = np.repeat(screen_np[:, :, None], 3, axis=2)
-            screen_t = (
-                torch.from_numpy(rgb.transpose(2, 0, 1))
-                .unsqueeze(0)
-                .float()
-                .to(device)
-                .div_(255.0)
-            )
+            screen_t = self._screen_tensor(screen_np, device)
             ram_t = torch.from_numpy(ram_np).unsqueeze(0).float().to(device)
             logits, _, next_hx = self.forward_recurrent(screen_t, ram_t, hx)
             p = torch.softmax(logits, dim=-1).squeeze(0).cpu().numpy()
