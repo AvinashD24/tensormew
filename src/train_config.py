@@ -39,7 +39,7 @@ from src import story_path as _story_path
 from src import route_ckpt as _route_ckpt
 from src import stagnation as _stagnation
 
-PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6", "long_v7", "long_v8", "long_v9")
+PRESETS = ("blueprint_v1", "legacy", "long_v1", "long_v2", "long_v3", "long_v4", "long_v5", "long_v6", "long_v7", "long_v8", "long_v9", "explore_v1")
 
 
 class ConfigError(ValueError):
@@ -260,6 +260,13 @@ class TrainConfig:
     # house, egg received, egg delivered), 3 more story bits in the observation (80 inputs instead of 77), the phase-aware
     # path-progress measure (695 steps instead of 309) and a 12-entry dwell_level_targets table.  Old checkpoints no longer fit.
     egg_errand_route: bool = False
+    # --- explore_v1 fields (no route knowledge in the reward; OFF in every older preset) ---
+    # path_metric_only: keep the route-progress tracker for logging / eval only (scale 0, pays nothing).
+    # event_budget: the episode limit grows by event_budget_bonus steps for every game event first set in that episode
+    # (Pleines et al. 2025): a progressing agent keeps playing, a stuck one is cut off at max_steps.
+    path_metric_only: bool = False
+    event_budget: bool = False
+    event_budget_bonus: int = 2048
     # --- long_v9 fields (progress-first rewards and policy; all OFF / unchanged by default and in every older preset) ---
     # Anti-farming (src.anti_farm + src.rl_env.progress_reward ``farm``): wild-battle win / KO / damage payments are scaled by
     # wild_battle_scale and decay per wild battle of the episode (the first battle_free_count pay in full, then x battle_decay each,
@@ -352,6 +359,10 @@ class TrainConfig:
             errs.append(f"battle_a_bias_updates must be >= 0 (got {self.battle_a_bias_updates})")
         if self.path_progress_scale < 0:
             errs.append(f"path_progress_scale must be >= 0 (got {self.path_progress_scale})")
+        if self.event_budget_bonus < 0:
+            errs.append(f"event_budget_bonus must be >= 0 (got {self.event_budget_bonus})")
+        if self.path_metric_only and self.path_progress:
+            errs.append("path_metric_only and path_progress are exclusive (the first measures, the second pays)")
         if self.path_progress and self.goal_potential:
             errs.append("path_progress and goal_potential both reward route progress; enable only one")
         if self.explore_budget < 0:
@@ -507,8 +518,11 @@ class TrainConfig:
                 "boost_coef": self.entropy_boost_coef, "margin": self.entropy_boost_margin}
 
     def path_progress_scale_or_none(self) -> float | None:
-        """Scale for ``src.path_progress.PathProgress``, or None when the reward is off."""
-        return float(self.path_progress_scale) if self.path_progress else None
+        """Scale for ``src.path_progress.PathProgress``, or None when it is off.  ``path_metric_only`` keeps the tracker
+        (so the logs / evals still report progress along the route) with scale 0: it measures, it never pays."""
+        if self.path_progress:
+            return float(self.path_progress_scale)
+        return 0.0 if self.path_metric_only else None
 
     def explore_cap_override(self) -> float | None:
         """The explore cap for the worker budget, or None when it is the unchanged default (30.0)."""
@@ -865,7 +879,47 @@ def long_v9() -> TrainConfig:
     return cfg
 
 
+def explore_v1() -> TrainConfig:
+    """``long_v9`` with the route knowledge taken out of the reward and the start (exploration, not direction):
+
+    * ONE fixed start (``new_bark_outside``): no swarm, battle or route-checkpoint archives (those resume from the furthest
+      point reached, which is directed), no battle-archive low-HP weighting that needs them;
+    * no path-progress reward, no retreat or stagnation cost (all measured along the shortest route): the tracker stays on as
+      ``path_metric_only`` so logs and evals still report progress, but it pays nothing;
+    * no per-stage level targets (``dwell_level_targets`` all 0, ``level_gate_by_target`` off);
+    * the bump / loop penalties are back on (they were only switched off because path progress paid for moving);
+    * ``event_budget``: each newly set game event adds ``event_budget_bonus`` steps to the episode limit.
+
+    Kept: the ordered milestone rewards, the speed bonus, the milestone bits in the observation, the per-tile / curiosity /
+    novelty rewards (the only dense signal now), the anti-farm budgets, healing / survival terms and the battle action mask.
+    Observation size is unchanged (81), so the checkpoints are as large as ``long_v9``'s.
+    """
+    cfg = long_v9()
+    cfg.name = "explore_v1"
+    cfg.start_states = ["new_bark_outside"]
+    cfg.swarm = False
+    cfg.battle_archive = False
+    cfg.battle_lowhp_weight = 0.0
+    cfg.route_ckpt = False
+    cfg.path_progress = False
+    cfg.path_metric_only = True
+    cfg.retreat_penalty = False
+    cfg.stagnation_penalty = False
+    cfg.disable_bump_penalty = False
+    cfg.disable_loop_penalty = False
+    cfg.level_gate_by_target = False
+    cfg.dwell_level_targets = [0] * (cfg.story_profile().count + 1)
+    cfg.explore_budget = 30.0   # the dense signal is now novelty: back to the long_v4-v7 cap (v9 had cut it to 8 for the path reward)
+    cfg.event_budget = True
+    cfg.event_budget_bonus = 2048
+    cfg.max_steps = 4096
+    cfg.eval_max_steps = 2048
+    return cfg
+
+
 def preset(name: str) -> TrainConfig:
+    if name == "explore_v1":
+        return explore_v1()
     if name == "blueprint_v1":
         return blueprint_v1()
     if name == "legacy":

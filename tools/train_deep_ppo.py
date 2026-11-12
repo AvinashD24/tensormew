@@ -622,6 +622,8 @@ class EnvWorker:
         self.milestone_scale = float(cfg.get("milestone_scale", 1.0))
         self.speed_bonus = float(cfg.get("milestone_speed_bonus", 1.0))
         self.time_feature = bool(cfg.get("time_feature", False))
+        self.event_bonus = int(cfg.get("event_budget", 0) or 0)   # explore_v1: extra steps per newly set game event
+        self._ev_base, self._ev_len0 = 0, 0
         self._step0 = 0   # step counter at the start of the running episode (non-zero for a staggered first episode)
         self._intrinsic_scale = 1.0
         self._ep_start_stage = 0   # milestone diagnostics (src.milestone_stats)
@@ -822,6 +824,7 @@ class EnvWorker:
         # Flags already set in the start state are not progress: seed them so they pay nothing (was ~+300/episode).
         self.seen_events.update(initial_seen_events(st))
         self._event_snapshot = set(self.seen_events)
+        self._ev_base, self._ev_len0 = len(self.seen_events), self.ep_len
         screen, ram_vec, _ = self.get_obs()  # also records the start map as seen (it must not pay a milestone)
         self.start_phi = _story_phi(st, self.seen_maps)
         return screen, ram_vec
@@ -1053,7 +1056,9 @@ class EnvWorker:
         # with ``terminate_on_whiteout`` (long_v6), on a white-out: a TRUE termination (not truncated, so the trainer does
         # not bootstrap the value; the -15 white-out penalty of this step is the terminal reward).
         self.steps += 1
-        whiteout = bool(getattr(after, "fainted", False) and not getattr(before, "fainted", False))
+        if self.event_bonus:   # explore_v1: the limit grows with every game event first set in this episode
+            self.ep_len = self._ev_len0 + self.event_bonus * max(0, len(self.seen_events) - self._ev_base)
+        whiteout =bool(getattr(after, "fainted", False) and not getattr(before, "fainted", False))
         terminated = self.terminate_on_whiteout and whiteout
         truncated = self.steps >= self.ep_len and not terminated  # time limit, not a real end
         done = truncated or terminated
@@ -1685,6 +1690,7 @@ def worker_env_cfg(cfg: TrainConfig, swarm_dir: str | Path | None, battle_dir: s
         "milestone_scale": cfg.milestone_reward_scale,
         "milestone_speed_bonus": cfg.milestone_speed_bonus,
         "time_feature": cfg.time_feature,
+        "event_budget": int(cfg.event_budget_bonus) if cfg.event_budget else 0,
         "visual": cfg.visual,
     }
 
